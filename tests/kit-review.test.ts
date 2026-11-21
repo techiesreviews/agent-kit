@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { codexReviewConfig, isoWeek, makeCodexReviewHome, opencodeModelRuns } from "../agent-run.mjs";
+import { codexReviewConfig, makeCodexReviewHome } from "../agent-run.mjs";
+// @ts-expect-error The agent helpers are plain JavaScript without declarations.
+import { opencodeModelRuns } from "../model-names.mjs";
+// @ts-expect-error The agent helpers are plain JavaScript without declarations.
+import { isoWeek } from "../review-budget.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { builderChecks, plainEnglish, reviewBrief, reviewFormat, ticketReviewBrief } from "../review-brief.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.

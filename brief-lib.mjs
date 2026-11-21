@@ -4,11 +4,12 @@ import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { builderChecks, plainEnglish, projectCommand, reviewFormat, ticketReviewBrief } from "./review-brief.mjs";
 import { kitMessagesToLexRule, kitReviewLoopRule, kitRulebookPins, kitSliceBranch } from "./kit-lib.mjs";
-import { map, modelFamily, pickSkills, readTicket, skillLine } from "./skills.mjs";
+import { map, pickSkills, readTicket, skillLine } from "./skills.mjs";
 import { cardNaming, onOrbit } from "./ticket-cards.mjs";
-import { lookFamily, lookFamilyWords, secondLookTable } from "./pr-tier.mjs";
+import { lookFamilyWords, secondLookTable } from "./pr-tier.mjs";
+import { lookFamily, skillsFamily } from "./model-names.mjs";
 
-export { map, modelFamily, pickSkills, readTicket, skillLine, skillSettingsProblems } from "./skills.mjs";
+export { map, pickSkills, readTicket, skillLine, skillSettingsProblems } from "./skills.mjs";
 
 export const STAGES = ["build", "review", "second-look", "fix"];
 // One shell word, as written: single quotes, so a title's $ or backtick is never run.
@@ -65,7 +66,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   const branch = named?.branch ?? kitSliceBranch(owner, slug);
   const builder = builderModel(info.builder, pins.builder);
   const order = lookOrder();
-  // A second look with no readable table has no model to name: null keeps its skill lines neutral (modelFamily) and never
+  // A second look with no readable table has no model to name: null keeps its skill lines neutral (skillsFamily) and never
   // borrows the main reviewer's model. Only the build stage prints the target as a pin.
   const target = model || (stage === "review" ? review : stage === "second-look" ? order?.[0] ?? null : builder);
   const reviewing = stage === "review" || stage === "second-look";
@@ -156,7 +157,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
     "Never wait in the background, never post progress between waits, and never end your turn while a job of yours runs (the Stop hook refuses it).",
   ]);
   if (skills.length) {
-    const family = modelFamily(target);
+    const family = skillsFamily(target);
     out.push("", "## Skills", `Use these for the parts of the ${task ? "task" : card ? "card" : "ticket"} they fit${family === "none" ? " (in the kit's own words; this model has no skills)" : ""}:`,
       ...skills.map(entry => `- ${skillLine(entry, family)}`));
   }

@@ -2,16 +2,9 @@
 // named here, never copied: paid skills stay on the machine that has them.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { skillsFamily } from "./model-names.mjs";
 
 export const map = JSON.parse(readFileSync(join(import.meta.dirname, "skills.json"), "utf8"));
-
-/** claude, codex or none (models without skills: OpenCode, Grok); undefined when the model is not known. */
-export function modelFamily(model) {
-  if (!model) return undefined;
-  if (/claude|^(opus|sonnet|haiku|fable)/i.test(model)) return "claude";
-  if (/^(gpt|codex|o\d)|sol$|luna$/i.test(model)) return "codex";
-  return "none";
-}
 
 /**
  * The skills a job needs, in map order: a set applies when one of the ticket's files or a word in its title
@@ -69,7 +62,7 @@ export function readTicket(text) {
 /** The skill lines for one stage of a ticket's text, named for the model's family (skillLine). */
 export function ticketSkillLines(text, stage, settings, model) {
   const info = readTicket(text);
-  const family = modelFamily(model);
+  const family = skillsFamily(model);
   return pickSkills({ files: info.files, words: `${info.title}\n${info.filesText}`, stage, settings }).map(entry => `- ${skillLine(entry, family)}`);
 }
 

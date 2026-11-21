@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { kitSettings } from "./kit-lib.mjs";
+import { lookFamily } from "./model-names.mjs";
 
 const order = ["docs", "css", "tests", "full"];
 const compiled = new WeakMap();
@@ -121,8 +122,9 @@ export function reviewKind(changes, settings, { ticket } = {}) {
   return { kind: "code", path: looked[0]?.path ?? null };
 }
 
-// A second look is GPT through Codex (allowed since 2026-11-09, Lex), Grok or a free OpenCode model.
-export const lookFamily = model => typeof model !== "string" ? null : /^gpt-\S+$/.test(model) ? "gpt" : /^grok-\S+$/i.test(model) ? "grok" : /^opencode\/\S+$/.test(model) ? "opencode" : null;
+// A second look is GPT through Codex (allowed since 2026-11-09, Lex), Grok or a free OpenCode model; the family comes
+// from the model-name rules (model-names.mjs), so o3 is GPT here as it is to the runner.
+export { lookFamily };
 
 /** The plain words a PR uses for a second look's model family. */
 export function lookFamilyWords(model) {

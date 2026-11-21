@@ -12,12 +12,14 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { inferCli, opencodeModelRuns, parseAgentArgs, plainCode, releaseReviewBudget, reserveReviewBudget } from "./agent-run.mjs";
+import { parseAgentArgs } from "./agent-run.mjs";
+import { inferCli, lookFamily, opencodeModelRuns } from "./model-names.mjs";
+import { releaseReviewBudget, reserveReviewBudget } from "./review-budget.mjs";
 import { reviewBrief, reviewScope, ticketReviewBrief } from "./review-brief.mjs";
 import { countsLine, findingsRecord } from "./review-findings.mjs";
 import { createReviewFolder, gptLookDone, markSecondLook, previousReview, reviewsFolder, saveReview } from "./review-records.mjs";
 import { branchRisk, loopBriefSection, loopReviewerNote, parseMarks, roundLimit, unmarkedIds } from "./review-loop.mjs";
-import { docsOnly as docsOnlyChange, lookFamily, parseChanges, reviewKinds, secondLookEffort, secondLookPick, secondLookTable } from "./pr-tier.mjs";
+import { docsOnly as docsOnlyChange, parseChanges, reviewKinds, secondLookEffort, secondLookPick, secondLookTable } from "./pr-tier.mjs";
 import { durationMilliseconds } from "./sol-run.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitRoot, kitMainRoot, kitOwner, kitSettings, kitStateDir, nodeEnv, kitScore, scoreReview } = await import(
@@ -31,15 +33,6 @@ export function resultLine({ status, text }) {
 
 /** The terminal's own streams, for kit review. */
 export const processIo = { out: text => process.stdout.write(text), err: text => process.stderr.write(text) };
-
-// A Grok outage: one of the run log's last five lines starts with an HTTP 5xx status or a connection error
-// (only such closing lines, so a review or tool trace that names one is not matched). Returns that line or null.
-const outagePattern = /^(?:error:|■)?[\t ]*(?:(?:(?:HTTP|status)[\t ]*)?5\d\d\b.*|(?:\w*Error:[\t ]*)?(?:(?:connect|read|write|getaddrinfo)[\t ]+)?(?:ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)\b.*)$/i;
-function grokDown(temporary) {
-  let log = "";
-  try { log = readFileSync(join(temporary, "run.log"), "utf8"); } catch { return null; }
-  return log.split(/\r?\n/).filter(line => line.trim()).slice(-5).reverse().map(line => line.trim()).find(line => outagePattern.test(line)) ?? null;
-}
 
 // The label of a scope whose diff is empty (a no-code merge), or null when it has changes or cannot be read: a bad ref or
 // settings problem is left to the review itself, which reports it as before.
@@ -148,8 +141,16 @@ async function reviewOnce(flags, look, io) {
       child.once("close", code => { clear(); accept(code === 0 ? 0 : 1); });
     });
     reason = timedOut ? `timed out after ${look.limit}` : [...stderr.matchAll(/^problem: (.+)$/gm)].at(-1)?.[1] || "review failed";
+    // The runner names its own outcome in status.json (runOutcome): a reason its problem lines do not give (a missing
+    // CLI, a Grok outage or hang) is printed here.
+    let outcome;
+    try { outcome = JSON.parse(readFileSync(join(temporary, "status.json"), "utf8")).outcome; } catch { /* A runner that never started has none. */ }
+    if (status !== 0 && !timedOut && outcome?.why && outcome.why !== reason) {
+      reason = outcome.why;
+      problem(reason);
+    }
     // An empty account is a review that could not run, not one that failed.
-    outOfCredit = status !== 0 && /^\S+ out of credit: /.test(reason);
+    outOfCredit = status !== 0 && outcome?.outOfCredit === true;
     // A later round must mark every earlier id (resolved or still open); a review that leaves one out is incomplete.
     if (status === 0 && previous && !previous.clean) {
       const left = unmarkedIds(previous.findings.map(item => item.id), parseMarks(readFileSync(join(temporary, "out.md"), "utf8")));
@@ -174,35 +175,15 @@ async function reviewOnce(flags, look, io) {
     problem(reason);
   } finally {
     try {
-      // A review whose CLI never started (empty diff) is not counted; the runner
-      // records the process group as soon as the CLI spawns. A provider usage-limit
-      // refusal on the first call spent no review, so it gives the slot back; the
-      // runner marks it only when the refusal was all that call printed. An out-of-credit
-      // run that failed returned no complete review, so it is given back even after earlier turns,
-      // and even when saving its evidence fails below: no review came back either way.
+      // The runner's outcome (runOutcome in agent-run.mjs) says whether the model could not run (unavailable) and
+      // whether the run reached it (spent); a run that spent nothing gives its count back, even when saving its
+      // evidence fails below: no review came back either way. A runner that left no outcome (it stopped before
+      // writing one) failed, and keeps its count only once its CLI started.
       const run = temporary && join(temporary, "status.json");
       const record = run && existsSync(run) ? JSON.parse(readFileSync(run, "utf8")) : {};
-      // The model could not run: its CLI is missing (a spawn ENOENT) or not logged in (no Codex auth), refused or hit a usage limit, the account
-      // is empty, or the provider is down (OpenCode's error event or no session within its start limit, a Grok
-      // run whose closing lines are an HTTP 5xx or a connection error, or one that gave no answer before the
-      // timeout: Grok prints its JSON only at the end), or the CLI crashed (a signal or an exit above 128) before it answered.
-      // Any other failure, including any other one before the CLI started, is a broken run.
-      const missing = status !== 0 && !record.pgid && /^problem: spawn (\S+) ENOENT$/m.exec(stderr)?.[1];
-      const down = !missing && status !== 0 && /^grok failed \(\d+\)/.test(reason) && grokDown(temporary);
-      const hung = !missing && status !== 0 && /^grok-/i.test(model) && /^agent exceeded timeout=([^;]+);/.exec(reason)?.[1];
-      // OpenCode that opened no session within its start limit on the first call never reached the model;
-      // the runner marks it only then, so a silent retry after a call that worked keeps its count.
-      const silent = status !== 0 && record.silent === true;
-      // The reviewer's CLI crashed on its first call (a signal, or an exit above 128) and came back with no review.
-      const crashed = status !== 0 && record.crashed === true;
-      if (missing || down || hung) {
-        reason = missing ? `CLI missing: ${missing} ${plainCode("ENOENT")}` : down ? `grok unavailable: ${down}` : `grok unavailable: no answer within ${hung}`;
-        problem(reason);
-      }
-      if (status !== 0 && spawned && (record.refused === true || outOfCredit || missing || down || hung || crashed ||
-        /^\S+ usage limit\b|^OpenCode reported an error: |^opencode unavailable: no session within |^no Codex auth at /.test(reason))) unavailable = true;
-      // An outage, like an empty account, returned no review, so its count is given back too.
-      if (budget && (!record.pgid || record.refused === true || outOfCredit || down || silent || crashed)) releaseReviewBudget(ledger.path, budget, env);
+      const outcome = record.outcome ?? { kind: "failed", spent: Boolean(record.pgid) };
+      if (status !== 0 && spawned && outcome.kind === "unavailable") unavailable = true;
+      if (budget && !outcome.spent) releaseReviewBudget(ledger.path, budget, env);
     } catch (error) {
       kept = true;
       problem(`releasing review budget failed: ${error.message}`);
