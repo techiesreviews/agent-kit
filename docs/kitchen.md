@@ -1,15 +1,10 @@
 # The kitchen
 
-How work moves from idea to release in every project of Lex's: one road every session and every model
-follows. **Lex is head chef**, the lead session runs the pass, helpers build and reviewers check, Agent Kit
-and the skills are the knives.
+Every session and model follows this road. **Lex is head chef**; leads direct, helpers build, reviewers check.
 
-This is the shared rulebook; it travels with the kit. `scripts/agents/kit rulebook` prints it followed by
-the project's extras (the file `rulebookExtras` names in `scripts/agents/kit.json`): the project's landing
-and release branches, checks, own commands, previews, release steps and history. **Where the extras
-differ, they win.** Below, "the landing branch" is `branches.land` in the settings file, "the project's
-checks" are its `checks` commands, and "`<land>`" stands for the landing branch's name.
-
+`scripts/agents/kit rulebook` prints this shared rulebook, then the project's `rulebookExtras` file from
+`scripts/agents/kit.json`. **The extras win.** Below, "the landing branch" and "`<land>`" mean `branches.land`;
+"the project's checks" means its `checks` commands.
 <a id="ux-confidence-ladder"></a>
 
 ## The road: six steps and the grill
