@@ -224,8 +224,7 @@ export async function kitMachineLock(name, { owner = kitOwner(), onWait, env = p
 export function kitRegisterProject(name, root, env = process.env, during = () => {}) {
   const path = join(kitStateDir(env), "projects.json");
   mkdirSync(dirname(path), { recursive: true });
-  const lock = `${path}.lock`;
-  takeLock(lock);
+  const release = takeLock(`${path}.lock`);
   try {
     const projects = kitProjects(env), listed = projects[name]?.root;
     if (listed && listed !== root) throw new Error(`${path} already lists ${name} at ${listed}; give this project another "project" name in ${kitSettingsFile}`);
@@ -241,7 +240,7 @@ export function kitRegisterProject(name, root, env = process.env, during = () =>
       throw new Error(`cannot write ${path}: ${oneLine(error.message)}`);
     }
     return "added";
-  } finally { rmSync(lock, { recursive: true, force: true }); }
+  } finally { release(); }
 }
 
 function version(candidate) {
@@ -864,7 +863,9 @@ const alive = pid => {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
 };
 
-// The lock folder names its owner; one whose owner died, or older than ten waits, is taken over.
+// The lock folder names its owner; one whose owner died, or with no owner named and older than ten waits, is
+// taken over. A live owner's lock is never taken over: past the wait it is one "is held" error. Returns the
+// release, which removes the lock only while it is still this one (same owner line), never a lock taken since.
 function takeLock(lock) {
   const wait = Number(process.env.ASE_SCORE_LOCK_MS || 5_000), bound = Number.isFinite(wait) && wait >= 0 ? wait : 5_000;
   const deadline = Date.now() + bound;
@@ -872,8 +873,13 @@ function takeLock(lock) {
     let made = false;
     try {
       mkdirSync(lock); made = true;
-      writeFileSync(join(lock, "owner"), `${process.pid} ${Date.now()}\n`);
-      return;
+      const mine = `${process.pid} ${Date.now()}\n`;
+      writeFileSync(join(lock, "owner"), mine);
+      return () => {
+        let owner = null;
+        try { owner = readFileSync(join(lock, "owner"), "utf8"); } catch { /* Gone: nothing to release. */ }
+        if (owner === mine) rmSync(lock, { recursive: true, force: true });
+      };
     } catch (error) {
       // An owner that cannot be written must not leave an ownerless lock behind.
       if (made) { rmSync(lock, { recursive: true, force: true }); throw error; }
@@ -882,8 +888,8 @@ function takeLock(lock) {
     let owner = null, seen;
     try { owner = readFileSync(join(lock, "owner"), "utf8"); } catch { /* Not written yet, or just released. */ }
     try { seen = statSync(lock); } catch { continue; }
-    const pid = Number(owner?.split(" ")[0]);
-    if ((owner !== null && Number.isSafeInteger(pid) && pid > 0 && !alive(pid)) || Date.now() - seen.mtimeMs > 10 * Math.max(bound, 1_000)) {
+    const pid = Number(owner?.split(" ")[0]), named = owner !== null && Number.isSafeInteger(pid) && pid > 0;
+    if ((named && !alive(pid)) || (!named && Date.now() - seen.mtimeMs > 10 * Math.max(bound, 1_000))) {
       // Move the stale lock aside, then remove it only if it is the folder judged stale (same inode);
       // a fresh lock taken meanwhile is put back when its place is still free.
       const aside = `${lock}.stale.${process.pid}.${Date.now()}`;
@@ -915,8 +921,7 @@ export function kitScore({ ticket, branch, root = kitRoot() }, change) {
     const path = join(kitMainRoot(), ".scratch/scoreboard", scoreMap(file && relative(root, file), maps), `${name}.json`);
     mkdirSync(dirname(path), { recursive: true });
     // Another worktree (a lead's second-opinion review) may write the same record: lock read to rename.
-    const lock = `${path}.lock`;
-    takeLock(lock);
+    const release = takeLock(`${path}.lock`);
     try {
       let saved = {};
       try { saved = JSON.parse(readFileSync(path, "utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -932,7 +937,7 @@ export function kitScore({ ticket, branch, root = kitRoot() }, change) {
         writeFileSync(temporary, JSON.stringify(record, null, 2) + "\n");
         renameSync(temporary, path);
       } finally { rmSync(temporary, { force: true }); }
-    } finally { rmSync(lock, { recursive: true, force: true }); }
+    } finally { release(); }
   } catch (error) {
     if (!scoreFailed) console.error(`problem: scoreboard ${oneLine(error.message)}`);
     scoreFailed = true;
