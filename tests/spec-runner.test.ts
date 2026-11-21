@@ -80,6 +80,14 @@ test("timing files run after the rest, each alone under the quiet lock; nothing 
   assert.deepEqual(none.events, [`list ${full.join(" ")} --list`]);
 });
 
+test("once a touched file fails, the timing files are named as not run and the quiet lock is never taken", async t => {
+  const list = "a.spec.ts [chromium]\nslow.spec.ts [chromium]\nRESULT: ok specs 2 selected\n";
+  const h = harness(t, argv => argv[1] === "a.spec.ts" ? failedRun([], ["a.spec.ts"]) : passed(...argv.slice(1)), { list });
+  await assert.rejects(h.run(["a.spec.ts"], { timing: ["slow"] }),
+    { message: "2 spec files failed: a.spec.ts (this change touches it), slow.spec.ts (timing, not run)" });
+  assert.deepEqual(h.events, [`list ${full.join(" ")} --list`, "lock browser-run", "exec specs a.spec.ts", "release browser-run"]);
+});
+
 test("without flock the specs run unlocked and say so once, in the PR and on the console", async t => {
   const h = harness(t, argv => argv.length === 2 ? passed(argv[1]) : failedRun([], ["b.spec.ts"]), { missing: true });
   const specs = await h.run([]);

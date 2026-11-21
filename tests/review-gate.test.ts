@@ -47,6 +47,14 @@ test("a waiver passes only the findings it names; one it leaves out is refused b
   assert.match(partial.lines.at(-1) ?? "", /^The --waive reason does not name 1 open finding above P3:\n- R1-2 \(P2\): no test\n/);
 });
 
+test("a finding carried into a later round is waived by the id it first had", () => {
+  const findings = [blocker("R1-1 still open")];
+  const chain = [record(1, [blocker("drops the lock")]), record(2, findings)];
+  const g = gate({ waives: ["R1-1: known"] });
+  assert.equal(g.weigh({ second: false, findings, chain, rounds: () => 1 }).refusal, null);
+  assert.equal(g.waived, 1);
+});
+
 test("a count waiver is checked over both looks together, once they have run", () => {
   const findings = [blocker("drops the lock")];
   const g = gate({ waives: ["1 finding: known"] });
