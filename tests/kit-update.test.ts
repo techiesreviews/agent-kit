@@ -766,6 +766,13 @@ test("without Node 24 the front door still runs kit update, and ends with one RE
   assert.notEqual(stopped.status, 0);
   assert.equal(stopped.stdout.trimEnd().split("\n").filter(line => line.startsWith("RESULT: ")).length, 1);
   assert.match(stopped.stdout, new RegExp(`RESULT: fail update exited ${stopped.status} without a RESULT line\\n$`));
+  // Installing the timer bakes in no Node the front door could not find, even one a parent left in KIT_NODE.
+  fakeSystemctl(k);
+  const timer = spawnSync(resolve("kit"), ["update", "--install-timer"], { cwd: k.directory, encoding: "utf8", timeout: 30_000,
+    env: { ...env, PATH: `${join(k.directory, "systemctl-bin")}:${env.PATH}`, KIT_NODE: "/nowhere/node" } });
+  assert.equal(timer.status, 2, timer.stdout + timer.stderr);
+  assert.equal(timer.stdout, "RESULT: fail no Node >=24 found (system, npx cache or nvm)\n");
+  assert.equal(existsSync(units(k)), false);
 });
 
 test("a kit whose kit-lib.mjs does not load still runs kit update and --previous, the way to repair it", (t) => {
@@ -791,6 +798,10 @@ test("a kit whose kit-lib.mjs does not load still runs kit update and --previous
   const unit = frontDoor("unit");
   assert.equal(unit.status, 2);
   assert.equal(unit.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
+  // So does a run that already knows its root (the launcher outside git, or a nested kit call).
+  const known = spawnSync(join(broken, "kit"), ["unit"], { cwd: k.directory, encoding: "utf8", timeout: 30_000, env: { ...k.env, KIT_ROOT: k.directory } });
+  assert.equal(known.status, 2, known.stdout + known.stderr);
+  assert.equal(known.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
 });
 
 test("without Node 24 a kit update stopped by SIGTERM ends with the front door's interrupted line", async (t) => {
