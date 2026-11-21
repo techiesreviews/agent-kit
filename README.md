@@ -294,11 +294,11 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   covered (TOOLS-303):
   - **Git calls.** Every git call the runner and `kit pr` make on a build's worktree (`kit pr`'s own, the kit's helpers
     in its process (the release check, the review and the second look among them), and those of the programs it
-    starts: `gh`) runs with `git-safety.mjs`'s settings: no hooks (`core.hooksPath=/dev/null`), no file system monitor,
-    no signing or signature checks, no automatic maintenance or submodule recursion, and the settings in the
-    repository's own config that name a program set empty, which starts nothing: those whose name ends in command,
-    cmd, program, helper, driver, textconv, editor, pager, askpass, proxy,
-    pack, hook, filter, clean, smudge, process or external (a filter, `diff.external`, a text converter, a merge driver,
+    starts (`gh` among them)) runs with `git-safety.mjs`'s settings: no hooks (`core.hooksPath=/dev/null`), no file
+    system monitor, no signing or signature checks, no automatic maintenance or submodule recursion, and the settings
+    in the repository's own config that name a program set empty, which starts nothing: those whose name ends in
+    command, cmd, program, helper, driver, textconv, editor, pager, askpass, proxy, pack, hook, filter, clean, smudge,
+    process or external (a filter, `diff.external`, a text converter, a merge driver,
     `core.sshCommand`, `core.alternateRefsCommand`, a credential helper...), every alias, per-command pager and trace2
     target. Settings that only commands `kit pr` never runs read (`difftool.<tool>.path`, `submodule.<name>.update`) are
     not matched. A call without the network reads no global or system Git config (a build can write `~/.gitconfig`); the
@@ -350,11 +350,11 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
     node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is
-    its own Node), so the kit's helpers in its process (the release check, the review and the second look, and the
-    reviewer they start) and the programs it starts (`gh`) take those too; its own git and gh start by the real path.
-    The checks see that folder read-only where they run locked; checks that run unlocked (no bubblewrap), another build running
-    meanwhile, or one run without the lock can write it: `kit pr` checks the links before every program it starts and
-    after every check and stops if one changed, but a program it started (`gh` with its token among them) may take a
+    its own Node), so the kit's helpers in its process (the review and the second look, and the reviewer they start)
+    and the programs it starts (`gh` among them) take those too; its own git and gh, and the release check's git, start
+    by the real path. The checks see that folder read-only where they run locked; checks that run unlocked (no
+    bubblewrap), another build running meanwhile, or one run without the lock can write it: `kit pr` checks the links
+    before every program it starts and after every check and stops if one changed, but a program it started (`gh` with its token among them) may take a
     changed one in between. The API route's wrapper, which reads the key outside the lock, takes its own tools from the
     system's folders (`command -p`).
   - **The machine's kit.** A locked build or review and `kit pr`'s locked checks see the kit copy that runs them and

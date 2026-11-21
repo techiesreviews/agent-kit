@@ -2553,6 +2553,8 @@ test("a rerun after an earlier run merged a hotfixed main into the cut says to c
   result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 1);
   assert.match(result.stdout, /^RESULT: fail release-check: HEAD [a-f0-9]{7} is 2 commits ahead of origin\/dev: cut the release again from origin\/dev \(git reset --keep origin\/dev\) and rerun kit pr --release$/m);
+  // The check ran in kit pr's process: its log keeps the problem lines kit release-check prints, then its RESULT line.
+  assert.match(readFileSync(join(f.logDir(), "release-check.log"), "utf8"), /problem: HEAD [a-f0-9]{7} is 2 commits ahead of origin\/dev: [^\n]+\nRESULT: fail HEAD /);
   f.git("reset", "-q", "--hard", "origin/dev");
   result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -4221,6 +4223,10 @@ test("review-run.mjs's own review and second look, called in kit pr's process, s
   for (const cli of ["claude", "codex", "opencode"]) { writeFileSync(join(f.bin, cli), "#!/bin/sh\necho 'a reviewer CLI ran' >&2\nexit 1\n"); chmodSync(join(f.bin, cli), 0o755); }
   const home = join(f.dir, "home");
   mkdirSync(home);
+  // Set last, as in the release check's test: the review's and second look's git calls run with the key lock's settings.
+  const marker = join(f.dir, "monitor-ran.txt"), monitor = join(f.dir, "monitor.sh");
+  writeFileSync(monitor, `#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\n`); chmodSync(monitor, 0o755);
+  writeFileSync(join(f.root, ".git/config"), `${readFileSync(join(f.root, ".git/config"), "utf8")}[core]\n\tfsmonitor = ${monitor}\n`);
   const result = f.run([], { KIT_PR_CALLS: join(f.bin, "real-calls.mjs"), HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local/share"), XDG_CACHE_HOME: join(home, ".cache") });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const empty = `git diff ${f.git("merge-base", "origin/dev", "HEAD")}...HEAD is empty`;
@@ -4228,6 +4234,7 @@ test("review-run.mjs's own review and second look, called in kit pr's process, s
   assert.ok(result.stdout.includes(`\nsecond look: skipped (nothing to review: ${empty})\n`), result.stdout);
   assert.match(result.stdout, /RESULT: ok merged #73/);
   assert.match(readFileSync(join(f.logDir(), "review.log"), "utf8"), /RESULT: skip review nothing to review/);
+  assert.equal(existsSync(marker), false, existsSync(marker) ? readFileSync(marker, "utf8") : "");
 });
 
 test("a skipped second look is written into the PR's review block, so the PR never reads as double-checked", t => {
@@ -4237,6 +4244,8 @@ test("a skipped second look is written into the PR's review block, so the PR nev
   assert.equal(f.run([], { FAKE_SECOND: "skip" }).status, 0);
   const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
   assert.match(block, /Verdict: approved\n\nsecond look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)\n\nFindings ledger: none\./);
+  // The second look ran in kit pr's process: its log keeps its notes and kit review's RESULT line.
+  assert.match(readFileSync(join(f.logDir(), "second-look.log"), "utf8"), /second look: skipped \([^\n]+\)\nRESULT: skip second look \([^\n]+\)\n$/);
 });
 
 test("a saved second look is reused only as a second look that ran; it is never taken for Claude's review", t => {
