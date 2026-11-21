@@ -543,8 +543,11 @@ const startedShell = (given, env, shut) => {
   // A word an env -S string (gnuenv) splits counts as the words it splits into too, so an -J or -F there is checked
   // beside the line's own (GPT second look, round 16): split by env's own rules (quotes keep a blank in a word), each
   // piece right after its word, so the line's next word follows the last piece (round 17, Claude review round 16).
+  // A piece that is itself an -S string (env -S "ssh -J…" inside another -S string) splits again, and counts as a line
+  // word where it holds a blank (GPT second look, round 18). A piece is never longer than its word, so this ends.
   const split = word => /[\s\\"']/.test(word) ? splitWords(word) ?? unescaped(word).split(/\s+/).filter(Boolean) : [];
-  const entries = given.flatMap(word => [{ word, line: true }, ...split(word).map(piece => ({ word: piece, line: false }))]);
+  const expand = (word, line) => [{ word, line }, ...split(word).filter(piece => piece !== word).flatMap(piece => expand(piece, /\s/.test(piece)))];
+  const entries = given.flatMap(word => expand(word, true));
   const words = entries.map(entry => entry.word);
   // A ProxyJump option is read in the line's own words, which hold its value beside its name; in a piece, only -J.
   const jumpAt = i => entries[i].line ? jumpOf(words, i) : flagValue(words, i, "J");

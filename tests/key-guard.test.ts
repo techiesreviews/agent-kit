@@ -1648,11 +1648,10 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     writeFileSync(line, `#!/usr/bin/env -S ${program}\n`); chmodSync(line, 0o755);
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: line }, { worktree: root }).problem ?? "", /starts with env \S+, inside the worktree or its Git folder/, name);
   }
-  // env -S's split counts for ssh's -J and -F as well: a -J inside the string beside an -F outside it, and the other
-  // way round (GPT second look, round 16); a plain jump host still runs. A ProxyCommand\_none in an -S string is
-  // refused too: only a plain none is none.
-  // A quoted blank keeps an -F path whole, and a flag last in the string takes the line's next word as its value
-  // (GPT second look, round 17; Claude review, round 16).
+  // env -S's split counts for ssh's -J and -F as well: a -J inside the string beside an -F outside it and the other way
+  // round (GPT second look, round 16), a quoted blank in an -F path, and a flag last in the string, which takes the
+  // line's next word as its value (GPT second look, round 17; Claude review, round 16). A plain jump host still runs,
+  // also from the next word. A ProxyCommand\_none in an -S string is refused too: only a plain none is none.
   for (const command of [`timeout 30 gnuenv -S 'ssh -J jump.example.invalid' -F './cfg;printf PROBE;' host`, `timeout 30 gnuenv -S 'ssh -F ./cfg;x' -J jump.example.invalid host`,
     `timeout 30 gnuenv -S 'ssh -J jump.example.invalid -F"cfg ;printf PROBE;"' host`, `timeout 30 gnuenv -S 'ssh -J jump.example.invalid -F' './cfg;x' host`,
     `timeout 30 gnuenv -S 'ssh -J' jump.example.invalid -F './cfg;x' host`]) {
@@ -1660,6 +1659,11 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.throws(() => start(wrapper(`gnuenv-jump-${command.length}`, command.replace(/ host$/, ""), "")), /, which starts a shell \(ProxyJump beside/, command);
   }
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -J jump.example.invalid' host" }, { worktree: root }).problem, null);
+  assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -J' jump.example.invalid host" }, { worktree: root }).problem, null);
+  // An -S string inside an -S string splits again: -J%k there takes the host key alias, ;x and all (GPT second look, round 18).
+  const nested = `timeout 30 gnuenv -S 'gnuenv -S "ssh -J%k" -oHostKeyAlias=a;x' host`;
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: nested }, { worktree: root }).problem ?? "", /ProxyJump with more than host names/);
+  assert.throws(() => start(wrapper("gnuenv-nested", nested.replace(/ host$/, ""), "")), /, which starts a shell \(ProxyJump with more than host names/);
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -o ProxyCommand\\_none' host" }, { worktree: root }).problem ?? "", /ProxyCommand, which ssh runs/);
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -o ProxyCommand=none' host" }, { worktree: root }).problem, null);
   // env -S's \_ is a blank inside ssh's options too: ProxyCommand\_nc is ProxyCommand nc (GPT second look, round 15).
