@@ -2,7 +2,7 @@
 // kit: open a PR into the land branch, attach the review, merge when checks pass
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { loadavg, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings } from "../review-findings.mjs";
@@ -16,7 +16,7 @@ import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, open
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
-const { failedSpecs, isTiming, listedSpecs, nothingSelected, timingList, wholeReport } = await import(pathToFileURL(resolve(import.meta.dirname, "../browser-runs.mjs")).href);
+const { runSpecs } = await import(pathToFileURL(resolve(import.meta.dirname, "../spec-runner.mjs")).href);
 const { checkSteps, classify, docsOnly, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, lookFamily, lookFamilyWords, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
 const { coverageHash, readUxResult, uxGuard, visibleFiles } = await import(pathToFileURL(resolve(import.meta.dirname, "../ux-gate.mjs")).href);
 const { checkLock, keyGuardOn, runPath, runProgram, startCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../key-guard.mjs")).href);
@@ -1066,96 +1066,19 @@ async function main(args) {
     const guardNote = skillsChecked.split(/\r?\n/).filter(line => line.startsWith("skill-guard: ")).map(line => line.slice("skill-guard: ".length)).join("; ");
     ok("skills");
 
-    // The browser specs (ticket ke-88), as lines for the PR body. One full run per machine at a time (the full-run
-    // lock in the kit's state folder, waited for). With a `timing` list (which needs a specs command that answers
-    // --list; others may not) the selection is listed first: nothing selected takes no lock, and the timing files
-    // run after the rest, each alone. A failed file the change did not touch is rerun once alone. Both alone kinds hold the quiet
-    // lock, so no other kit job starts meanwhile. A file that passes alone is flaky under load: named, logged to
-    // flaky.jsonl, forgiven; but only when the run reported every file it ran, so a crash is never forgiven.
+    // The browser specs (ticket ke-88), as lines for the PR body: spec-runner.mjs, run with this landing's kit and locks.
     async function browserSpecs(changes, settings) {
       step = "specs";
-      const timing = timingList(settings), base = ["specs", "--affected", "--base", `origin/${flags.base}`];
-      const lines = [], failed = [], touched = new Set(changes.map(change => change.path));
-      const result = text => text.split(/\r?\n/).findLast(line => line.startsWith("RESULT: ")) || "ok";
-      let main = base, alone = [], listed;
-      if (timing.length) {
-        const list = await run("specs", kit, [...base, "--list"]);
-        listed = listedSpecs(list);
-        // An empty list counts as nothing selected only when the command says so; any other output is unreadable.
-        if (!listed.length && !nothingSelected(list)) throw new Error(`kit specs --list named no spec files and did not say none were selected (${result(list)})`);
-        if (!listed.length) return [`- kit ${base.join(" ")}: ${result(list)}`];
-        alone = listed.filter(file => isTiming(file, timing));
-        if (alone.length) main = listed.length > alone.length ? ["specs", ...listed.filter(file => !alone.includes(file))] : null;
-      }
-      // A run's failed files, with the highest load seen while it ran; a failed run that did not report every file
-      // it ran (a crash, a server that never started) fails as before.
-      const check = async (argv, label, expected) => {
-        let peak = loadavg()[0];
-        const timer = setInterval(() => { peak = Math.max(peak, loadavg()[0]); }, 5_000);
-        let ran;
-        try { ran = await execute("specs", kit, argv); } finally { clearInterval(timer); }
-        lines.push(`- kit ${label}: ${result(ran.text)}`);
-        if (ran.status === 0) return [];
-        const files = failedSpecs(ran.text);
-        if (!files.length || !wholeReport(ran.text, expected)) throw new Error(childMessage(ran, `${kit} exited ${ran.status}`));
-        return files.map(file => ({ ...file, load: Math.max(peak, loadavg()[0]) }));
-      };
-      const blame = file => failed.push(`${file} (this change touches it)`);
-      // A machine without flock runs the specs as before, unlocked, and says so.
-      const noFlock = () => {
-        const line = "specs: problem: flock is not installed, so browser runs are not kept one at a time (install util-linux)";
-        if (!lines.includes(`- ${line.slice("specs: ".length)}`)) { console.log(line); lines.push(`- ${line.slice("specs: ".length)}`); }
-      };
-      const full = await kitMachineLock("browser-run", { onWait: owner => console.log(`specs: waiting for ${owner}'s full browser run`) });
-      if (full.missing) noFlock();
-      let quiet;
-      try {
-        const retry = [];
-        if (main) {
-          const expected = main === base ? listed : main.slice(1);
-          const label = main === base ? base.join(" ") : `specs <${main.length - 1} affected files without the timing ones>`;
-          for (const file of await check(main, label, expected)) {
-            if (touched.has(file.file)) blame(file.file);
-            else retry.push({ ...file, where: "the full run" });
-          }
-        }
-        const holdQuiet = async () => {
-          quiet ??= await kitMachineLock("quiet", { onWait: owner => console.log(`specs: waiting for ${owner}'s lone browser run`) });
-          if (quiet.missing) noFlock();
-          env.KIT_QUIET_HOLDER = String(process.pid);
-        };
-        // Once a touched file failed the run fails anyway: no lone runs to hold other kit jobs back for.
-        const notRun = [];
-        for (const [index, file] of alone.entries()) {
-          if (failed.length) { notRun.push(...alone.slice(index)); break; }
-          await holdQuiet();
-          const [first] = await check(["specs", file], `specs ${file} (timing, alone)`, [file]);
-          if (!first) continue;
-          if (touched.has(file)) blame(file);
-          else retry.push({ ...first, file, where: "its timing run" });
-        }
-        const skipped = failed.length ? retry.splice(0) : [];
-        for (const file of retry) {
-          await holdQuiet();
-          const again = await execute("specs", kit, ["specs", file.file]);
-          if (again.status !== 0 || !wholeReport(again.text, [file.file])) { failed.push(`${file.file} (failed alone too)`); continue; }
-          const load = Number(file.load.toFixed(2));
-          console.log(`specs: flaky under load: ${file.file} (failed in ${file.where} at load ${load}, passed alone)`);
-          lines.push(`- flaky under load: ${file.file} (failed in ${file.where}, passed alone)`);
-          flaky.push(file.file);
-          const state = kitStateDir(env);
-          mkdirSync(state, { recursive: true });
-          appendFileSync(join(state, "flaky.jsonl"), `${JSON.stringify({ time: new Date().toISOString(), project: settings.project,
-            file: file.file, test: file.test, load, owner: kitOwner(), branch })}\n`);
-        }
-        failed.push(...skipped.map(file => `${file.file} (not rerun)`), ...notRun.map(file => `${file} (timing, not run)`));
-      } finally {
-        delete env.KIT_QUIET_HOLDER;
-        await quiet?.release();
-        await full.release();
-      }
-      if (failed.length) throw new Error(`${failed.length} spec file${failed.length === 1 ? "" : "s"} failed: ${failed.join(", ")}`);
-      return lines;
+      const specs = await runSpecs({ changes, settings, base: flags.base, io: {
+        list: argv => run("specs", kit, argv),
+        exec: (argv, extraEnv) => execute("specs", kit, argv, undefined, extraEnv),
+        failure: ran => childMessage(ran, `${kit} exited ${ran.status}`),
+        machineLock: kitMachineLock,
+        flakyLog: join(kitStateDir(env), "flaky.jsonl"),
+        record: { owner: kitOwner(), branch },
+      } });
+      flaky.push(...specs.flaky);
+      return specs.lines;
     }
 
     // Scale the local checks to the PR's own diff (merge base to HEAD, after the rebase).
