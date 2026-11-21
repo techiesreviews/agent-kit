@@ -22,10 +22,14 @@ setting() { kit_setting "$1" 2>/dev/null || :; }
 jq_missing=false
 command -v jq > /dev/null || jq_missing=true
 # Run on its own (by path, with no KIT_ROOT) doctor needs Node to find the project, as kit-lib.mjs holds that rule.
-# Without Node kit_result keeps these words; with a Node whose kit-lib.mjs does not load it says that instead, and
-# its own attempt prints that error, which the silenced kit_root here does not.
+# With a Node whose kit-lib.mjs does not load, kit_result's own attempt prints that error, which the silenced
+# kit_root here does not.
 if ! root=$(kit_root 2>/dev/null); then
-  kit_result fail 'doctor cannot find the project without Node >=24 (system, npx cache or nvm); install Node 24 (nvm) or fix PATH' || :
+  if kit_node_find > /dev/null; then
+    kit_result fail 'doctor cannot find the project: kit-lib.mjs did not load (its error is above); run scripts/agents/kit update to repair the kit' || :
+  else
+    kit_result fail 'doctor cannot find the project without Node >=24 (system, npx cache or nvm); install Node 24 (nvm) or fix PATH' || :
+  fi
   exit 1
 fi
 root=$(cd -- "$root" && pwd -P)

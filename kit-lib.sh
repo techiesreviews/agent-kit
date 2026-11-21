@@ -153,9 +153,10 @@ kit_hide_user_info() {
 
 # The RESULT line, as kitResult in kit-lib.mjs writes it: the status, then the other words joined by spaces, on one
 # line, with URL user-info hidden; returns 2 for a status other than ok or fail. Status and words go to Node on stdin,
-# split by a NUL (which no shell word holds). Without Node (kit update runs without it) the line keeps an ok or fail
-# status and its words, holding back each word with a URL in it, as it cannot hide the URL's user info (a URL holds
-# no whitespace); it returns 1 for any other status.
+# split by a NUL (which no shell word holds). Without Node, or when kit-lib.mjs does not load (its error is above; kit
+# update runs in both cases, to bring a kit that works), the line keeps an ok or fail status and its words, holding
+# back each word with a URL in it, as it cannot hide the URL's user info (a URL holds no whitespace); it returns 1 for
+# any other status.
 kit_result() {
   local status=${1-} text code url shown=''
   local IFS=' '
@@ -164,16 +165,15 @@ kit_result() {
   printf '%s\0%s' "$status" "$text" | kit_lib_node 'const [status, text] = (await import("node:fs")).readFileSync(0, "utf8").split("\0"); lib.kitResult(status, text);' && return
   code=$?
   if (( code == 2 )); then return 2; fi
-  if kit_node_find > /dev/null; then
-    printf '%s\n' 'RESULT: fail kit-lib.mjs did not run (its error is above)'
+  if [[ $status != ok && $status != fail ]]; then
+    if kit_node_find > /dev/null; then printf '%s\n' 'RESULT: fail kit-lib.mjs did not run (its error is above)'; else kit_node_missing; fi
     return 1
   fi
-  if [[ $status != ok && $status != fail ]]; then kit_node_missing; return 1; fi
   text=${text//[$'\n\r']/ }
   # The leftmost match starts its word: a match holds no whitespace and needs ://.
   while [[ $text =~ [^[:space:]]*://[^[:space:]]* ]]; do
     url=${BASH_REMATCH[0]}
-    shown+="${text%%"$url"*}(URL held back: no Node 24)"
+    shown+="${text%%"$url"*}(URL held back)"
     text=${text#*"$url"}
   done
   printf 'RESULT: %s %s\n' "$status" "$shown$text"

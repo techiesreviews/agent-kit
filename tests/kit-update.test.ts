@@ -745,7 +745,8 @@ test("without Node 24 the front door still runs kit update, and ends with one RE
   // A timer installed before its service carried a PATH may not reach Node 24: it still brings the next kit.
   const k = kitRepo(t);
   const sha = k.publish("one");
-  const env = { ...k.env, PATH: pathWithout(k, "node"), KIT_NODE: undefined, CLAUDE_NODE_SEARCH_ROOT: join(k.directory, "empty") };
+  // A relative playwright module from the caller needs a project root, which this run has not looked for.
+  const env = { ...k.env, PATH: pathWithout(k, "node"), KIT_NODE: undefined, CLAUDE_NODE_SEARCH_ROOT: join(k.directory, "empty"), KIT_ROOT: undefined, KIT_PLAYWRIGHT_MODULE: "node_modules/playwright" };
   const frontDoor = (extra: NodeJS.ProcessEnv = {}) => spawnSync(resolve("kit"), ["update"], { cwd: k.directory, encoding: "utf8", timeout: 30_000, env: { ...env, ...extra } });
   const updated = frontDoor();
   assert.equal(updated.status, 0, updated.stdout + updated.stderr);
@@ -757,7 +758,7 @@ test("without Node 24 the front door still runs kit update, and ends with one RE
   assert.notEqual(offline.status, 0);
   const lines = offline.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
-  assert.match(lines.at(-1)!, /^RESULT: fail update .*\(URL held back: no Node 24\)/);
+  assert.match(lines.at(-1)!, /^RESULT: fail update .*\(URL held back\)/);
   assert.equal(offline.stdout.includes("fake-token"), false);
   // An update that stops without a RESULT line (its data folder cannot be made) gets one from the front door.
   writeFileSync(join(k.directory, "a-file"), "");
@@ -765,6 +766,31 @@ test("without Node 24 the front door still runs kit update, and ends with one RE
   assert.notEqual(stopped.status, 0);
   assert.equal(stopped.stdout.trimEnd().split("\n").filter(line => line.startsWith("RESULT: ")).length, 1);
   assert.match(stopped.stdout, new RegExp(`RESULT: fail update exited ${stopped.status} without a RESULT line\\n$`));
+});
+
+test("a kit whose kit-lib.mjs does not load still runs kit update and --previous, the way to repair it", (t) => {
+  const k = kitRepo(t);
+  const broken = join(k.directory, "broken-kit");
+  cpSync(resolve("."), broken, { recursive: true, filter: kitFiles });
+  writeFileSync(join(broken, "kit-lib.mjs"), 'throw new Error("boom");\n');
+  const frontDoor = (...args: string[]) => spawnSync(join(broken, "kit"), args, { cwd: k.directory, encoding: "utf8", timeout: 30_000, env: k.env });
+  const last = (stdout: string) => stdout.trimEnd().split("\n").at(-1);
+  const one = k.publish("one");
+  const first = frontDoor("update");
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.equal(last(first.stdout), `RESULT: ok update ${short(one)} (was none)`);
+  assert.equal(k.link("current"), one);
+  assert.match(first.stderr, /boom/);
+  const two = k.publish("two");
+  assert.equal(frontDoor("update").status, 0);
+  const back = frontDoor("update", "--previous");
+  assert.equal(back.status, 0, back.stdout + back.stderr);
+  assert.equal(last(back.stdout), `RESULT: ok update --previous ${short(one)} (was ${short(two)})`);
+  assert.equal(k.link("current"), one);
+  // Every other command still says the library did not run, and runs nothing.
+  const doctor = frontDoor("doctor");
+  assert.equal(doctor.status, 2);
+  assert.equal(doctor.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
 });
 
 test("without Node 24 a kit update stopped by SIGTERM ends with the front door's interrupted line", async (t) => {

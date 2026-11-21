@@ -696,7 +696,7 @@ test("without Node the shell helpers print no unhidden text: a RESULT line holdi
   }
   const result = bash("kit_result fail 'update cannot fetch main from https://u:fake-token@h/x and (x_ssh://t@h/y), nor git@h:a/b'", env);
   assert.equal(result.status, 0);
-  assert.equal(result.stdout, "RESULT: fail update cannot fetch main from (URL held back: no Node 24) and (URL held back: no Node 24) nor git@h:a/b\n");
+  assert.equal(result.stdout, "RESULT: fail update cannot fetch main from (URL held back) and (URL held back) nor git@h:a/b\n");
   const bad = bash("kit_result $'bad\\nstatus' 'https://u:fake-token@h/x'", env);
   assert.equal(bad.status, 1);
   assert.equal(bad.stdout, `RESULT: fail ${nodeError.replace(/^kit: /, "")}\n`);
@@ -714,10 +714,14 @@ test("a kit-lib.mjs that does not load still ends the helper and the front door 
   const kit = realpathSync(temp(t));
   for (const file of ["kit", "kit-lib.sh"]) copyFileSync(file, join(kit, file));
   writeFileSync(join(kit, "kit-lib.mjs"), 'throw new Error("boom");\n');
-  const result = spawnSync("/bin/bash", ["-c", `source "${kit}/kit-lib.sh"; kit_result ok x`], { encoding: "utf8", env: kitEnv(), timeout: 5000 });
-  assert.equal(result.status, 1);
-  assert.equal(result.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
+  // kit update, which repairs such a kit, still ends with its own status: its words kept, each URL held back.
+  const result = spawnSync("/bin/bash", ["-c", `source "${kit}/kit-lib.sh"; kit_result ok x https://u:fake-token@h/y`], { encoding: "utf8", env: kitEnv(), timeout: 5000 });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, "RESULT: ok x (URL held back)\n");
   assert.match(result.stderr, /boom/);
+  const bad = spawnSync("/bin/bash", ["-c", `source "${kit}/kit-lib.sh"; kit_result maybe x`], { encoding: "utf8", env: kitEnv(), timeout: 5000 });
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
   const frontDoor = spawnSync("/bin/bash", [join(kit, "kit"), "where"], { encoding: "utf8", env: { ...kitEnv(), KIT_ROOT: undefined, KIT_HOME: kit }, timeout: 5000 });
   assert.equal(frontDoor.status, 2);
   assert.equal(frontDoor.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
