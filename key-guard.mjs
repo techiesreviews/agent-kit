@@ -513,7 +513,7 @@ const namesEnv = word => basename(word) === "env" || (word.includes("/") && base
 // es, too short to tell from other words, count only where PATH or a path leads to such a program, and take no version.
 // A copy of a shell under a name of its own is not recognised. startedShell gives what starts the shell, in words, or
 // null; shellAdvice what to do about it.
-const shells = "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|zsh|yash|posh|hush|sash|csh|tcsh|fish|osh|pwsh|xonsh|elvish";
+const shells = "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|zsh|yash|posh|hush|sash|csh|tcsh|fish|osh|ysh|nu|pwsh|xonsh|elvish";
 const shellNamed = (word, names = shells) => new RegExp(`^(?:${names})(?:-static)?(?:[-.]?\\d[\\d.]*)?$`).test(basename(word));
 const namesShell = (word, env, shut) => {
   const file = word.includes("/") ? (executable(word) ? word : null) : programFor(word, env, shut);
@@ -575,8 +575,9 @@ const runsString = (option, kind) => {
 // names a full path inside the worktree or the Git folder, an env option other than -S, -S words env would expand or
 // that cannot be split, a PATH among those words or env as the program (TOOLS-326), one of ownSetting's shell variables
 // among them, env among the program's words or a shell it starts (startedShell, TOOLS-329), or a name PATH holds only as such a
-// link is refused through `refuse`; a name no PATH folder holds is left to start as it is (and fail).
-function interpreted(file, args, env, shut, refuse, depth = 0) {
+// link is refused through `refuse`; a name no PATH folder holds is left to start as it is (and fail). `names` is the
+// env whose PATH the shell check looks names up in: for git's ssh command, the PATH that command runs with.
+function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   let head = "";
   try {
     const fd = openSync(file, "r");
@@ -591,7 +592,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
     if (shut.some(root => inside(real(interpreter), root))) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
     // A binary interpreter the kernel starts itself; one that is a script again is followed (the kernel passes what
     // follows the interpreter as one argument, before the script).
-    const next = interpreted(interpreter, [...(rest ? [rest] : []), file, ...args], env, shut, refuse, depth + 1);
+    const next = interpreted(interpreter, [...(rest ? [rest] : []), file, ...args], env, shut, refuse, depth + 1, names);
     return next[0] === interpreter ? [file, args] : next;
   }
   // The kernel passes everything after env as one argument: -S's string (joined to it or not) is split as env splits
@@ -631,9 +632,9 @@ function interpreted(file, args, env, shut, refuse, depth = 0) {
   if (namesEnv(found) || options.some(namesEnv)) refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
   // A shell the program starts, or the program as a shell told to run a string, could build PATH= from pieces.
   const kind = ["fish", "pwsh"].find(names => [name, real(found)].some(word => shellNamed(word, names)));
-  const shell = startedShell(options, env, shut) ?? (namesShell(found, env, shut) && options.some(option => runsString(option, kind)) ? basename(name) : null);
+  const shell = startedShell(options, names, shut) ?? (namesShell(found, names, shut) && options.some(option => runsString(option, kind)) ? basename(name) : null);
   if (shell) refuse(`${file} starts with env ${rest}, which starts a shell (${shell}), and a shell can build PATH= or BASH_ENV= out of pieces; ${shellAdvice(shell, " from that line") ?? "start the program from that line directly"}, or set ASE_KEY_GUARD=off to run without the lock`);
-  const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1);
+  const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1, names);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).
   if (shut.some(root => inside(real(interpreter), root))) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
@@ -860,7 +861,7 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     if (namesEnv(file)) return unknown("env looks its program up on PATH");
     // GIT_SSH (or a link of another name) can name a shell too.
     if (namesShell(file, ran, shut)) return unknown(`it starts a shell (${basename(program)}), and a shell can build PATH= or BASH_ENV= out of pieces`);
-    const start = interpreted(file, [], ran, shut, problem => { throw new Error(problem); }).flat();
+    const start = interpreted(file, [], env, shut, problem => { throw new Error(problem); }, 0, ran).flat();
     const path = folders === String(env.PATH ?? systemPath) ? "" : `PATH=${shellQuote(folders)} `;
     const command = `${before}${path}${start.map(shellQuote).join(" ")}${after}`;
     const kind = ["ssh", "plink", "putty", "tortoiseplink"].find(name => basename(file).toLowerCase() === name);

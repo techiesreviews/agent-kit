@@ -1571,7 +1571,8 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   }
   for (const command of ["ssh -J 'git@jump.example.invalid:2222,[::1]:22' host", "ssh -F ~/.ssh/config.d/work -J jump.example.invalid host", "ssh -4F/etc/ssh/alt -J jump.example.invalid host", "ssh -F '/dev/null;x' -o ProxyJump=none host", "ssh -4J jump.example.invalid host", "ssh -o ProxyJump=none host", "ssh -o PermitLocalCommand=no host",
     "ssh -o SetEnv=LANG=es -l rc host", "ssh -o 'SetEnv=TARGET=es2020' -l rc1 host"]) {
-    assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
+    // Only the test's own folder on PATH, so a system rc or es (Debian ships both) does not count here.
+    assert.equal(sshCommand({ ...base, PATH: bin, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
   }
   // sh splits and expands what an unquoted $NAME holds as a pattern after it fills it in, so a value with a pattern or
   // a blank (or one of IFS's characters) in it could name a shell too; quoted, it is taken as it is (GPT second look).
@@ -1588,7 +1589,7 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   const account = userInfo();
   symlinkSync(bash, join(dir, "tilde-shell"));
   const viaAccount = `timeout 30 ~${account.username}/${relative(account.homedir, join(dir, "tilde-shell"))} -c 'echo ran > ${marker}'`;
-  for (const command of [viaAccount, `timeout 30 ~+/x -c 'echo ran > ${marker}'`, `timeout 30 ~"/x" -c 'echo ran > ${marker}'`]) {
+  for (const command of [viaAccount, `timeout 30 ~+/x -c 'echo ran > ${marker}'`, `timeout 30 ~-/x -c 'echo ran > ${marker}'`, `timeout 30 ~"/x" -c 'echo ran > ${marker}'`]) {
     const result = sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root });
     assert.match(result.problem ?? "", /cannot be told: sh fills in a ~ in it from somewhere other than HOME, which could name a shell/, command);
     spawnSync("/bin/sh", ["-c", result.command!], { env: base, encoding: "utf8" });
@@ -1629,6 +1630,29 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.ok(!existsSync(marker), command);
   }
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -i ${HOME}/.ssh/id_ed25519 host" }, { worktree: root }).problem, null);
+  // GIT_SSH set to a link to a shell under another name is a shell too.
+  assert.match(sshCommand({ ...base, GIT_SSH: join(dir, "shell tools", "run") }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(run\)/);
+  // rc counts as a shell, and so do fish's ways of running a string (-C, --command, --init-command); stand-ins in a
+  // folder of their own, so the plain rc words above stay plain.
+  const otherShells = join(dir, "other shells");
+  mkdirSync(otherShells);
+  for (const name of ["rc", "fish"]) { writeFileSync(join(otherShells, name), "#!/bin/sh\nexit 0\n"); chmodSync(join(otherShells, name), 0o755); }
+  const withOthers = { ...base, PATH: `${otherShells}:${bin}:/usr/bin:/bin` };
+  assert.match(sshCommand({ ...withOthers, GIT_SSH_COMMAND: "timeout 30 rc -c true" }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(rc\)/);
+  for (const [name, words] of [["fish-C", "fish -C 'ssh'"], ["fish-command", "fish --command=ssh"], ["fish-init", "fish --init-command=ssh"]]) {
+    assert.throws(() => startCommand(wrapper(name, words, ""), [], withOthers, { worktree: root, kind: "test" }), /, which starts a shell \(fish\)/, words);
+  }
+  // A wrapper whose interpreter PATH holds only as a link into the worktree gets the plain refusal for it (Claude
+  // review, round 12): the interpreter is looked up on the run's own PATH, not the cleaned one.
+  mkdirSync(join(root, "node-tools"));
+  writeFileSync(join(root, "node-tools", "node"), "#!/bin/sh\nexit 0\n"); chmodSync(join(root, "node-tools", "node"), 0o755);
+  symlinkSync(join(root, "node-tools", "node"), join(links, "node"));
+  const nodeWrapper = join(wrappers, "node-wrapper");
+  writeFileSync(nodeWrapper, "#!/usr/bin/env node\nconsole.log('ran');\n"); chmodSync(nodeWrapper, 0o755);
+  assert.match(refusedWith({ ...base, PATH: `${links}:${bin}`, GIT_SSH_COMMAND: nodeWrapper }), /node on PATH is \S+\/links\/node, a link into the worktree/);
+  // A real node in a later folder is still found past the link, and started by its full path.
+  const nodeFolder = dirname(process.execPath);
+  assert.ok(sshCommand({ ...base, PATH: `${links}:${nodeFolder}:${bin}:/usr/bin:/bin`, GIT_SSH_COMMAND: nodeWrapper }, { worktree: root }).command?.includes(`${nodeFolder}/node`));
   // sh may set IFS back to blanks at its start (dash does), so an empty IFS from the run still splits $X at blanks
   // (GPT second look, round 8).
   const emptyIfs = { ...base, IFS: "", X: "-v -J jump.example.invalid", GIT_SSH_COMMAND: `ssh $X -o "HostName=a'b" host` };
@@ -1721,7 +1745,7 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   const pwshPolicy = wrapper("pwsh-policy", "X=1", "pwsh -ExecutionPolicy Bypass -NonInteractive");
   assert.deepEqual(start(pwshPolicy), ["/usr/bin/env", ["X=1", join(bin, "pwsh"), "-ExecutionPolicy", "Bypass", "-NonInteractive", pwshPolicy]]);
   // es or rc as a word, or with a version, is no shell's name in an env -S line either.
-  assert.doesNotThrow(() => start(wrapper("es-words", `ssh -o SetEnv=TARGET=es2020 -o SetEnv=LANG=es -l rc`, "")));
+  assert.doesNotThrow(() => startCommand(wrapper("es-words", `ssh -o SetEnv=TARGET=es2020 -o SetEnv=LANG=es -l rc`, ""), [], { ...base, PATH: bin }, { worktree: root, kind: "test" }));
   // The script's own interpreter is no extra shell: it runs the script, as #!/bin/sh would, with options that run no
   // string (bash's -C is noclobber; only fish's -C runs one).
   const ownShell = wrapper("own-shell", "X=1", "bash -e");
