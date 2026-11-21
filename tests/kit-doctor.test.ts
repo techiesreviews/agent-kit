@@ -1435,6 +1435,14 @@ test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT w
   assert.match(noRoom.stdout, /^key lock: on /m);
   assert.match(noRoom.stdout, /^✗ keyed steps: clean room cannot start: bubblewrap cannot start it here \(bwrap: Can't mount proc on \/newroot\/proc: Operation not permitted\); run bwrap .* -- true to see why \(a fetch or push from an ssh remote stops until it works\)/m);
   assert.match(noRoom.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: keyed steps cannot start their clean room \(see the ✗ keyed steps line\)$/);
+  // A bwrap that runs, with ssh's agent socket inside the worktree: a fetch or push would stop, so doctor says so once.
+  executable(join(bin, "bwrap"), 'case "$*" in *" -e "*) echo inside; echo done ;; esac; exit 0');
+  writeFileSync(join(f.build, "agent.sock"), "");
+  const agentInside = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}`, SSH_AUTH_SOCK: join(f.build, "agent.sock") });
+  assert.equal(agentInside.status, 0, agentInside.stdout + agentInside.stderr);
+  assert.match(agentInside.stdout, /^key lock: on /m);
+  assert.match(agentInside.stdout, /^✗ keyed steps: clean room would hide ssh's agent \(\S+agent\.sock\), which is inside the worktree or the Git folder \(\S+\); keep the repository out of it \(a fetch or push from an ssh remote stops until it works\); fix: the step named above, or set ASE_KEY_GUARD=off to run without the lock$/m);
+  assert.match(agentInside.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: keyed steps cannot start their clean room \(see the ✗ keyed steps line\)$/);
   // A bwrap that starts but whose probe never reports back: the lock cannot be checked, so it is not on.
   executable(join(bin, "bwrap"), "exit 0");
   const unchecked = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });

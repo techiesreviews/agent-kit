@@ -22,7 +22,8 @@ const noBwrap = bwrapUsable ? false : `bubblewrap cannot run here: ${bwrapWorks(
 const noRoom = noBwrap || (() => {
   const probe = mkdtempSync(join(tmpdir(), "kit-room-probe-"));
   try {
-    const report = cleanRoomReport({ PATH: process.env.PATH, HOME: process.env.HOME }, { worktree: probe });
+    for (const folder of ["work", "home"]) mkdirSync(join(probe, folder));
+    const report = cleanRoomReport({ PATH: process.env.PATH, HOME: join(probe, "home") }, { worktree: join(probe, "work") });
     return report.state === "on" ? false : `the clean room cannot start here: ${report.text}`;
   } finally { rmSync(probe, { recursive: true, force: true }); resetBwrapProbe(); }
 })();
@@ -1578,7 +1579,7 @@ test("TOOLS-390 room R1-8: a loop of links as git's ssh fails in the room, and n
     assert.notEqual(result.run.status, 0, command);
     assert.equal(result.ran, "", `${command}: nothing ran`);
     assert.doesNotMatch(result.run.stderr, /^kit: the clean room for git's ssh /m, `${command}: not refused by the kit, the room runs it as written`);
-    assert.match(result.run.stderr, /^kit: git's ssh, or a program it starts, could not be started in the clean room, where these folders are empty: /m, command);
+    assert.match(result.run.stderr, /^kit: a program was not found \(exit 127\)\. If it was git's ssh or a program it starts, the clean room keeps these folders empty: /m, command);
   }
 });
 
@@ -1671,9 +1672,33 @@ test("TOOLS-390 room: a folder the Git folder names is hidden only as git would 
   // core.worktree in the Git folder's config names the main worktree; / or a system folder there is skipped too.
   const main = join(dir, "main");
   mkdirSync(main);
-  for (const [value, expected] of [[main, [root, linked, main]], ["/", [root, linked]], ["/etc", [root, linked]]] as const) {
+  for (const [value, expected] of [[main, [root, linked, main]], ["../../main", [root, linked, main]], ["/", [root, linked]], ["/etc", [root, linked]], ["/usr/share", [root, linked]], ["/dev", [root, linked]]] as const) {
     assert.equal(spawnSync("git", ["-C", root, "config", "core.worktree", value]).status, 0);
     assert.deepEqual(hidden(), [...expected].sort(), value);
+  }
+  // Read as git reads it: a comment after the value, and a key of the same name in a later section with a subsection
+  // name, which is not core's.
+  assert.equal(spawnSync("git", ["-C", root, "config", "--unset", "core.worktree"]).status, 0);
+  writeFileSync(join(root, ".git/config"), `${readFileSync(join(root, ".git/config"), "utf8")}[core]\n\tworktree = ${main} # the main checkout\n[remote "origin"]\n\tworktree = /dev\n`);
+  assert.deepEqual(hidden(), [root, linked, main].sort(), "a comment and a subsection");
+  // With extensions.worktreeConfig, config.worktree holds it.
+  writeFileSync(join(root, ".git/config.worktree"), `[core]\n\tworktree = "${elsewhere}" ; quoted\n`);
+  assert.deepEqual(hidden(), [root, linked, elsewhere].sort(), "config.worktree");
+});
+
+test("TOOLS-390 room: a plink command with a redirection keeps plink's kind, so git passes a custom port as plink takes it", { skip: noRoom }, t => {
+  const { root, lead, noted, base } = roomRepo(t, "plink");
+  // A plink stand-in that refuses ssh's -G, as plink does: git would then take the command for a simple ssh, which
+  // cannot set a port.
+  const plink = join(lead, "plink");
+  writeFileSync(plink, `#!/bin/sh\n[ "$1" = -G ] && exit 1\necho "plink $*" >> ${JSON.stringify(noted)}\nexit 1\n`); chmodSync(plink, 0o755);
+  for (const command of [`${plink} -batch 2>/dev/null`, `${plink} -batch "$@" | cat; :`, `X=1 ${plink} -batch 2>&1`]) {
+    rmSync(noted, { force: true });
+    const env = { ...base, GIT_SSH_COMMAND: command };
+    const safe = gitSafety({ worktree: root, env, network: true, git: gitProgram() });
+    assert.equal(safe.env.GIT_SSH_VARIANT, "plink", command);
+    spawnSync(gitProgram(), ["-C", root, "ls-remote", "ssh://host.invalid:2222/x"], { env: { ...env, ...safe.env }, encoding: "utf8", timeout: 30_000 });
+    assert.match(existsSync(noted) ? readFileSync(noted, "utf8") : "", /^plink .*-P 2222 .*host\.invalid/m, command);
   }
 });
 

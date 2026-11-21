@@ -13,7 +13,7 @@ import { kitEnv } from "./support/kit-env.ts";
 import { tempOutsideGit } from "./support/temp-outside-git.ts";
 import { onMacos, pathWithout, pathWithoutBwrap } from "./support/no-bwrap.ts";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapWorks } from "../key-guard.mjs";
+import { bwrapWorks, cleanRoomReport, resetBwrapProbe } from "../key-guard.mjs";
 import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync, type Run } from "./support/orbit-project.ts";
 import type { ScoreRecord } from "./kit-score.test.ts";
 
@@ -5444,6 +5444,14 @@ test("a release re-cut from an unchanged dev is the same cut: its saved review i
 // TOOLS-303: a locked build may write the repository's Git settings and hooks, a program in a PATH folder inside the
 // worktree, a BASH_ENV file and the project's own checks; kit pr runs in the lead's process, with the keys.
 const noBwrap = bwrapWorks() === null ? false : `bubblewrap cannot run here: ${bwrapWorks()}`;
+// Whether git's ssh runs in the clean room here (TOOLS-390): it needs more than bubblewrap, which a container can block.
+const roomUsable = !noBwrap && (() => {
+  const probe = mkdtempSync(join(tmpdir(), "kit-room-probe-"));
+  try {
+    for (const folder of ["work", "home"]) mkdirSync(join(probe, folder));
+    return cleanRoomReport({ PATH: process.env.PATH, HOME: join(probe, "home") }, { worktree: join(probe, "work") }).state === "on";
+  } finally { rmSync(probe, { recursive: true, force: true }); resetBwrapProbe(); }
+})();
 test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool or BASH_ENV file a build left with the keys, and runs the checks inside the key lock", { skip: noBwrap }, t => {
   const dummy = "dummy-key-0123456789-not-real";
   // The lint check is a git command whose alias runs the build's script: a check whatever program it names.
@@ -5596,7 +5604,7 @@ test("kit pr's push to an ssh remote never starts an ssh PATH holds only as a li
   };
   const roomed = pushLog(f.run([], { PATH: `${f.bin}:${links}:${pathWithout(f.dir, ["ssh"], "no-ssh-bin")}` }));
   // In the room the worktree is empty, so the link finds no ssh, and the kit says where it looked in plain words.
-  if (!noBwrap) assert.match(roomed, /ssh: not found\nkit: git's ssh, or a program it starts, could not be started in the clean room, where these folders are empty: /);
+  if (roomUsable) assert.match(roomed, /ssh: not found\nkit: a program was not found \(exit 127\)\. If it was git's ssh or a program it starts, the clean room keeps these folders empty: /);
   // Without bubblewrap (macOS) the path filter refuses that ssh and says why.
   const filtered = pushLog(f.run([], { PATH: `${f.bin}:${links}:${join(f.dir, "no-ssh-bin")}`, ...onMacos }));
   assert.match(filtered, /kit: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/);
