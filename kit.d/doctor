@@ -48,11 +48,15 @@ fail() {
 # settings_unread: why the settings file could not be read (missing or unreadable), so the commands check
 # says it did not look for the project folder rather than report "commands" as unset.
 land='' settings_unread=''
-if problems=$(kit_settings_problems); then
+if problems=$(kit_settings_problems 2>/dev/null); then
   land=$(setting .branches.land)
   pass settings "scripts/agents/kit.json ($(setting .project), lands on $land)"
 elif [[ $jq_missing == true ]]; then
   fail settings 'jq is not installed, so scripts/agents/kit.json cannot be read' 'install jq'
+elif ! kit_node_find > /dev/null; then
+  # Node checks the file (kit-lib.mjs); the node check below fails and says what to install, and jq still reads it.
+  land=$(setting .branches.land)
+  pass settings 'skipped (Node >=24 not found)'
 else
   if [[ -f $(kit_settings_file) ]]; then
     fix='edit scripts/agents/kit.json as the problem says'

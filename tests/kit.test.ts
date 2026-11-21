@@ -6,7 +6,9 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { findNode, kitGhEnv, kitGhRepo, kitHideUserInfo, kitHidingLog, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
+import * as kitLib from "../kit-lib.mjs";
+// @ts-expect-error The script is plain JavaScript without declarations.
+import { kitGhEnv, kitGhRepo, kitHideUserInfo, kitHidingLog, kitMainRoot, kitOwner, kitQuietLock, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
 import { ghConfig, kitEnv } from "./support/kit-env.ts";
 import { kitFiles } from "./support/kit-files.ts";
 
@@ -68,6 +70,11 @@ function fakeNode(file: string, version: string) {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' '${version}'\n`);
   chmodSync(file, 0o755);
+}
+
+// The Node that nodeEnv puts first for env (its search folder is env's CLAUDE_NODE_SEARCH_ROOT), or null when there is none.
+function nodeFound(env: NodeJS.ProcessEnv) {
+  try { return nodeEnv(env).KIT_NODE; } catch { return null; }
 }
 
 function fixtureEnv(directory: string) {
@@ -402,11 +409,13 @@ test("bash and mjs select the same highest numeric Node and prefer a supported s
   const nonExecutable = join(directory, ".nvm/versions/node/no-execute/bin/node");
   fakeNode(nonExecutable, "v99.0.0");
   chmodSync(nonExecutable, 0o644);
+  // One copy of the lookup: nodeEnv asks kit-lib.sh's kit_node_find, which the front door runs before there is a Node.
+  assert.equal(kitLib.findNode, undefined);
   const assertLookup = (expected: string) => {
     const result = bash("kit_node_find", env);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, `${expected}\n`);
-    assert.equal(findNode({ path: env.PATH, searchRoot: directory }), expected);
+    assert.equal(nodeFound(env), expected);
     const selected = bash('kit_node; kit_node; printf "%s\\n%s\\n" "$KIT_NODE" "$PATH"', env);
     const expectedEnv = nodeEnv(env);
     assert.equal(selected.status, 0, selected.stderr);
@@ -429,10 +438,10 @@ test("Node lookup handles npm alone, absent system node, and unsupported install
   const npm = join(directory, ".npm/_npx/install/node_modules/node/bin/node");
   fakeNode(npm, "v24.0.1");
   assert.equal(bash("kit_node_find", env).stdout, `${npm}\n`);
-  assert.equal(findNode({ path: env.PATH, searchRoot: directory }), npm);
+  assert.equal(nodeFound(env), npm);
   const noSystem = { ...env, PATH: "/missing" };
   assert.equal(bash("kit_node_find", noSystem).stdout, `${npm}\n`);
-  assert.equal(findNode({ path: noSystem.PATH, searchRoot: directory }), npm);
+  assert.equal(nodeFound(noSystem), npm);
   fakeNode(npm, "v23.9.9");
   const found = bash("kit_node_find", env);
   assert.equal(found.status, 1);
@@ -441,7 +450,6 @@ test("Node lookup handles npm alone, absent system node, and unsupported install
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, `${nodeError}\n`);
-  assert.equal(findNode({ path: env.PATH, searchRoot: directory }), null);
   assert.throws(() => nodeEnv(env), { message: nodeError });
   command(directory, "still-runs", "exit 0");
   const child = run(["still-runs"], { ...env, KIT_COMMANDS_DIR: directory });
@@ -461,11 +469,11 @@ test("Node lookup reads a version printed with a Windows CRLF line ending", (t) 
   const npm = join(directory, ".npm/_npx/install/node_modules/node/bin/node");
   crlfNode(npm, "v26.1.0");
   assert.equal(bash("kit_node_find", env).stdout, `${npm}\n`);
-  assert.equal(findNode({ path: env.PATH, searchRoot: directory }), npm);
+  assert.equal(nodeFound(env), npm);
   const system = join(directory, "current/node");
   crlfNode(system, "v26.0.0");
   assert.equal(bash("kit_node_find", env).stdout, `${system}\n`);
-  assert.equal(findNode({ path: env.PATH, searchRoot: directory }), system);
+  assert.equal(nodeFound(env), system);
   const selected = bash('kit_node && printf "%s\\n" "$KIT_NODE"', env);
   assert.equal(selected.status, 0, selected.stderr);
   assert.equal(selected.stdout, `${system}\n`);
@@ -822,6 +830,25 @@ test("while kit pr runs spec files alone it holds the machine's quiet lock and n
   assert.match(waited.stdout, /RESULT: ok job ran/);
   // The line the ended holder left in the file stops nothing.
   quick(["job"]);
+});
+
+test("kitQuietLock names whose lone run holds the quiet lock, unless nobody holds it, it is the caller's own run or there is no flock", (t) => {
+  const state = temp(t), lock = join(state, "agent-kit/quiet.lock");
+  const env = { PATH: process.env.PATH, XDG_STATE_HOME: state };
+  assert.equal(kitQuietLock(env), null, "no lock file");
+  mkdirSync(dirname(lock), { recursive: true });
+  writeFileSync(lock, "");
+  assert.equal(kitQuietLock(env), null, "a lock file nobody holds");
+  const holder = spawn("flock", ["-o", "-x", lock, "sleep", "10"]);
+  t.after(() => { holder.kill(); });
+  const held = () => spawnSync("flock", ["-n", lock, "true"]).status !== 0;
+  for (let i = 0; i < 200 && !held(); i++) spawnSync("sleep", ["0.02"]);
+  writeFileSync(lock, `${holder.pid} ke 60 \n`);
+  assert.deepEqual(kitQuietLock(env), { path: lock, owner: "ke 60" });
+  assert.equal(kitQuietLock({ ...env, KIT_QUIET_HOLDER: String(holder.pid) }), null, "the lone run's own kit calls");
+  assert.equal(kitQuietLock({ ...env, KIT_FLOCK: join(state, "no-flock") }), null, "no flock, nothing waits");
+  writeFileSync(lock, "\n");
+  assert.deepEqual(kitQuietLock({ ...env, KIT_QUIET_HOLDER: "" }), { path: lock, owner: "unknown" });
 });
 
 test("a kit job waiting for a lone browser run stops at once on SIGTERM", async (t) => {

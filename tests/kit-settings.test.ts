@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { kitDevRoot, kitMainRoot, kitMaps, kitSettings, kitSettingsProblems, scoreMap } from "../kit-lib.mjs";
+import { kitDevRoot, kitMainRoot, kitMaps, kitSettings, kitSettingsFileProblems, kitSettingsProblems, scoreMap } from "../kit-lib.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { optionsFor } from "../deps-check.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
@@ -133,6 +133,7 @@ test("only project and branches.land are required, and both readers say what to 
     const root = temp(t);
     if (settings !== null) settingsFile(root, settings);
     assert.throws(() => kitSettings(root), { message: problems.join("; ") }, JSON.stringify(settings));
+    assert.deepEqual(kitSettingsFileProblems(root), problems, JSON.stringify(settings));
     const shell = bash("kit_settings_problems", { KIT_ROOT: root });
     assert.equal(shell.status, 1, JSON.stringify(settings));
     assert.equal(shell.stdout, `${problems.join("\n")}\n`, JSON.stringify(settings));
@@ -152,6 +153,9 @@ test("only project and branches.land are required, and both readers say what to 
   const shell = bash("kit_settings_problems", { KIT_ROOT: broken });
   assert.equal(shell.status, 1);
   assert.match(shell.stdout, /^scripts\/agents\/kit\.json is unreadable: /);
+  // One reader: the shell prints Node's very line, not one of its own (jq would word the parse error differently).
+  assert.equal(shell.stdout, `${kitSettingsFileProblems(broken).join("\n")}\n`);
+  assert.throws(() => kitSettings(broken), { message: kitSettingsFileProblems(broken).join("; ") });
   const good = temp(t);
   settingsFile(good, { project: "x", branches: { land: "main" } });
   assert.deepEqual(kitSettings(good), { project: "x", branches: { land: "main" } });
@@ -212,6 +216,16 @@ test("environment overrides still win over the settings file", t => {
   assert.equal(kitMainRoot(), "/env/main");
   assert.equal(kitDevRoot(kitSettings(root)), "/env/dev");
   assert.equal(bash("kit_main_root; kit_dev_root", { KIT_ROOT: root, KIT_MAIN_ROOT: "/env/main", KIT_DEV_ROOT: "/env/dev" }).stdout, "/env/main\n/env/dev\n");
+});
+
+test("kit_main_root is kitMainRoot's answer, read through Node, so the settings' mainRoot counts with or without jq", t => {
+  const root = temp(t);
+  settingsFile(root, { project: "x", branches: { land: "main" }, mainRoot: "/settings/main" });
+  for (const PATH of [clean.PATH, withoutJq(t)]) {
+    const main = bash("kit_main_root", { KIT_ROOT: root, KIT_MAIN_ROOT: "", PATH });
+    assert.equal(main.stdout, "/settings/main\n", main.stderr);
+    assert.equal(main.stderr, "");
+  }
 });
 
 test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, unless the variable is set", t => {

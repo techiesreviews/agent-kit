@@ -92,12 +92,8 @@ async function reviewOnce(flags, look, io) {
     if (previous && !previous.clean) {
       const { risky } = branchRisk({ root, base: scope.base, ticket: flags.ticket, settings: kitSettings(root) });
       sinceHead = previous.head !== scope.head ? previous.head : null;
-      // Declined findings reach the brief once: ASE_REVIEW_DECLINED hands them over with the ticket (the cut kit fix set it) (the "Declined by the author" part), else the saved ones are listed.
-      // Decided from the list that builds that part (what ASE_REVIEW_DECLINED handed over, used only with a ticket), never from the text, which a ticket may quote.
-      let handed = [];
-      try { const given = JSON.parse(process.env.ASE_REVIEW_DECLINED || "[]"); handed = Array.isArray(given) ? given : []; } catch { /* The brief builder already refused a bad list. */ }
-      const declinedInBrief = Boolean(flags.ticket) && handed.length > 0;
-      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.head, currentHead: scope.head, open: previous.findings, declined: declinedInBrief ? [] : previous.declined, declinedInBrief })}\n`;
+      // The builder's saved declined findings are listed in the loop section itself.
+      brief += `\n${loopBriefSection({ round, limit: roundLimit(risky), previousHead: previous.head, currentHead: scope.head, open: previous.findings, declined: previous.declined })}\n`;
       say(`review loop: round ${round}, answering ${previous.name} (${previous.findings.length} open findings)`);
     }
     if (sinceHead && previous && !previous.clean) agentArgs.push("--since", sinceHead);

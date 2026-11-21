@@ -19,7 +19,7 @@ import { insideKitPrLock, kitEnv } from "./support/kit-env.ts";
 const kit = resolve("kit");
 const review = resolve("kit.d/review");
 const agent = resolve("agent.sh");
-const briefScript = resolve("review-brief.sh");
+const briefScript = resolve("review-brief.mjs");
 const session = "c9aee50d-ad79-499c-82ae-29138c2be80e";
 const complete = "REVIEW_STATUS: complete\nDefects: none\n";
 
@@ -312,13 +312,14 @@ test("review briefs carry declined findings and reasons into kit review", t => {
     assert.match(brief, /Report a declined finding again only if the reason is wrong, and say why\./);
   }
   assert.doesNotMatch(reviewBrief(ticket, "", "HEAD^", f.root), /Declined by the author/);
+  // Nothing hands a list over through the environment any more (the cut kit fix set ASE_REVIEW_DECLINED): kit review ignores it.
   const result = f.run(["--ticket", ticket], { ASE_REVIEW_DECLINED: JSON.stringify(declined) });
   assert.equal(result.status, 0, result.stderr);
-  assert.ok(f.calls()[0].input.includes(declined[0]));
+  assert.ok(!f.calls()[0].input.includes(declined[0]));
   assert.throws(() => reviewBrief(ticket, "", "HEAD^", f.root, "bad list"), /declined findings/);
 });
 
-test("a same-head rerun's brief carries the builder's declined findings once: the part kit fix hands over, or the saved ones", t => {
+test("a same-head rerun's brief carries the builder's saved declined findings once, with or without a ticket", t => {
   const f = fixture(t);
   const ticket = "ticket.md"; writeFileSync(join(f.root, ticket), "Review this ticket.\n");
   const first = f.run(["--ticket", ticket], { FAKE_REPORT: "REVIEW_STATUS: complete\nDefects:\n- file.txt:1 — P1 fault: the save drops the second write.\nValidation gaps: none.\n", ASE_REVIEW_MODEL: "claude-opus-5-5" });
@@ -335,13 +336,13 @@ test("a same-head rerun's brief carries the builder's declined findings once: th
   assert.match(listed, /Declined by the builder \(with reasons\):\n- file\.txt:1 — P2 style: rename it — reason: the spec keeps the name/);
   assert.match(listed, /its declined findings and their reasons are listed below/);
   assert.ok(!listed.includes("Declined by the author (with reasons):"));
-  // kit fix hands the declined findings over with the ticket: they are in the brief once, as the author's part, and the section points there.
+  // With the ticket, a list in the old ASE_REVIEW_DECLINED (the cut kit fix set it) is ignored: only saved ones count,
+  // and the last review saved none.
   const withTicket = f.run(["--ticket", ticket], { FAKE_REPORT: mark("R2-1"), ASE_REVIEW_MODEL: "claude-opus-5-5", ASE_REVIEW_DECLINED: JSON.stringify(handed) });
   assert.equal(withTicket.status, 0, withTicket.stderr);
   const input = f.calls().at(-1)!.input;
-  assert.equal(input.split("Declined by the author (with reasons):").length, 2);
-  assert.ok(!input.includes("Declined by the builder (with reasons):"));
-  assert.match(input, /its declined findings and their reasons are in the "Declined by the author" part of this brief/);
+  assert.doesNotMatch(input, /Declined by the (?:author|builder) \(with reasons\):/);
+  assert.match(input, /no declined finding was recorded/);
   // Nothing saved and nothing handed over: the section says none were recorded.
   const none = f.run([], { FAKE_REPORT: mark("R3-1"), ASE_REVIEW_MODEL: "claude-opus-5-5" });
   assert.equal(none.status, 0, none.stderr);
@@ -524,7 +525,7 @@ test("ticket brief keeps ticket links and implicit ../spec.md, supports position
   writeFileSync(join(f.root, ticket), "[Decision](../decision.md)\n");
   writeFileSync(join(f.root, "spec.md"), "spec\n");
   for (const args of [[ticket, "HEAD^"], [ticket, "--commit", f.commits[1]]]) {
-    const brief = f.invoke(briefScript, args, {}, true);
+    const brief = f.invoke(process.execPath, [briefScript, ...args]);
     assert.equal(brief.status, 0, brief.stderr);
     assert.match(brief.stdout, /Spec axis: read tickets\/05.md, decision.md, spec.md/);
     writeFileSync(f.brief, brief.stdout);
