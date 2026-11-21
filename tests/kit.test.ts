@@ -692,9 +692,9 @@ test("without Node the shell helpers print no unhidden text: a RESULT line holdi
     assert.equal(plain.stdout, `RESULT: ${status} updated to abc /c/x\n`);
     assert.equal(plain.stderr, `${nodeError}\n`);
   }
-  const result = bash("kit_result ok 'cannot fetch https://u:fake-token@h/x'", env);
+  const result = bash("kit_result fail 'update cannot fetch main from https://u:fake-token@h/x and (x_ssh://t@h/y), nor git@h:a/b'", env);
   assert.equal(result.status, 0);
-  assert.equal(result.stdout, "RESULT: ok (held back: without Node 24 the kit cannot hide a URL's user info)\n");
+  assert.equal(result.stdout, "RESULT: fail update cannot fetch main from (URL held back: no Node 24) and (URL held back: no Node 24) nor git@h:a/b\n");
   const bad = bash("kit_result $'bad\\nstatus' 'https://u:fake-token@h/x'", env);
   assert.equal(bad.status, 1);
   assert.equal(bad.stdout, `RESULT: fail ${nodeError.replace(/^kit: /, "")}\n`);

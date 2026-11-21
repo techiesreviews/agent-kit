@@ -740,3 +740,29 @@ test("kit update --install-timer fails plainly without a machine copy, without s
   // The same flag twice is one request.
   assert.equal(k.run(["--install-timer", "--install-timer"], { PATH: systemctl.PATH }).stdout, already);
 });
+
+test("without Node 24 the front door still runs kit update, and ends with one RESULT line", (t) => {
+  // A timer installed before its service carried a PATH may not reach Node 24: it still brings the next kit.
+  const k = kitRepo(t);
+  const sha = k.publish("one");
+  const env = { ...k.env, PATH: pathWithout(k, "node"), KIT_NODE: undefined, CLAUDE_NODE_SEARCH_ROOT: join(k.directory, "empty") };
+  const frontDoor = (extra: NodeJS.ProcessEnv = {}) => spawnSync(resolve("kit"), ["update"], { cwd: k.directory, encoding: "utf8", timeout: 30_000, env: { ...env, ...extra } });
+  const updated = frontDoor();
+  assert.equal(updated.status, 0, updated.stdout + updated.stderr);
+  assert.equal(readlinkSync(join(k.data, "current")), sha);
+  assert.equal(updated.stdout.trimEnd().split("\n").at(-1), `RESULT: ok update ${sha.slice(0, 7)} (was none)`);
+  assert.match(updated.stderr, /no Node >=24 found/);
+  // A fetch that fails still says what failed, holding back the URL it cannot hide.
+  const offline = frontDoor({ KIT_REPO: "https://u:fake-token@kit.invalid/kit.git", GIT_TERMINAL_PROMPT: "0" });
+  assert.notEqual(offline.status, 0);
+  const lines = offline.stdout.trimEnd().split("\n");
+  assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
+  assert.match(lines.at(-1)!, /^RESULT: fail update .*\(URL held back: no Node 24\)/);
+  assert.equal(offline.stdout.includes("fake-token"), false);
+  // An update that stops without a RESULT line (its data folder cannot be made) gets one from the front door.
+  writeFileSync(join(k.directory, "a-file"), "");
+  const stopped = frontDoor({ XDG_DATA_HOME: join(k.directory, "a-file/data") });
+  assert.notEqual(stopped.status, 0);
+  assert.equal(stopped.stdout.trimEnd().split("\n").filter(line => line.startsWith("RESULT: ")).length, 1);
+  assert.match(stopped.stdout, new RegExp(`RESULT: fail update exited ${stopped.status} without a RESULT line\\n$`));
+});
