@@ -309,8 +309,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     no `git-remote-<name>` from PATH starts. A fetch or push starts git's ssh by its full path (TOOLS-320), found as the
     programs below are: the lead's `GIT_SSH_COMMAND`, else `core.sshCommand` from the lead's own config (the
     repository's is set empty), else `GIT_SSH`, else `ssh`, with the command's other words kept, and where a PATH folder
-    holds a link into the worktree or the Git folder the command's PATH leaves that folder out, for a program it starts
-    by name in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot be told (shell syntax beyond
+    holds a link into the worktree or the Git folder, or into `/proc` (`ssh -> /proc/self/cwd/ssh`, the worktree for
+    the program git starts there; TOOLS-390), the command's PATH leaves that folder out, for a program it starts by name
+    in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot be told (shell syntax beyond
     words and quotes, an expansion, `env` by any name or started in turn, a shell started from it, or anywhere in it a
     `PATH=` or a shell variable that runs code from elsewhere, below; TOOLS-329), or an ssh PATH holds only as such a link, is swapped for
     one that says so and fails, so only a call to an ssh remote stops. `kit pr` pushes to a folder remote (whose hooks
@@ -338,7 +339,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     not exist (macOS, Windows) or `ASE_KEY_GUARD=off`, the checks run as before and the PR's test lines say `checks: not
     locked (…)`.
   - **Programs by name.** The runner and `kit pr` start git, `gh`, bubblewrap and a CLI by their full path, found only
-    in PATH's full-path folders outside the worktree and the repository's Git folder (links followed), and a script's
+    in PATH's full-path folders outside the worktree and the repository's Git folder (links followed, and a folder
+    reached through a link there, such as `<worktree>/tools-link -> /usr/bin`, or one that leads into `/proc` counts as
+    inside; TOOLS-390), and a script's
     interpreter the same way: a `#!/usr/bin/env node` CLI, or the API route's `#!/usr/bin/env bash` wrapper, starts the
     interpreter by its full path, never a link someone made into the worktree (an `npm link`, a dotfiles `bin`). A
     `#!/usr/bin/env -S MODE=review node` first line is split as env splits it (quotes, escapes, `NAME=value` words, which
