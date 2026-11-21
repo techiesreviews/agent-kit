@@ -1,6 +1,7 @@
 // Model names: the one rule set for every place the kit names a model (TOOLS-290). The CLI a model runs on decides the
 // rest, so the runner, the weekly review budget, the second look and the skills map can never disagree: o3 runs on
-// Codex, so it is GPT everywhere, and a bare sol or luna runs nowhere, so it is no family anywhere.
+// Codex, so it is GPT everywhere. A review by a bare sol or luna runs nowhere, so it is no family; a build by one
+// runs on Codex, so its brief names the Codex skills.
 
 // The CLI a model name runs on, or null for a name no rule knows: such a review is refused rather than
 // sent to Codex, so a typo never reaches OpenAI. A prefix alone (gpt-, grok-, opencode/) names no model.
@@ -42,9 +43,11 @@ export function lookFamily(model) {
   return { codex: "gpt", grok: "grok", opencode: "opencode" }[inferCli(model)] ?? null;
 }
 
-// The skills family a brief names skills for: claude, codex, or none (a model without skills: Grok, OpenCode, or a
-// name no rule knows, which never runs); undefined when no model is named.
-export function skillsFamily(model) {
+// The skills family a brief for one stage names skills for: claude, codex, or none (a model without skills: Grok,
+// OpenCode, or a review by a name no rule knows, which never runs); undefined when no model is named. A build or fix
+// by a name no rule knows runs on Codex (parseAgentArgs), so it gets the Codex skills.
+export function skillsFamily(model, stage) {
   if (!model) return undefined;
-  return { claude: "claude", codex: "codex" }[inferCli(model)] ?? "none";
+  const cli = inferCli(model) ?? (stage === "build" || stage === "fix" ? "codex" : null);
+  return { claude: "claude", codex: "codex" }[cli] ?? "none";
 }

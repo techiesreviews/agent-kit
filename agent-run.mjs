@@ -1075,8 +1075,8 @@ async function startRun(options, previous) {
     throw error;
   } finally {
     // Persist the result and its outcome before touching stdout/stderr: the app may be gone. A run that threw ends
-    // with the problem line run() prints for it.
-    const problems = thrown ? [`problem: ${thrown.message}`] : result?.messages ?? [];
+    // with the problem line run() prints for it; only its first line, as kit review reads that line alone.
+    const problems = thrown ? [`problem: ${String(thrown.message).split(/\r?\n/)[0]}`] : result?.messages ?? [];
     let log = "";
     if (options.cli === "grok") try { log = readFileSync(join(out, "run.log"), "utf8"); } catch { /* No log: no outage lines to read. */ }
     update({ state: finalState(code), exitCode: code, outcome: runOutcome({ cli: options.cli, code, problems, record: status, log }) });
