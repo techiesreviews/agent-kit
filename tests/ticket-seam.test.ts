@@ -44,6 +44,8 @@ test("a card key in a files project reads the card through the Orbit adapter but
   const o = await orbitProject(t);
   const { root } = project(t);
   const task = o.card({ title: "From the board", description: "Do it.\n\nDone when: it works." }, "Todo");
+  const printed: string[] = [];
+  t.mock.method(console, "error", (line: string) => { printed.push(line); });
   const ticket = await briefTicket({ root, ticket: "KIT-1", who: "demo-lead", env: o.env });
   assert.equal(ticket.ticket, "KIT-1");
   assert.match(ticket.text, /^---\ntitle: "From the board"\norbit: KIT-1\n/);
@@ -52,6 +54,7 @@ test("a card key in a files project reads the card through the Orbit adapter but
   await ticket.claim("kit-1");
   assert.equal(o.orbit.statusOf(task), "Todo");
   assert.equal(o.orbit.writes().length, 0);
+  assert.deepEqual(printed, [], "a files project's card gets no claim warning either");
 });
 
 test("a card key with a ticket file at that very path in a files project reads the file", async t => {
@@ -84,7 +87,7 @@ test("kit pr with no ticket keeps no notes and closes nothing", async t => {
   const { root, settings } = project(t);
   const ticket = await prTicket({ root, settings, ticket: undefined, who: "demo-1", folder: root });
   assert.equal(ticket.path, undefined);
-  assert.equal(ticket.card, null);
+  assert.equal(ticket.cardKey, null);
   assert.equal(ticket.keepsNotes, false);
   ticket.noteFollowups(["- later"]);
   assert.equal(await ticket.land({ pr: "https://github.com/x/y/pull/1", sha: "abc" }), null);
@@ -96,7 +99,7 @@ test("kit pr with a ticket file keeps kit's notes in it and closes no card", asy
   file("docs/build/tickets/01-toolbar.md", ticketText);
   const ticket = await prTicket({ root, settings, ticket: "docs/build/tickets/01-toolbar.md", who: "demo-1", folder: root });
   assert.equal(ticket.path, "docs/build/tickets/01-toolbar.md");
-  assert.equal(ticket.card, null);
+  assert.equal(ticket.cardKey, null);
   assert.equal(ticket.keepsNotes, true);
   assert.equal(await ticket.land({ pr: "https://github.com/x/y/pull/1", sha: "abc" }), null);
 });
@@ -105,7 +108,7 @@ test("kit pr in a files project takes a card's brief as a file, as before: no ca
   const { root, file, settings } = project(t);
   const brief = file(".scratch/kit-tickets/KIT-1.md", "---\ntitle: Card\norbit: KIT-1\n---\n\nOrbit card KIT-1\n");
   const ticket = await prTicket({ root, settings, ticket: brief, who: "demo-1", folder: root });
-  assert.equal(ticket.card, null);
+  assert.equal(ticket.cardKey, null);
   assert.equal(ticket.keepsNotes, true);
   assert.equal(ticket.path, brief);
 });
@@ -117,7 +120,7 @@ test("on Orbit kit pr reads a KEY into its run folder's brief and closes the car
   const folder = mkdtempSync(join(tmpdir(), "kit-ticket-seam-run-"));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   const ticket = await prTicket({ root, settings, ticket: "KIT-1", who: "kit-1", folder, env: o.env });
-  assert.equal(ticket.card, "KIT-1");
+  assert.equal(ticket.cardKey, "KIT-1");
   assert.equal(ticket.keepsNotes, false);
   assert.ok(existsSync(join(folder, "KIT-1.md")));
   assert.ok(!existsSync(join(root, ".scratch/kit-tickets/KIT-1.md")), "kit pr never saves a worktree brief");
@@ -153,6 +156,20 @@ test("on Orbit a queued PR leaves the card open and puts its follow-ups on the c
   assert.match(refused!.line, /; run kit ticket update KIT-1 --status Done once #8 lands \(its follow-ups were not added: .*; they are in a PR comment\)$/);
   assert.deepEqual(posted, [join(root, "card-followups.md")]);
   assert.equal(readFileSync(posted[0], "utf8"), "Follow-ups for card KIT-1 (Orbit did not take them):\n- the button sits low\n");
+});
+
+test("on Orbit a queued PR from a KEY adds only its review follow-ups: the run folder's brief adds none of its own", async t => {
+  const o = await orbitProject(t);
+  const { root, settings } = project(t, orbitSettings);
+  const task = o.card({ title: "From a key", description: "Claimed by: kit-1\n\n### UX follow-ups\n\n- the button sits low\n\nDone when: it works." }, "In Progress");
+  const folder = mkdtempSync(join(tmpdir(), "kit-ticket-seam-run-"));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const ticket = await prTicket({ root, settings, ticket: "KIT-1", who: "kit-1", folder, env: o.env });
+  assert.match(readFileSync(join(root, ticket.path!), "utf8"), /### UX follow-ups\n\n- the button sits low/, "the brief holds the card's own UX line");
+  ticket.noteFollowups(["- R1-1 (P2): x"]);
+  await ticket.queued({ pr: "https://github.com/x/y/pull/9", number: "9", folder, comment: async () => {} });
+  assert.deepEqual(o.orbit.comments[task.id].map((note: { body: string }) => note.body.replace(/^\d{4}-\d{2}-\d{2} /, "")),
+    ["Follow-ups from https://github.com/x/y/pull/9:\n- R1-1 (P2): x"]);
 });
 
 test("the files adapter writes follow-ups into the ticket's last Done section, once", () => {

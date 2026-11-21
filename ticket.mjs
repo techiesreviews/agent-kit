@@ -38,7 +38,7 @@ export async function briefTicket({ root, ticket, who, env = process.env }) {
 
 /**
  * The ticket kit pr lands: `path` (the ticket file, or the card's brief, relative to `root`; undefined with no ticket),
- * `card` (the card that closes on landing, or null), `keepsNotes` (kit writes its notes into the ticket file: follow-ups,
+ * `cardKey` (the key of the card that closes on landing, or null), `keepsNotes` (kit writes its notes into the ticket file: follow-ups,
  * commits by subject), `noteFollowups(lines)` for review follow-ups, and what happens once the PR lands (`land`) or a merge
  * queue takes it (`queued`); both return the line and words to show, or null for a ticket file.
  * On Orbit a card KEY is read into a brief in `folder` (read only: kit pr claims nothing, and its brief is no worktree's
@@ -60,7 +60,7 @@ export async function prTicket({ root, settings, ticket, who, folder, env = proc
   const kept = () => {
     try { return briefFollowups(readFileSync(resolve(root, path), "utf8")); } catch { return []; /* No brief left: no follow-ups kept in it. */ }
   };
-  return { path, card, keepsNotes: false,
+  return { path, cardKey: card, keepsNotes: false,
     noteFollowups: lines => { followups.push(...lines); },
     // The merge already happened, so a card that cannot be closed (Orbit down, no lead role) is said, with the command that closes it.
     land: ({ pr, sha }) => closeLandedCard({ settings, key: card, pr, sha, followups: [...followups, ...kept()], who, env }),
@@ -69,7 +69,7 @@ export async function prTicket({ root, settings, ticket, who, folder, env = proc
       followups: [...followups, ...(fromKey ? [] : kept())], who, env, folder: into, comment }) };
 }
 
-const ticketFile = path => ({ path, card: null, keepsNotes: Boolean(path), noteFollowups: () => {}, land: async () => null, queued: async () => null });
+const ticketFile = path => ({ path, cardKey: null, keepsNotes: Boolean(path), noteFollowups: () => {}, land: async () => null, queued: async () => null });
 
 /**
  * A ticket file's text with kit's follow-ups in its last Done section (a new "## Done (<today>)" when it has none), under
