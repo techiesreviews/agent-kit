@@ -451,11 +451,22 @@ test("Node lookup handles npm alone, absent system node, and unsupported install
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, `${nodeError}\n`);
   assert.throws(() => nodeEnv(env), { message: nodeError });
-  command(directory, "still-runs", "exit 0");
-  const child = run(["still-runs"], { ...env, KIT_COMMANDS_DIR: directory });
-  assert.equal(child.status, 0);
-  assert.equal(child.stderr, `${nodeError}\n`);
-  assert.equal(child.stdout, "RESULT: ok still-runs finished\n");
+  // The front door needs Node first (TOOLS-395): with an old Node, or none, it says so and runs nothing; --home still answers.
+  const marker = join(directory, "ran");
+  command(directory, "needs-node", `touch '${marker}'`);
+  const bin = join(directory, "no-node-bin");
+  mkdirSync(bin);
+  symlinkSync("/usr/bin/dirname", join(bin, "dirname"));
+  for (const without of [env, { PATH: bin, CLAUDE_NODE_SEARCH_ROOT: join(directory, "empty") }]) {
+    const child = run(["needs-node"], { ...without, KIT_COMMANDS_DIR: directory });
+    assert.equal(child.status, 2);
+    assert.equal(child.stderr, `${nodeError}\n`);
+    assert.equal(child.stdout, `RESULT: fail ${nodeError.replace(/^kit: /, "")}\n`);
+    assert.equal(existsSync(marker), false);
+    const home = run(["--home"], { ...without, KIT_COMMANDS_DIR: directory });
+    assert.equal(home.status, 0, home.stderr);
+    assert.equal(home.stdout, `${realpathSync(".")}\n`);
+  }
 });
 
 // Node on Windows (Git Bash) ends `node --version` with CRLF; the carriage return is not part of the version (TOOLS-335).
@@ -644,6 +655,43 @@ test("bash and mjs RESULT helpers hide every url's user-info, so a remote's toke
   // A word character before the scheme stops neither.
   assert.equal(kitHideUserInfo("x_https://u:t@h/p 1http://t@h/q"), "x_https://h/p 1http://h/q");
   assert.equal(bash("kit_hide_user_info 'x_https://u:t@h/p 1http://t@h/q'").stdout, "x_https://h/p 1http://h/q\n");
+});
+
+test("the shell's project root, RESULT line and URL hiding are kit-lib.mjs's, their one copy (TOOLS-395)", (t) => {
+  // kit-lib.sh beside a kit-lib.mjs with other rules: each shell helper answers with that file's rule, not one of its own.
+  const directory = realpathSync(temp(t));
+  copyFileSync(library, join(directory, "kit-lib.sh"));
+  writeFileSync(join(directory, "kit-lib.mjs"), [
+    "export const kitRoot = (here) => `root from mjs: ${here}`;",
+    "export const kitResult = (status, text) => console.log(`result from mjs: ${JSON.stringify([status, text])}`);",
+    "export const kitHideUserInfo = (text) => `hidden by mjs: ${JSON.stringify(text)}`;",
+  ].join("\n"));
+  const shell = (body: string) => spawnSync("/bin/bash", ["-c", `set -euo pipefail; source "${directory}/kit-lib.sh"; ${body}`], {
+    encoding: "utf8", env: kitEnv(), cwd: directory, timeout: 5000,
+  });
+  const root = shell(`unset KIT_ROOT; kit_root "${directory}"`);
+  assert.equal(root.stdout, `root from mjs: ${directory}\n`, root.stderr);
+  // The words go over stdin, whole: Git Bash rewrites path-like arguments it hands Node on Windows.
+  const result = shell("kit_result ok $'one\\ntwo' /c/three 'https://u:t@h/x'");
+  assert.equal(result.stdout, `result from mjs: ${JSON.stringify(["ok", "one\ntwo /c/three https://u:t@h/x"])}\n`, result.stderr);
+  const hidden = shell("kit_hide_user_info 'https://u:t@h/x /c/y'");
+  assert.equal(hidden.stdout, `hidden by mjs: ${JSON.stringify("https://u:t@h/x /c/y")}\n`, hidden.stderr);
+});
+
+test("without Node the shell helpers print no unhidden text: a fixed RESULT line, no root, no hidden text", (t) => {
+  const env = fixtureEnv(temp(t));
+  const result = bash("kit_result ok 'https://u:fake-token@h/x'", env);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, `RESULT: fail ${nodeError.replace(/^kit: /, "")}\n`);
+  assert.equal(result.stderr, `${nodeError}\n`);
+  const hidden = bash("kit_hide_user_info 'https://u:fake-token@h/x'", env);
+  assert.equal(hidden.status, 1);
+  assert.equal(hidden.stdout, "");
+  const root = bash("unset KIT_ROOT; kit_root", env);
+  assert.equal(root.status, 1);
+  assert.equal(root.stdout, "");
+  // KIT_ROOT, the root the front door found, still answers.
+  assert.equal(bash("kit_root", { ...env, KIT_ROOT: "/given" }).stdout, "/given\n");
 });
 
 test("kitHidingLog hides a token split across chunks and on a last line with no newline, keeping each stream apart", () => {
