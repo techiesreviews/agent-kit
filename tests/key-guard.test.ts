@@ -1599,6 +1599,22 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.match(sshCommand({ ...base, ...env, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", why, command);
     assert.match(refusedWith({ ...base, ...env, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: sh fills in a \$ in it as/m, command);
   }
+  // sh drops a word with no quotes in it that fills in empty, which moves the words after it: here the -F path beside
+  // ProxyJump; a quoted empty word stays (GPT second look, round 7).
+  const dropped = sshCommand({ ...base, EMPTY: "", GIT_SSH_COMMAND: `ssh -F $EMPTY './cfg;echo ran > ${marker};' -J jump.example.invalid host` }, { worktree: root });
+  assert.match(dropped.problem ?? "", /cannot be told: sh drops a word that fills in empty, which moves the words after it/);
+  spawnSync("/bin/sh", ["-c", dropped.command!], { env: base, encoding: "utf8" });
+  assert.ok(!existsSync(marker));
+  assert.equal(sshCommand({ ...base, EMPTY: "", GIT_SSH_COMMAND: `ssh -i "$EMPTY" host` }, { worktree: root }).problem, null);
+  // The names the command starts are looked up in the PATH it runs with, without a folder that holds a link into the
+  // worktree: there run is bash, not the true an earlier folder holds beside such a link (GPT second look, round 7).
+  const shadow = join(dir, "shadow"), later = join(dir, "later");
+  for (const folder of [shadow, later]) mkdirSync(folder);
+  symlinkSync(["/usr/bin/true", "/bin/true"].find(file => existsSync(file))!, join(shadow, "run"));
+  symlinkSync(join(root, "tools/ssh"), join(shadow, "planted"));
+  symlinkSync(bash, join(later, "run"));
+  const shadowed = sshCommand({ ...base, PATH: `${shadow}:${later}:${bin}:/usr/bin:/bin`, GIT_SSH_COMMAND: `timeout 30 run -c 'echo ran > ${marker}'` }, { worktree: root });
+  assert.match(shadowed.problem ?? "", /cannot be told: it starts a shell \(run\)/);
   // ssh splits an option from its value at a line break or carriage return as at a blank (GPT second look, round 5).
   for (const [command, why] of [[`ssh -o 'ProxyCommand\necho ran > ${marker}' host`, /it starts a shell \(ProxyCommand/], [`ssh -o 'ProxyCommand\recho ran > ${marker}' host`, /it starts a shell \(ProxyCommand/],
     [`ssh -o PermitLocalCommand=yes -o 'LocalCommand\necho ran > ${marker}' host`, /it starts a shell \(LocalCommand/], [`ssh -o 'ProxyJump\na;b' host`, /it starts a shell \(ProxyJump with more than host names/],

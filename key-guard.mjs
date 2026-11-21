@@ -783,6 +783,10 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
   const refused = problem => ({ command: `printf '%s\\n' ${shellQuote(`kit: ${problem}`)} >&2; false`, problem, variant: "ssh" });
   const unknown = why => refused(`git's ssh command (${given}) cannot be told: ${why}; set it to a plain command line (a program and its words), or set ASE_KEY_GUARD=off to run without the lock`);
   let program = given ?? "ssh", before = "", after = "";
+  // The command runs with the run's PATH without the folders that hold a link into the worktree (cleanFolders), so
+  // the names it starts are looked up there, as they will be found (GPT second look, round 7).
+  const folders = cleanFolders(env, shut).join(delimiter);
+  const ran = { ...env, PATH: folders };
   if (shell !== null) {
     const words = shellWords(shell);
     if (!words) return unknown("it uses shell syntax beyond words and quotes");
@@ -819,13 +823,15 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
       return value;
     }).replace(/^\x03/, home(env)).replace(/[\0\x04\x05]/g, ""));
     if (reshaped) return unknown("sh splits or expands what a $ fills in, which could name a shell");
+    // A word with no quotes in it that fills in empty is dropped, which moves the words after it (ssh -F $EMPTY '…').
+    if (filled.some((other, i) => other === "" && !later[i].bounded.includes("\x04"))) return unknown("sh drops a word that fills in empty, which moves the words after it");
     if (filled.some(other => other.includes("\x01"))) return unknown("sh fills in a $ in it, which could name a shell");
     // What sh fills in gets the env and setting checks above too: "$E" "$X" with E=/usr/bin/env and X=PATH=… is
     // timeout 30 env PATH=… by then (GPT second look, round 4).
     const filledSetting = lineSetting(filled);
     if (filledSetting) return unknown(`sh fills in a $ in it as ${[FILLED, INNER].includes(filledSetting) ? "a word an env there could read as PATH= or BASH_ENV=" : `${filledSetting}=, which sets ${filledSetting} itself`}`);
     if (filled.slice(1).some(namesEnv)) return unknown("sh fills in a $ in it as env, which looks its program up on PATH");
-    const started = startedShell(filled, env, shut);
+    const started = startedShell(filled, ran, shut);
     if (started) return unknown(`it starts a shell (${started}), and a shell can build PATH= or BASH_ENV= out of pieces${shellAdvice(started, "") ? `; ${shellAdvice(started, "")}` : ""}`);
     program = word.value; before = shell.slice(0, word.start); after = shell.slice(word.end);
   }
@@ -843,9 +849,8 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     // env would look its program up by name again, by a link of another name too (R1-1).
     if (namesEnv(file)) return unknown("env looks its program up on PATH");
     // GIT_SSH (or a link of another name) can name a shell too.
-    if (namesShell(file, env, shut)) return unknown(`it starts a shell (${basename(program)}), and a shell can build PATH= or BASH_ENV= out of pieces`);
-    const start = interpreted(file, [], env, shut, problem => { throw new Error(problem); }).flat();
-    const folders = cleanFolders(env, shut).join(delimiter);
+    if (namesShell(file, ran, shut)) return unknown(`it starts a shell (${basename(program)}), and a shell can build PATH= or BASH_ENV= out of pieces`);
+    const start = interpreted(file, [], ran, shut, problem => { throw new Error(problem); }).flat();
     const path = folders === String(env.PATH ?? systemPath) ? "" : `PATH=${shellQuote(folders)} `;
     const command = `${before}${path}${start.map(shellQuote).join(" ")}${after}`;
     const kind = ["ssh", "plink", "putty", "tortoiseplink"].find(name => basename(file).toLowerCase() === name);
