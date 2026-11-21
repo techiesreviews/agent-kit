@@ -1664,6 +1664,16 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   const nested = `timeout 30 gnuenv -S 'gnuenv -S "ssh -J%k" -oHostKeyAlias=a;x' host`;
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: nested }, { worktree: root }).problem ?? "", /ProxyJump with more than host names/);
   assert.throws(() => start(wrapper("gnuenv-nested", nested.replace(/ host$/, ""), "")), /, which starts a shell \(ProxyJump with more than host names/);
+  // A -J that ends an -S string takes the line's next word, which the host-name check reads (Claude review, round 17).
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -J' 'a;x' host" }, { worktree: root }).problem ?? "", /ProxyJump with more than host names/);
+  // ssh still takes -1 and -2 in a bundle of flags (GPT second look, round 19).
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -2J %k -oHostKeyAlias='a|x' host" }, { worktree: root }).problem ?? "", /ProxyJump with more than host names/);
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -J jump.example.invalid -12F './cfg;x' host" }, { worktree: root }).problem ?? "", /ProxyJump beside a ' or an -F path/);
+  // sh sets $BASH, $_ and the like itself, whatever the run holds, and bash sets $SHELL where the run has none (round 19).
+  for (const [name, env] of [["BASH", { BASH: undefined }], ["_", { _: "/usr/bin/true" }], ["PWD", {}], ["SHELL", { SHELL: undefined }]] as const) {
+    const command = `timeout 2 "\${${name}}" -c 'ssh "$@"' ssh`;
+    assert.match(sshCommand({ ...base, ...env, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", new RegExp(`sh sets \\$${name} itself`), command);
+  }
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -o ProxyCommand\\_none' host" }, { worktree: root }).problem ?? "", /ProxyCommand, which ssh runs/);
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -o ProxyCommand=none' host" }, { worktree: root }).problem, null);
   // env -S's \_ is a blank inside ssh's options too: ProxyCommand\_nc is ProxyCommand nc (GPT second look, round 15).

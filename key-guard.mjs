@@ -529,9 +529,13 @@ const namesShell = (word, env, shut) => {
 // ssh splits an option from its value at any blank, a line break and carriage return too, or an =.
 const viaShell = /(?<!permit)(proxy|local)command(?:\s*=\s*|\s+|$)(.*)$/is;
 const jumpOption = /proxyjump(?:\s*=\s*|\s+|$)(.*)$/is;
-// The value of ssh's flag `letter` in words[i], joined to it in a bundle (-4J host) or in the next word; null if none.
+// Variables sh sets or changes itself as it starts or runs (bash's and dash's), whatever the run's environment holds:
+// "$BASH" and "$_" are the shell itself there, and bash sets SHELL where the run has none (GPT second look, round 19).
+const shellSets = /^(?:BASH\w*|SHELL\w*|_|PPID|PWD|OLDPWD|UID|EUID|GROUPS|HOSTNAME|HOSTTYPE|MACHTYPE|OSTYPE|RANDOM|SRANDOM|SECONDS|EPOCH\w*|LINENO|SHLVL|HIST\w*|FUNCNAME|DIRSTACK|PIPESTATUS|COMP_\w*|READLINE_\w*|REPLY|OPTIND|OPTERR|OPTARG|PS[0-4]|IFS|MAILCHECK|COLUMNS|LINES|TMOUT)$/;
+// The value of ssh's flag `letter` in words[i], joined to it in a bundle (-4J host, and -1 and -2, which ssh still
+// takes and ignores: GPT second look, round 19) or in the next word; null if none.
 const flagValue = (words, i, letter) => {
-  const flag = new RegExp(`^-[46AaCfGgKkMNnqsTtVvXxYy]*${letter}(.*)$`, "s").exec(words[i]);
+  const flag = new RegExp(`^-[1246AaCfGgKkMNnqsTtVvXxYy]*${letter}(.*)$`, "s").exec(words[i]);
   return flag ? flag[1] || (words[i + 1] ?? "") : null;
 };
 // A word with quotes and \ taken out, as ssh reads an option's name; and with env -S's \_, blank escapes and \c as
@@ -544,7 +548,8 @@ const startedShell = (given, env, shut) => {
   // beside the line's own (GPT second look, round 16): split by env's own rules (quotes keep a blank in a word), each
   // piece right after its word, so the line's next word follows the last piece (round 17, Claude review round 16).
   // A piece that is itself an -S string (env -S "ssh -J…" inside another -S string) splits again, and counts as a line
-  // word where it holds a blank (GPT second look, round 18). A piece is never longer than its word, so this ends.
+  // word where it holds a blank (GPT second look, round 18). Only a word with a blank, a quote or a \ splits, and env's
+  // split takes out or shrinks each of those, so a piece is always shorter than its word and this ends.
   const split = word => /[\s\\"']/.test(word) ? splitWords(word) ?? unescaped(word).split(/\s+/).filter(Boolean) : [];
   const expand = (word, line) => [{ word, line }, ...split(word).filter(piece => piece !== word).flatMap(piece => expand(piece, /\s/.test(piece)))];
   const entries = given.flatMap(word => expand(word, true));
@@ -853,11 +858,15 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     let reshaped = false;
     // Only a ~ alone or before a / is HOME: ~user is that user's home, ~+ and ~- other folders, and ~"…" stays a ~.
     if (later.some(other => /^\x03(?!\/|$)/.test(other.bounded))) return unknown("sh fills in a ~ in it from somewhere other than HOME, which could name a shell");
+    let ownSet = null;
     const filled = later.map(other => other.bounded.replace(/(\x05?)\x01(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g, (_, outside, braced, bare) => {
-      const value = env[braced ?? bare] ?? "";
+      const name = braced ?? bare;
+      if (shellSets.test(name) && !(name === "SHELL" && env.SHELL !== undefined)) ownSet ??= name;
+      const value = env[name] ?? "";
       if (outside && splitters.some(char => value.includes(char))) reshaped = true;
       return value;
     }).replace(/^\x03/, home(env)).replace(/[\0\x04\x05]/g, ""));
+    if (ownSet) return unknown(`sh sets $${ownSet} itself, whatever the run holds, so what it fills in could name a shell`);
     if (reshaped) return unknown("sh splits or expands what a $ fills in, which could name a shell");
     // A word with no quotes in it that fills in empty is dropped, which moves the words after it (ssh -F $EMPTY '…').
     if (filled.some((other, i) => other === "" && !later[i].bounded.includes("\x04"))) return unknown("sh drops a word that fills in empty, which moves the words after it");
