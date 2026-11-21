@@ -224,6 +224,12 @@ test("brief: the skills map picks the UI set from the ticket's files, names skil
   const free = f.run(["docs/tickets/07-panel.md", "--model", "opencode/deepseek-v4.1-flash-free"]);
   assert.doesNotMatch(free.stdout, /\/good-css|\$good-css/);
   assert.match(free.stdout, /^- CSS: /m);
+  // A build by a name no rule knows runs on Codex, so its brief names the Codex skills; a review by it never runs.
+  const unknown = f.run(["docs/tickets/07-panel.md", "--model", "luna"]);
+  assert.match(unknown.stdout, /^- \$good-css \(the good-css skill\)/m);
+  assert.doesNotMatch(unknown.stdout, /this model has no skills/);
+  const unknownReview = f.run(["docs/tickets/07-panel.md", "--stage", "review", "--model", "luna"]);
+  assert.match(unknownReview.stdout, /\(in the kit's own words; this model has no skills\)/);
   const review = f.run(["docs/tickets/07-panel.md", "--stage", "review"]);
   for (const name of ["emil-ui-review", "emil-unslop-design", "break-ui"]) assert.match(review.stdout, new RegExp(`^- /${name}\\b`, "m"));
 });
