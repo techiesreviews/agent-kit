@@ -12,7 +12,7 @@ import { coveringReview, earlierSecondLooks, findingsSeenAt, readReviewReport, r
 import { projectCommand, spoken } from "../review-brief.mjs";
 import { releaseCheck as releaseCheckRun } from "../release-check.mjs";
 import { resultLine, review as reviewRun, secondLook as secondLookRun } from "../review-run.mjs";
-import { briefFollowups, cardBriefFor, closeLandedCard, isCardKey, onOrbit, openOrbitTickets, orbitProblem, ticketCardKey } from "../ticket-cards.mjs";
+import { prTicket, withFollowups } from "../ticket.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -476,20 +476,10 @@ async function main(args) {
     const settings = kitSettings(), release = kitBranch("release", settings);
     flags.base ??= kitBranch("land", settings);
     if ([kitBranch("land", settings), release, flags.base].includes(branch)) throw new Error(`refusing branch ${branch}`);
-    // On Orbit the ticket is a card: a KEY is read into its brief (read only), and the brief's card closes on landing.
-    // A brief is no tracked file, so none of kit's ticket commits (follow-ups, commits by subject) is made for it.
-    let card = null, fromKey = false;
-    // A card's review follow-ups go on the card as one comment when it closes (its brief is no tracked file).
-    const cardFollowups = [];
-    if (flags.ticket && onOrbit(settings)) {
-      if (isCardKey(flags.ticket)) {
-        fromKey = true;
-        // The brief stays in this run's own folder: kit pr claims nothing, and its brief is no worktree's saved one.
-        try { flags.ticket = relative(root, (await cardBriefFor({ root, key: flags.ticket, settings, who: kitOwner(), folder: directory })).path); }
-        catch (error) { throw new Error(orbitProblem(error)); }
-      }
-      card = ticketCardKey(root, flags.ticket);
-    }
+    // The ticket this PR lands (ticket.mjs): on Orbit a card, whose KEY is read into a brief in this run's folder and which
+    // closes on landing; otherwise a ticket file, which keeps kit's notes (follow-ups, commits by subject).
+    const ticket = await prTicket({ root, settings, ticket: flags.ticket, who: kitOwner(), folder: directory });
+    flags.ticket = ticket.path;
     // The scoreboard's landing record for this piece.
     // A new PR number starts a fresh landing, so an earlier PR's merge never carries over.
     land = changes => kitScore({ ticket: flags.ticket, branch, root }, record => {
@@ -937,7 +927,7 @@ async function main(args) {
     // main; the commit under them must be a merge dev does not hold (syncJoin weighs it as ever). None without such a ticket, or
     // under any other commit.
     async function ownNotes(land, main) {
-      if (!flags.ticket || card || notRepoFile()) return [];
+      if (!ticket.keepsNotes || notRepoFile()) return [];
       const path = relative(root, resolve(root, flags.ticket)).split(sep).join("/"), message = `${ownSubjects(flags.ticket)[0]}\n\n${ownTrailer}`;
       const notes = [];
       for (let at = "HEAD"; ;) {
@@ -1017,7 +1007,7 @@ async function main(args) {
     // the SHAs the builder saw change here and again on landing (reportLanded prints those).
     // Synchronous from the captured HEAD to the commit, so no await sits between the proof and the write.
     function nameCommits() {
-      if (!flags.ticket || card || flags.release || flags.syncMain || flags.dryRun) return;
+      if (!ticket.keepsNotes || flags.release || flags.syncMain || flags.dryRun) return;
       step = "commits";
       const current = args => gitSync(args);
       const captured = current(["rev-parse", "HEAD"]);
@@ -1283,45 +1273,15 @@ async function main(args) {
         writeFileSync(comment, summary);
         await gh("follow-ups", ["pr", "comment", number, "--body-file", comment]);
       }
-      if (card) cardFollowups.push(...fullLines);
-      if (!flags.ticket || card) return;
+      // A card keeps them for its closing comment; a ticket file gets them in its last Done section.
+      ticket.noteFollowups(fullLines);
+      if (!ticket.keepsNotes) return;
       const current = args => gitSync(args);
       // Recheck the captured proof after network awaits, immediately before writing.
       if (current(["branch", "--show-current"]) !== branch || current(["rev-parse", "HEAD"]) !== reviewedHead ||
           current(["status", "--porcelain"])) throw new Error("worktree changed before recording follow-ups");
       const file = resolve(root, flags.ticket), original = readFileSync(file, "utf8");
-      // The ticket's own line endings, whether or not it has a Follow-ups section yet.
-      const eol = original.includes("\r\n") ? "\r\n" : "\n";
-      const sections = [...original.matchAll(doneHeading())];
-      const start = sections.at(-1)?.index;
-      const prefix = start === undefined ? `${original.trimEnd()}${eol}${eol}## Done (${new Date().toISOString().slice(0, 10)})` : original.slice(0, start);
-      const rest = start === undefined ? "" : original.slice(start);
-      const end = rest.slice(1).search(/^## /m);
-      const doneEnd = end < 0 ? rest.length : end + 1;
-      let done = rest.slice(0, doneEnd);
-      const followups = /^### Follow-ups\s*\n([\s\S]*?)(?=^#{1,3} |$(?![\s\S]))/m.exec(done);
-      const raw = followups?.[1].split("\n") ?? [];
-      const existing = raw.map(line => line.trimEnd());
-      // Each old cut bullet is upgraded by one finding at most, so findings that share their first
-      // 160 characters each keep their own full line.
-      const used = new Set();
-      const kept = existing.map(line => {
-        const index = oldLines.findIndex((old, at) => !used.has(at) && old !== fullLines[at] && old.trimEnd() === line &&
-          !existing.includes(fullLines[at]));
-        if (index < 0) return line;
-        used.add(index);
-        return fullLines[index];
-      });
-      const missing = fullLines.filter(line => !kept.includes(line));
-      if (followups) {
-        const header = followups[0].slice(0, followups[0].length - followups[1].length);
-        let section = header + raw.map((line, index) => kept[index] === existing[index] ? line
-          : kept[index] + (line.endsWith("\r") ? "\r" : "")).join("\n");
-        const position = section.trimEnd().length;
-        if (missing.length) section = `${section.slice(0, position)}${eol}${missing.join(eol)}${section.slice(position)}`;
-        done = done.slice(0, followups.index) + section + done.slice(followups.index + followups[0].length);
-      } else if (missing.length) done = `${done.trimEnd()}${eol}${eol}### Follow-ups${eol}${eol}${missing.join(eol)}${eol}${eol}`;
-      const followed = prefix + done + rest.slice(doneEnd);
+      const followed = withFollowups(original, { lines: fullLines, cut: oldLines });
       if (followed === original) return;
       const why = notRepoFile();
       if (why) {
@@ -1542,10 +1502,8 @@ async function main(args) {
     // The landed card goes to Done with the PR link and merge SHA. The merge already happened, so a card that cannot be
     // closed (Orbit down, no lead role) is said once, with the command that closes it, and the run still counts.
     async function closeCard(number, sha, host, repo) {
-      if (!card) return "";
-      let ux = [];
-      try { ux = briefFollowups(readFileSync(resolve(root, flags.ticket), "utf8")); } catch { /* No brief left: no follow-ups kept in it. */ }
-      const closed = await closeLandedCard({ settings, key: card, pr: `https://${host}/${repo}/pull/${number}`, sha, followups: [...cardFollowups, ...ux], who: kitOwner() });
+      const closed = await ticket.land({ pr: `https://${host}/${repo}/pull/${number}`, sha });
+      if (!closed) return "";
       console.log(closed.line);
       return closed.suffix;
     }
@@ -1565,27 +1523,11 @@ async function main(args) {
       // Nothing here waits for the queue (kit slice, which did, was cut in TOOLS-235): the card stays open, the line says
       // who closes it, and its follow-ups (the brief's UX ones too) go on the card now, since no later step reads the brief.
       let queuedWords = "";
-      if (card) {
-        let ux = [];
-        if (!fromKey) try { ux = briefFollowups(readFileSync(resolve(root, flags.ticket), "utf8")); } catch { /* No brief left: no follow-ups kept in it. */ }
-        const followups = [...new Set([...cardFollowups, ...ux])];
-        let where = "";
-        if (followups.length) {
-          let redact;
-          try {
-            const opened = openOrbitTickets({ settings, who: kitOwner() });
-            redact = opened.redact;
-            await opened.store.comment(card, `Follow-ups from https://${target.split("/").length === 3 ? target.split("/")[0] : "github.com"}/${repo}/pull/${number}:\n${followups.join("\n")}`);
-          } catch (error) {
-            // The brief's UX follow-ups are in no PR comment yet, so all of them go there now, and the line names where they are.
-            const problem = orbitProblem(error, redact), file = join(directory, "card-followups.md");
-            writeFileSync(file, `Follow-ups for card ${card} (Orbit did not take them):\n${followups.join("\n")}\n`);
-            try { await gh("follow-ups", ["pr", "comment", number, "--body-file", file]); where = ` (its follow-ups were not added: ${problem}; they are in a PR comment)`; }
-            catch { where = ` (its follow-ups were not added: ${problem}; they are only in ${file})`; }
-          }
-        }
-        console.log(`card: ${card} stays open: nothing here waits for the queue; run kit ticket update ${card} --status Done once #${number} lands${where}`);
-        queuedWords = `; card ${card} stays open: close it once #${number} lands`;
+      const queued = await ticket.queued({ pr: `https://${target.split("/").length === 3 ? target.split("/")[0] : "github.com"}/${repo}/pull/${number}`, number, folder: directory,
+        comment: file => gh("follow-ups", ["pr", "comment", number, "--body-file", file]) });
+      if (queued) {
+        console.log(queued.line);
+        queuedWords = queued.words;
       }
       kitResult("ok", `queued #${number} ${head.slice(0, 7)}${queuedWords}${releaseWaived()}${flakyNote()}`);
       return true;

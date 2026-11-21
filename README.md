@@ -592,6 +592,7 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
 | `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`, `brief-guard`, `stop-guard`, and the opt-in `status-nudge`) and their `run.sh` |
 | `context-card.mjs`, `learn.mjs`, `worktree.sh`, `tickets.mjs`, `unit.sh`, `review-findings.mjs`, `second-look.json`, … | helpers beside `kit` that commands and a project's forwarders run through `kit --home` |
 | `orbit-client.mjs`, `ticket-store.mjs`, `orbit-setup.mjs`, `ticket-import.mjs` | the Orbit API client and its secrets file, the ticket store's rules and guards, `kit ticket setup`, and moving a project's ticket files to cards |
+| `ticket.mjs`, `ticket-cards.mjs` | the one seam `kit brief` and `kit pr` ask about the ticket a run works on, with its files adapter, and its Orbit adapter (reading, claiming and closing a card) |
 | `skills.json`, `skills.mjs`, `brief-lib.mjs` | the skills map (names and the kit's own one-line fallbacks, never a skill's text), and the brief `kit brief` writes |
 | `launcher/` | the two launchers `kit init` copies into a project |
 | `systemd/` | the update timer and service `kit update --install-timer` writes into `~/.config/systemd/user/` |

@@ -1,4 +1,5 @@
-// Tickets as Orbit cards for kit brief, pr and init --issues, when scripts/agents/kit.json says "tickets": "orbit".
+// Tickets as Orbit cards for kit brief, pr and init --issues, when scripts/agents/kit.json says "tickets": "orbit": the
+// Orbit adapter of the ticket seam (ticket.mjs), and the one place the Orbit store is opened (openOrbitTickets).
 // kit pr copies a card into a brief shaped like a ticket file (title, the card's text), so its review reads it as it
 // reads a ticket; only the lead's own kit commands write the board (ORBIT_ROLE=lead), and the agents they start never do.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
