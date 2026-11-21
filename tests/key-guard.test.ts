@@ -1506,6 +1506,32 @@ function roomRepo(t: TestContext, name: string) {
   return { dir, root, home, lead, noted, base, fetch, inRoom, leadSsh, planted };
 }
 
+test("TOOLS-390 room: real ssh reads the same system config, including root-owned symlinks, as outside the room", { skip: noRoom }, t => {
+  const { root, home, base } = roomRepo(t, "system-ssh");
+  // ssh takes its home from passwd, so name this temporary user config explicitly rather than reading a real one.
+  const config = join(home, "client-config");
+  writeFileSync(config, "Include /etc/ssh/ssh_config\nHost kit-room.invalid\n  Port 2222\n", { mode: 0o600 });
+  const env = { ...base, GIT_SSH_COMMAND: "/usr/bin/ssh" };
+  const args = ["-F", config, "-G", "-T", "kit-room.invalid"];
+  const outside = spawnSync("/usr/bin/ssh", args, { env, encoding: "utf8", timeout: 15_000 });
+  assert.equal(outside.status, 0, outside.stderr);
+  const safe = gitSafety({ worktree: root, env, network: true, git: gitProgram() });
+  assert.equal(safe.problem, null);
+  const inside = spawnSync("/bin/sh", ["-c", `${safe.env.GIT_SSH_COMMAND} "$@"`, "sh", ...args],
+    { env: { ...env, ...safe.env }, encoding: "utf8", timeout: 15_000 });
+  assert.equal(inside.status, 0, inside.stderr);
+  assert.equal(inside.stdout, outside.stdout, "system includes and their settings stay unchanged");
+  assert.match(inside.stdout, /^port 2222$/m);
+  const unsafeConfig = join(home, "unsafe-client");
+  writeFileSync(unsafeConfig, "Host *\n  Port 3333\n", { mode: 0o666 });
+  chmodSync(unsafeConfig, 0o666);
+  writeFileSync(config, `Include ${unsafeConfig}\n`);
+  const unsafe = spawnSync("/bin/sh", ["-c", `${safe.env.GIT_SSH_COMMAND} "$@"`, "sh", ...args],
+    { env: { ...env, ...safe.env }, encoding: "utf8", timeout: 15_000 });
+  assert.equal(unsafe.status, 255, "writable user config still fails OpenSSH's permission check");
+  assert.match(unsafe.stderr, /Bad owner or permissions/);
+});
+
 test("TOOLS-390 room R1-1: git's ssh runs where the worktree holds nothing, so a /proc/self/cwd link and a wrapper's exec ssh start only the lead's ssh", { skip: noRoom }, t => {
   const { dir, root, lead, base, fetch, inRoom } = roomRepo(t, "proc-self");
   // A PATH folder outside the worktree with ssh -> /proc/self/cwd/ssh, which for a program git starts is the worktree's
@@ -1831,7 +1857,7 @@ test("TOOLS-390 room: git's ssh command starts bubblewrap by its full path with 
   const command = String(safety(base).GIT_SSH_COMMAND);
   assert.match(command, /^\/\S*bwrap --die-with-parent --dev-bind \/ \/ /);
   for (const part of ["--unshare-pid", "--proc /proc", "--chdir /", `--tmpfs ${root}`]) assert.ok(command.includes(` ${part} `), `${part} in ${command}`);
-  assert.ok(command.includes(` -- /bin/sh -c 'ssh "$@"\nstatus=$?\n`) && command.endsWith(`\nexit "$status"' sh`), command);
+  assert.ok(command.includes(` -- /bin/sh -c 'ssh "$@"\nstatus=$?\n`) && command.includes(`\nexit "$status"' sh`), command);
   // git tells the kind of ssh from the command's first word, which is bubblewrap now: the kit tells it from the lead's.
   assert.equal(safety(base).GIT_SSH_VARIANT, "ssh");
   assert.equal(safety({ ...base, GIT_SSH_COMMAND: "X=1 /usr/bin/ssh -v" }).GIT_SSH_VARIANT, "ssh");

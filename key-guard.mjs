@@ -1343,6 +1343,33 @@ const outerNote = "inside kit pr's key lock for its checks: that lock hides the 
 // that lock; it runs instead where the build's folders do not exist. The file system is as it is (devices too), so ssh
 // reads its keys, its agent and known_hosts; the room has a process list of its own and starts in /.
 const roomArgs = ["--die-with-parent", "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--chdir", "/"];
+
+// A user namespace shows the host's root-owned files as nobody's. OpenSSH refuses included config files with that
+// owner, even when their permissions are safe. Give the room private, read-only copies of the system client config,
+// owned by the caller in its namespace. Keep the bytes and paths (including links into /usr/lib) unchanged. Never
+// copy a writable file, another user's file, or anything reached through a build folder into the room.
+function roomSystemSsh(folders) {
+  const files = new Set(), seen = new Set();
+  const visit = path => {
+    if (shutIn(path, folders)) return;
+    let real, info;
+    try { real = realpathSync(path); info = statSync(real); } catch { return; }
+    if (seen.has(real)) return;
+    seen.add(real);
+    if (info.uid !== 0 || (info.mode & 0o022)) return;
+    if (info.isDirectory()) {
+      let names;
+      try { names = readdirSync(real); } catch { return; }
+      for (const name of names) visit(join(real, name));
+    } else if (info.isFile()) {
+      try { accessSync(real, constants.R_OK); files.add(real); } catch { /* Not readable outside the room either. */ }
+    }
+  };
+  visit("/etc/ssh/ssh_config");
+  visit("/etc/ssh/ssh_config.d");
+  return [...files];
+}
+
 let roomProbed;
 // Whether the room starts here: null, or the problem in plain words. Checked once per process, after bwrapWorks.
 function roomWorks(env, shut) {
@@ -1510,7 +1537,14 @@ export function sshRoom(env = process.env, { worktree, common, configured, git }
   // words after the shell's own. ssh also ends with the server's exit status, so the line names both causes.
   const notFound = `kit: a program was not found (exit 127). If it was git's ssh or a program it starts, the clean room keeps these folders empty: ${folders.join(", ")}; start it from a folder outside them. If a "not found" line above came from the server, the server lacks that program`;
   const script = `${inner} "$@"\nstatus=$?\n[ "$status" -ne 127 ] || printf '%s\\n' ${shellQuote(notFound)} >&2\nexit "$status"`;
-  const command = [bwrap, ...roomArgs, ...folders.flatMap(folder => ["--tmpfs", folder]), "--", "/bin/sh", "-c", script, "sh"].map(shellQuote).join(" ");
+  const files = roomSystemSsh(folders);
+  const args = [...roomArgs, ...folders.flatMap(folder => ["--tmpfs", folder]),
+    ...files.flatMap((file, index) => ["--ro-bind-data", String(index + 3), file]), "--", "/bin/sh", "-c", script, "sh"];
+  const redirections = files.map((file, index) => ` ${index + 3}<${shellQuote(file)}`).join("");
+  const line = [bwrap, ...args].map(shellQuote).join(" ");
+  // POSIX shells only promise descriptors 0..9; bash (required by the kit's launcher) handles larger config sets.
+  const command = files.length <= 7 ? line + redirections
+    : `/bin/bash -c ${shellQuote(`exec ${line} "$@"${redirections}`)} sh`;
   return { command, problem: null, variant: first ? sshKind(first) : null };
 }
 
