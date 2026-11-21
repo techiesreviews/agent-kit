@@ -370,7 +370,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     more than plain characters (ssh writes a host written there and that path into the same command). `rc`, `es` and
     `nu` count only where they name a program PATH or a path leads to, and a copy of a shell under a name of its own is not
     recognised; a program file a path or PATH leads to in `/proc` or `/dev` counts as a shell (`/proc/self/exe` is whatever
-    program opens it, the shell itself when a shell runs it). A plain ssh command (`ssh -i ~/.ssh/key`, `timeout 30 ssh`, `-J git@jump.example.com`,
+    program opens it, the shell itself when a shell runs it), and git's ssh, a first line's program and an env -S
+    line's program that are themselves a path into `/proc` or `/dev` are refused outright. A plain ssh command (`ssh -i ~/.ssh/key`, `timeout 30 ssh`, `-J git@jump.example.com`,
     `PermitLocalCommand=no`) and an ssh wrapper script still run; an env -S first line may still name the script's own
     shell (`#!/usr/bin/env -S bash -eu -o pipefail`), as long as it is not told to run a string (`-c` or `+c`, fish's
     `-C` and any start of `--command` or `--init-command`, nu's `-e`, `--commands` and `--execute`, or pwsh's
@@ -378,7 +379,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     no `-s` (a value after `-o` or `-O`, and after pwsh's options that take one, such as `-ExecutionPolicy`, still
     counts). Options are read in order by that shell's rules, and a word taken as a value is never read as an option:
     the sh family, zsh, fish and nu get only a short list of plain options that load no file (`-eu`, `+x`, `--norc`,
-    `--noprofile`; bash runs `—payload` as a script, `bash --rcfile -o payload` runs `payload`, and zsh's `-b` ends its
+    `--noprofile`; login and interactive options such as `-l`, `-i`, `--login` and `--interactive` are refused, since
+    they read start-up files; bash runs `—payload` as a script, `bash --rcfile -o payload` runs `payload`, and zsh's `-b` ends its
     options), with a value only after the sh family's `-o` and `-O` and zsh's `-o`, never at the end of the line, and
     only from a short list of names (`pipefail`, `errexit`, `nounset`, `extglob` and the like; `zsh -o shinstdin` is `-s`);
     other shells (rc, es, csh, tcsh and the like) get no options at all; and pwsh only the option names and
