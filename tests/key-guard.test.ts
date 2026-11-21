@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, networkInterfaces, tmpdir, userInfo } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapArgs, bwrapWorks, checkLock, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runProgram, scrubbedEnv, sshCommand, startCommand } from "../key-guard.mjs";
@@ -1872,6 +1872,26 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   mkdirSync(renamed);
   symlinkSync(bash, join(renamed, "pwsh"));
   assert.throws(() => startCommand(wrapper("pwsh-is-bash", "X=1", "pwsh -ep payload"), [], { ...base, PATH: `${renamed}:${bin}:/usr/bin:/bin` }, { worktree: root, kind: "test" }), /hands the shell \(pwsh\) a script or -s/);
+  // A shell a plain first line names gets what follows it as one word, read by the same rules (GPT second look, round 27).
+  for (const [name, rest] of [["plain-script", join(root, "payload")], ["plain-stdin", "-s"]]) {
+    const line = join(wrappers, name);
+    writeFileSync(line, `#!${bash} ${rest}\nexec ssh "$@"\n`); chmodSync(line, 0o755);
+    assert.throws(() => start(line), /hands the shell \(bash\) a script or -s/, rest);
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: line }, { worktree: root }).problem ?? "", /hands the shell \(bash\) a script or -s/, rest);
+  }
+  const plainOptions = join(wrappers, "plain-options");
+  writeFileSync(plainOptions, `#!${bash} -eu\nexec ssh "$@"\n`); chmodSync(plainOptions, 0o755);
+  assert.deepEqual(start(plainOptions), [plainOptions, []]);
+  // /proc/self/exe is whatever program opens it, so a path into /proc or /dev counts as a shell, through a link or a
+  // folder link too, when it is a program file (round 27).
+  symlinkSync("/proc/self/exe", join(dir, "self-exe"));
+  symlinkSync("/proc/self", join(dir, "self-folder"));
+  const bashOpen = openSync(bash, "r");
+  for (const program of ["/proc/self/exe", "/proc/thread-self/exe", join(dir, "self-exe"), join(dir, "self-folder", "exe"), `/dev/fd/${bashOpen}`, `/proc/self/root${bash}`]) {
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `${program} -c true` }, { worktree: root }).problem ?? "", /it starts a shell/, program);
+    assert.throws(() => start(wrapper(`proc-${basename(program)}-${program.length}`, "X=1", `${program} -c true`)), /, which starts a shell/, program);
+  }
+  closeSync(bashOpen);
   for (const words of ["ssh -i ~/.ssh/id_ed25519 -o IdentityFile=/etc/ssh/key -o UserKnownHostsFile=/etc/ssh/known", "ssh -i/etc/ssh/key -F/etc/ssh/ssh_config"]) {
     const keys = wrapper(`ssh-keys-${words.length}`, "X=1", words);
     assert.deepEqual(start(keys), ["/usr/bin/env", ["X=1", join(bin, "ssh"), ...words.split(" ").slice(1), keys]], words);

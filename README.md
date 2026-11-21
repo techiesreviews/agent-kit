@@ -369,7 +369,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     than `user@host:port` names in it is refused, and so is one beside a word with a `'` in it or an `-F` path with
     more than plain characters (ssh writes a host written there and that path into the same command). `rc`, `es` and
     `nu` count only where they name a program PATH or a path leads to, and a copy of a shell under a name of its own is not
-    recognised. A plain ssh command (`ssh -i ~/.ssh/key`, `timeout 30 ssh`, `-J git@jump.example.com`,
+    recognised; a program file a path leads to in `/proc` or `/dev` counts as a shell (`/proc/self/exe` is whatever
+    program opens it, the shell itself when a shell runs it). A plain ssh command (`ssh -i ~/.ssh/key`, `timeout 30 ssh`, `-J git@jump.example.com`,
     `PermitLocalCommand=no`) and an ssh wrapper script still run; an env -S first line may still name the script's own
     shell (`#!/usr/bin/env -S bash -eu -o pipefail`), as long as it is not told to run a string (`-c` or `+c`, fish's
     `-C` and any start of `--command` or `--init-command`, nu's `-e`, `--commands` and `--execute`, or pwsh's
@@ -382,7 +383,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     only from a short list of names (`pipefail`, `errexit`, `nounset`, `extglob` and the like; `zsh -o shinstdin` is `-s`);
     other shells (rc, es, csh, tcsh and the like) get no options at all; and pwsh only the option names and
     short forms it documents, written out in full, apart from `-ConfigurationFile` and `-SettingsFile`, which load
-    code from a file (it runs `-payload.ps1`, or a `-File:` word, as a script). The run's PATH leaves those folders out, so
+    code from a file (it runs `-payload.ps1`, or a `-File:` word, as a script). A plain first line that names a shell
+    (`#!/bin/bash -eu`) is read by the same rules, so `#!/bin/bash <worktree>/payload` and `#!/bin/bash -s` are refused. The run's PATH leaves those folders out, so
     `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
     node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is
