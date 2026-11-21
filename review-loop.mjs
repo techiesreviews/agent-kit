@@ -173,14 +173,14 @@ export const unmarkedIds = (ids, marks) => ids.filter(id => !marks.has(id));
  * The brief section for round 2 and later (later rounds): review only what changed since the last reviewed head and the open ids,
  * and mark each old id. `open` is [{ id, severity, kind, text }].
  */
-export function loopBriefSection({ round, limit, previousHead, currentHead, open, declined = [], declinedInBrief = false }) {
+export function loopBriefSection({ round, limit, previousHead, currentHead, open, declined = [] }) {
   const label = item => item.group === "Validation gaps" ? "validation gap" : `${item.severity ?? "no severity"}${item.kind && item.kind !== "unsorted" ? ` ${item.kind}` : ""}`;
   // A carried finding keeps its original text after the reviewer's reason, so it gets more room.
   const list = open.map(item => `- ${item.id} (${label(item)}): ${String(item.text).slice(0, isCarried(item) ? 600 : 200)}`).join("\n");
-  // Only what is really in the brief is pointed at: the builder's declined findings listed below, the ones handed over in ASE_REVIEW_DECLINED (the cut kit fix set it), or none.
+  // Only what is really in the brief is pointed at: the builder's declined findings listed below, or none.
   const listed = declined.length > 0;
   const scope = previousHead === currentHead
-    ? `No commit came after the last review (${listed ? "the builder answered or declined: its declined findings and their reasons are listed below" : declinedInBrief ? 'the builder answered or declined: its declined findings and their reasons are in the "Declined by the author" part of this brief' : "no declined finding was recorded, so the builder fixed nothing or its answer was not saved"}): check each finding below against ${listed || declinedInBrief ? "that answer" : "the code"}; there is no new code to read.`
+    ? `No commit came after the last review (${listed ? "the builder answered or declined: its declined findings and their reasons are listed below" : "no declined finding was recorded, so the builder fixed nothing or its answer was not saved"}): check each finding below against ${listed ? "that answer" : "the code"}; there is no new code to read.`
     : `Review only the code changed since ${previousHead} (the \`Changes since the last review\` file named in the scope note) and the findings still open below. Do not review unchanged code again.`;
   return [
     `## Review loop: review round ${round}, after ${round - 1} fix round${round === 2 ? "" : "s"} (at most ${limit} fix rounds)`,

@@ -676,7 +676,8 @@ test("the kit home check moves a commands folder inside the kit out of the copy 
   const home = join(f.build, "scripts/agents");
   mkdirSync(join(home, "kit.d"));
   mkdirSync(join(home, "project.d"));
-  copyFileSync(library, join(home, "kit-lib.sh"));
+  // The shell library asks kit-lib.mjs (which imports review-findings.mjs) for the settings check.
+  for (const name of ["kit-lib.sh", "kit-lib.mjs", "review-findings.mjs"]) copyFileSync(join(repo, name), join(home, name));
   executable(join(home, "kit.d/doctor"), readFileSync(doctor, "utf8"));
   executable(join(home, "kit.d/version"), 'printf "Usage: kit version\\n"');
   writeFileSync(join(home, "project.d/marker"), "");
@@ -1059,7 +1060,7 @@ test("a broken version command, which the kit home check runs, does not stop age
   // The kit home check copies KIT_HOME and runs its version; this home's version fails as the broken one does.
   const home = join(f.directory, "kit-home");
   mkdirSync(home);
-  copyFileSync(library, join(home, "kit-lib.sh"));
+  for (const name of ["kit-lib.sh", "kit-lib.mjs", "review-findings.mjs"]) copyFileSync(join(repo, name), join(home, name));
   executable(join(home, "kit"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');
   const env = { ...kitEnv(), KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands, KIT_HOME: home,
     KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "" };
@@ -1162,7 +1163,7 @@ test("through the real front door, a copy's version failing as its help did is s
   // A kit home with the real front door, its library and a version that fails naming its own path.
   const home = join(f.directory, "kit-home");
   mkdirSync(join(home, "kit.d"), { recursive: true });
-  for (const name of ["kit", "kit-lib.sh", "kit-lib.mjs"]) copyFileSync(join(repo, name), join(home, name));
+  for (const name of ["kit", "kit-lib.sh", "kit-lib.mjs", "review-findings.mjs"]) copyFileSync(join(repo, name), join(home, name));
   chmodSync(join(home, "kit"), 0o755);
   symlinkSync(doctor, join(home, "kit.d/doctor"));
   executable(join(home, "kit.d/version"), 'printf "%s: Cannot find module kit-lib.mjs\\n" "$0" >&2; exit 1');

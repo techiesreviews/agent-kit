@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { accessSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { findingsRecord } from "./review-findings.mjs";
@@ -72,16 +72,26 @@ export function kitSettingsProblems(settings) {
   ];
 }
 
-/** Read the project's settings file once per root; throws one plain line when it is missing, broken or lacks a required key. */
-export function kitSettings(root = kitRoot()) {
-  if (settingsCache.has(root)) return settingsCache.get(root);
+// The project's settings file as read, with what it lacks: one plain line per problem, none when it is usable.
+function readSettings(root) {
   let settings;
   try { settings = JSON.parse(readFileSync(join(root, kitSettingsFile), "utf8")); }
   catch (error) {
-    if (error.code === "ENOENT") throw new Error(`no ${kitSettingsFile}; add one with "project" and "branches": { "land": "<branch>" }`);
-    throw new Error(`${kitSettingsFile} is unreadable: ${oneLine(error.message)}`);
+    if (error.code === "ENOENT") return { problems: [`no ${kitSettingsFile}; add one with "project" and "branches": { "land": "<branch>" }`] };
+    return { problems: [`${kitSettingsFile} is unreadable: ${oneLine(error.message)}`] };
   }
-  const problems = kitSettingsProblems(settings);
+  return { settings, problems: kitSettingsProblems(settings) };
+}
+
+/** What the project's settings file lacks, one plain line each (kit_settings_problems in kit-lib.sh prints them); [] when it is usable. */
+export function kitSettingsFileProblems(root = kitRoot()) {
+  return readSettings(root).problems;
+}
+
+/** Read the project's settings file once per root; throws one plain line when it is missing, broken or lacks a required key. */
+export function kitSettings(root = kitRoot()) {
+  if (settingsCache.has(root)) return settingsCache.get(root);
+  const { settings, problems } = readSettings(root);
   if (problems.length) throw new Error(problems.join("; "));
   // One spelling for every reader: "docs/wayfinder/" is "docs/wayfinder".
   if (typeof settings.maps === "string") settings.maps = settings.maps.replace(/\/+$/, "");
@@ -169,7 +179,7 @@ export function kitProjects(env = process.env) {
 /**
  * Take a machine-wide lock in the kit's state folder (ticket ke-88): `<state>/<name>.lock`, held with flock(1) by a
  * small child process for as long as this process lives, so the system frees it when the holder ends however it
- * ends. While held the file reads `<pid> <owner>` (the front door's kit_quiet_wait reads the quiet lock's).
+ * ends. While held the file reads `<pid> <owner>` (kitQuietLock reads the quiet lock's for the front door).
  * A held lock is waited for; onWait(owner) is told once. release() empties the file and lets the lock go,
  * resolving once flock has ended, so the next taker never finds it still held. Without flock (KIT_FLOCK names
  * another program) nothing is locked: the lock says `missing`, so the caller can say so.
@@ -216,6 +226,22 @@ export async function kitMachineLock(name, { owner = kitOwner(), onWait, env = p
 }
 
 /**
+ * Whether a kit job must wait for the machine's quiet lock, which kit pr holds while it runs spec files alone (ticket
+ * ke-88): { path, owner } while another run holds it, else null. That run's own kit calls (KIT_QUIET_HOLDER is its pid,
+ * the first word of the lock file) go on, and without flock (KIT_FLOCK names another program) nothing waits. The front
+ * door's kit_quiet_wait asks this, then waits in the shell so its signal traps still fire at once.
+ */
+export function kitQuietLock(env = process.env) {
+  const path = join(kitStateDir(env), "quiet.lock");
+  let text;
+  try { text = readFileSync(path, "utf8"); } catch { return null; }
+  const [, pid, owner] = /^\s*(\S*)\s*(.*?)\s*$/.exec(text.split("\n", 1)[0]);
+  if (pid && env.KIT_QUIET_HOLDER === pid) return null;
+  const probe = spawnSync(env.KIT_FLOCK || "flock", ["-n", "-s", path, "true"], { stdio: "ignore" });
+  return probe.error || probe.status === 0 ? null : { path, owner: owner || "unknown" };
+}
+
+/**
  * List a project in projects.json (kit init), under its lock and written atomically: "added", or "listed" when
  * it is already there with the same root. Throws one plain line when the list is broken or the name is taken
  * by another root, so two projects never share a name. during() runs under the lock once the name is checked
@@ -243,59 +269,17 @@ export function kitRegisterProject(name, root, env = process.env, during = () =>
   } finally { release(); }
 }
 
-function version(candidate) {
-  try {
-    if (!statSync(candidate).isFile()) return null;
-    accessSync(candidate, constants.X_OK);
-    // Node on Windows ends the line with CRLF (TOOLS-335).
-    const output = execFileSync(candidate, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).replace(/[\r\n]+$/, "");
-    return /^v([0-9]+)\.([0-9]+)\.([0-9]+)$/.exec(output)?.slice(1).map(Number) ?? null;
-  } catch { return null; }
-}
-
-function children(directory) {
-  try { return readdirSync(directory).filter((name) => !name.startsWith(".")).sort(); }
-  catch { return []; }
-}
-
-function absoluteNode(candidate) {
-  return join(realpathSync(dirname(candidate)), "node");
-}
-
-/** Find system Node >=24 first, then the highest installed npx/nvm version. */
-export function findNode({ path = process.env.PATH, searchRoot } = {}) {
-  for (const directory of (path ?? "").split(":")) {
-    const candidate = resolve(directory, "node");
-    try {
-      if (!statSync(candidate).isFile()) continue;
-      accessSync(candidate, constants.X_OK);
-    } catch { continue; }
-    const found = version(candidate);
-    if (found?.[0] >= 24) return absoluteNode(candidate);
-    break; // Only the first executable node is the system node on PATH.
-  }
-  const root = searchRoot ?? (process.env.CLAUDE_NODE_SEARCH_ROOT || process.env.HOME);
-  if (!root) return null;
-  const npm = join(root, ".npm/_npx");
-  const nvm = join(root, ".nvm/versions/node");
-  const candidates = [
-    ...children(npm).map((name) => join(npm, name, "node_modules/node/bin/node")),
-    ...children(nvm).map((name) => join(nvm, name, "bin/node")),
-  ];
-  let best = null;
-  let highest = [0, 0, 0];
-  for (const candidate of candidates) {
-    const found = version(candidate);
-    if (!found || found[0] < 24) continue;
-    const difference = found.map((part, index) => part - highest[index]).find((part) => part !== 0) ?? 0;
-    if (difference > 0) { best = candidate; highest = found; }
-  }
-  return best ? absoluteNode(best) : null;
-}
-
-/** Copy env with a supported Node first on PATH, or throw when unavailable. */
+/**
+ * Copy env with a supported Node first on PATH, or throw when unavailable. The Node is the one kit_node_find in
+ * kit-lib.sh picks for env's PATH and search folder (CLAUDE_NODE_SEARCH_ROOT, else HOME): system Node >=24 first, then
+ * the highest installed npx/nvm version. That rule has one copy, in the shell, as the front door must run it before
+ * there is a Node.
+ */
 export function nodeEnv(env = process.env) {
-  const node = findNode({ path: env.PATH ?? "", searchRoot: env.CLAUDE_NODE_SEARCH_ROOT || env.HOME || "" });
+  const root = env.CLAUDE_NODE_SEARCH_ROOT || env.HOME || "";
+  const found = spawnSync("bash", ["-c", 'source "$1" && PATH=$2 CLAUDE_NODE_SEARCH_ROOT=$3 HOME=$3 kit_node_find', "kit_node_find",
+    join(import.meta.dirname, "kit-lib.sh"), env.PATH ?? "", root], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const node = found.status === 0 ? found.stdout.replace(/\n$/, "") : "";
   if (!node) throw new Error(nodeError);
   const directory = dirname(node);
   const path = env.PATH ?? "";
