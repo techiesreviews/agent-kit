@@ -8,7 +8,7 @@ import { lookFamily, lookFamilyWords } from "../pr-tier.mjs";
 import { ticketSkillLines } from "../skills.mjs";
 
 // One rule set names every model (TOOLS-290): the CLI it runs on, its weekly budget family, its second-look family and
-// its skills family all come from model-names.mjs, so the four can no longer disagree.
+// its skills family all come from model-names.mjs, so the four can no longer disagree. The table reads them for a review.
 const names = [
   // model, CLI, budget family, second-look family, skills family
   ["gpt-6.1-sol", "codex", "gpt", "gpt", "codex"],
@@ -19,7 +19,7 @@ const names = [
   ["claude-opus-5-5", "claude", null, null, "claude"],
   ["opus", "claude", null, null, "claude"],
   ["opus[1m]", "claude", null, null, "claude"],
-  // Bare sol and luna run nowhere: the runner refuses them, so no brief names Codex skills for them either.
+  // As reviews, bare sol and luna run nowhere: the runner refuses them, so no review brief names Codex skills for them.
   ["sol", null, null, null, "none"],
   ["luna", null, null, null, "none"],
 ];
@@ -30,17 +30,25 @@ test("model names: the runner, the budget, the second look and the skills agree 
     assert.equal(reviewFamily(inferCli(model), model), budget, `${model} budget family`);
     assert.equal(namesLookFamily(model), look, `${model} second-look family`);
     assert.equal(lookFamily(model), look, `${model} second-look family in pr-tier`);
-    assert.equal(skillsFamily(model), skills, `${model} skills family`);
+    assert.equal(skillsFamily(model, "review"), skills, `${model} skills family`);
   }
 });
 
-test("model names: a brief names Codex skills for a Codex model and none for bare sol, which runs nowhere", () => {
+test("model names: a brief names skills for where the model runs; a name no rule knows builds on Codex but reviews nowhere", () => {
   const ticket = "---\ntitle: Restyle the page\n---\n## Files\n- `site/page.css`\n";
-  const first = (model: string) => ticketSkillLines(ticket, "build", {}, model)[0];
+  const first = (model: string, stage = "build") => ticketSkillLines(ticket, stage, {}, model)[0];
   assert.match(first("gpt-6.1-sol"), /^- \$good-css \(the good-css skill\) — /);
   assert.match(first("o3"), /^- \$good-css /);
-  assert.match(first("sol"), /^- CSS: /);
   assert.match(first("claude-opus-5-5"), /^- \/good-css — /);
+  // parseAgentArgs sends a build (or fix) model no rule knows to Codex, so its brief names the Codex skills.
+  for (const stage of ["build", "fix"]) {
+    for (const model of ["luna", "sol", "gpt5"]) assert.equal(skillsFamily(model, stage), "codex", `${model} ${stage}`);
+    assert.match(first("luna", stage), /^- \$good-css /);
+  }
+  // A review by such a name is refused, so its brief keeps the kit's own words.
+  for (const stage of ["review", "second-look"]) assert.equal(skillsFamily("luna", stage), "none", stage);
+  assert.doesNotMatch(first("luna", "review"), /^- [$/]/);
+  assert.match(first("gpt-6.1-sol", "review"), /^- \$/);
 });
 
 test("model names: o3 runs on Codex, so the PR names its family GPT through Codex, not unknown", () => {

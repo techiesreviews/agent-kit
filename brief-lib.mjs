@@ -157,7 +157,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
     "Never wait in the background, never post progress between waits, and never end your turn while a job of yours runs (the Stop hook refuses it).",
   ]);
   if (skills.length) {
-    const family = skillsFamily(target);
+    const family = skillsFamily(target, stage);
     out.push("", "## Skills", `Use these for the parts of the ${task ? "task" : card ? "card" : "ticket"} they fit${family === "none" ? " (in the kit's own words; this model has no skills)" : ""}:`,
       ...skills.map(entry => `- ${skillLine(entry, family)}`));
   }

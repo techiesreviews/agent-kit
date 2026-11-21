@@ -1041,6 +1041,25 @@ test("a review whose CLI is missing records the missing command and an unavailab
   assert.deepEqual(status.outcome, { kind: "unavailable", why: "CLI missing: grok not found (ENOENT)", spent: false, outOfCredit: false });
 });
 
+test("a run that crashes before its CLI starts records a failed outcome whose reason is its problem line", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-agent-crash-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const wt = join(dir, "not a repo"), brief = join(dir, "brief.md");
+  mkdirSync(wt);
+  writeFileSync(brief, "tiny brief\n");
+  const result = spawnSync("bash", [resolve("agent.sh"), "review", wt, brief, "--base", "origin/dev", "--model", "claude-opus-5-5"], {
+    encoding: "utf8", timeout: 15_000, env: { ...process.env, ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s" },
+  });
+  assert.equal(result.status, 2, result.stderr);
+  const out = /^artifacts: (.+)$/m.exec(result.stdout)?.[1];
+  assert.ok(out, result.stdout);
+  // The failed git call's message spans several lines; kit review reads only the problem line, so the outcome matches it.
+  const problem = result.stderr.split("\n").filter(line => line.startsWith("problem: ")).at(-1)!.slice("problem: ".length);
+  const status = JSON.parse(readFileSync(join(out, "status.json"), "utf8"));
+  assert.deepEqual(status.outcome, { kind: "failed", why: problem, spent: false, outOfCredit: false });
+  assert.match(problem, /^Command failed: .*git /);
+});
+
 test("both adapters run through the shared shell entry and compatibility wrappers using fake CLIs", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ase-agent-adapters-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

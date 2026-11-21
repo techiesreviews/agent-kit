@@ -57,6 +57,11 @@ test("run outcome: any other failure, a run stopped from outside included, faile
   // Stopped (SIGTERM at kit review's limit): the closing outage lines no longer decide, and the count stays.
   assert.deepEqual(runOutcome({ cli: "grok", code: 143, problems: [`problem: grok failed (143); see ${log}`], record: { pgid: 7 }, log: "503 Service Unavailable\n" }),
     { kind: "failed", why: `grok failed (143); see ${log}`, spent: true, outOfCredit: false });
+  // Stopped, but the runner's own marks still decide: a refused run is unavailable and a silent one gives its count back.
+  assert.deepEqual(runOutcome({ cli: "codex", code: 130, problems: ["problem: gpt usage limit until 9:00 AM"], record: { pgid: 7, refused: true } }),
+    { kind: "unavailable", why: "gpt usage limit until 9:00 AM", spent: false, outOfCredit: false });
+  assert.deepEqual(runOutcome({ cli: "opencode", code: 143, problems: ["problem: opencode unavailable: no session within 0.5s"], record: { pgid: 7, silent: true } }),
+    { kind: "failed", why: "opencode unavailable: no session within 0.5s", spent: false, outOfCredit: false });
   // A run that failed before its CLI started spent nothing.
   assert.deepEqual(runOutcome({ cli: "claude", code: 1, problems: ["problem: empty diff for HEAD"], record: { pgid: null } }),
     { kind: "failed", why: "empty diff for HEAD", spent: false, outOfCredit: false });

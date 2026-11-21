@@ -62,7 +62,7 @@ export function readTicket(text) {
 /** The skill lines for one stage of a ticket's text, named for the model's family (skillLine). */
 export function ticketSkillLines(text, stage, settings, model) {
   const info = readTicket(text);
-  const family = skillsFamily(model);
+  const family = skillsFamily(model, stage);
   return pickSkills({ files: info.files, words: `${info.title}\n${info.filesText}`, stage, settings }).map(entry => `- ${skillLine(entry, family)}`);
 }
 
