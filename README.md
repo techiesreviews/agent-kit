@@ -362,16 +362,19 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     (`"$E"sh` is `sh`), and a `$NAME` outside quotes whose value holds a pattern or a blank or is empty is refused, as
     is a `~user` or `~+` path (only `~` and `~/…` are HOME), and so is a variable sh sets itself whatever the run holds
     (`$BASH`, `$_`, `$PWD`, `$PPID` and the like, and `$SHELL` where the run has none). ssh's `ProxyCommand` or
-    `LocalCommand` is refused too (not a plain `none`; a quoted `"none"` is a command), since ssh runs it through the
-    user's shell, also in a bundle of flags (`-4oProxyCommand=…`) or with its name quoted. ssh runs `ProxyJump` (`-J`)
+    `LocalCommand` is refused too, also in a bundle of flags (`-4oProxyCommand=…`) or with its name quoted (not a plain
+    `none`; a quoted `"none"` is a command), since ssh runs it through the user's shell. ssh runs `ProxyJump` (`-J`)
     through that shell too, as a command of its own with the jump hosts written into it, so a `ProxyJump` with more
     than `user@host:port` names in it is refused, and so is one beside a word with a `'` in it or an `-F` path with
     more than plain characters (ssh writes a host written there and that path into the same command). `rc`, `es` and
     `nu` count only where they name a program PATH or a path leads to, and a copy of a shell under a name of its own is not
     recognised. A plain ssh command (`ssh -i ~/.ssh/key`, `timeout 30 ssh`, `-J git@jump.example.com`,
     `PermitLocalCommand=no`) and an ssh wrapper script still run; an env -S first line may still name the script's own
-    shell (`#!/usr/bin/env -S bash -eu -o pipefail`), as long as it is not told to run a string (`-c` or `+c`, fish's `-C` and any start of `--command` or `--init-command`, nu's `-e`,
-    `--commands` and `--execute`, or pwsh's `-Command` and its short forms). The run's PATH leaves
+    shell (`#!/usr/bin/env -S bash -eu -o pipefail`), as long as it is not told to run a string (`-c` or `+c`, fish's
+    `-C` and any start of `--command` or `--init-command`, nu's `-e`, `--commands` and `--execute`, or pwsh's
+    `-Command` and its short forms) and gets only options: no script of its own and no `-s` (a value after `-o` or `-O`,
+    and for pwsh after any option but `-File`, still counts). No word on such a line may be a path inside the worktree
+    or its Git folder (`ssh -F <worktree>/cfg`, `node <worktree>/x.js`). The run's PATH leaves
     those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
     node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is
