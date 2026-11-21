@@ -365,7 +365,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     count only where they name a program PATH or a path leads to, and a copy of a shell under a name of its own is not
     recognised. A plain ssh command (`ssh -i ~/.ssh/key`, `timeout 30 ssh`, `-J git@jump.example.com`,
     `PermitLocalCommand=no`) and an ssh wrapper script still run; an env -S first line may still name the script's own
-    shell (`#!/usr/bin/env -S bash -eu -o pipefail`), as long as it is not told to run a string (`-c`, fish's `-C`, or
+    shell (`#!/usr/bin/env -S bash -eu -o pipefail`), as long as it is not told to run a string (`-c` or `+c`, fish's `-C`, or
     pwsh's `-Command` and its short forms). The run's PATH leaves
     those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
