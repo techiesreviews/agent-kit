@@ -665,7 +665,11 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   // told to run env (busybox env, coreutils env) or a wrapper that starts it (timeout 30 env, TOOLS-329).
   if (namesEnv(found) || options.some(namesEnv)) refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
   // A shell the program starts, or the program as a shell told to run a string, could build PATH= from pieces.
-  const kind = ["fish", "pwsh", "nu"].find(kindName => [name, real(found)].some(word => shellNamed(word, kindName)));
+  // The file that starts reads the options, so its name counts first: a link named pwsh that leads to bash reads bash's
+  // (Claude review, round 25).
+  const shRules = word => shellNamed(word, "zsh") ? "zsh" : shellNamed(word, "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|yash|posh") ? "sh" : null;
+  const kindOf = word => ["fish", "pwsh", "nu"].find(kindName => shellNamed(word, kindName));
+  const kind = shRules(real(found)) ? undefined : kindOf(real(found)) ?? kindOf(name);
   const shell = startedShell(options, names, shut) ?? (namesShell(found, names, shut) && options.some(option => runsString(option, kind)) ? basename(name) : null);
   if (shell) refuse(`${file} starts with env ${rest}, which starts a shell (${shell}), and a shell can build PATH= or BASH_ENV= out of pieces; ${shellAdvice(shell, " from that line") ?? "start the program from that line directly"}, or set ASE_KEY_GUARD=off to run without the lock`);
   // A shell runs its first word that is not an option, or what it reads with -s, in place of this script (bash
@@ -685,8 +689,12 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   // Shells read the same letters differently: zsh's -O takes no value and its -b ends the options (so does tcsh's), and
   // rc's -o takes none, so only the sh family and zsh get short options, and any other shell gets none (Claude review,
   // round 24; GPT second look, round 25). An option that takes a value and ends the line would take the script itself.
-  const shRules = word => shellNamed(word, "zsh") ? "zsh" : shellNamed(word, "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|yash|posh") ? "sh" : null;
+  // The name after -o or -O can switch a reading on as well as a letter can (zsh -o shinstdin is -s, and zsh reads
+  // names in any case, without _, and +o no_… as on), so only these names count there (round 26).
   const family = kind ?? shRules(real(found)) ?? shRules(name);
+  const setNames = ["errexit", "nounset", "xtrace", "pipefail", "noclobber", "noglob", "allexport", "errtrace", "functrace", "posix", "verbose", "noexec", "braceexpand", "hashall", "monitor", "notify",
+    "extglob", "globstar", "nullglob", "failglob", "dotglob", "nocaseglob", "inheriterrexit", "lastpipe", "expandaliases", "extendedglob", "shwordsplit", "ksharrays", "warncreateglobal"];
+  const setName = word => setNames.includes(word.toLowerCase().replace(/_/g, ""));
   const longKnown = { fish: ["no-config", "private", "login", "interactive", "no-execute"], nu: ["no-config-file", "no-std-lib", "no-history", "login", "interactive"],
     sh: ["norc", "noprofile", "posix", "login", "noediting", "restricted", "verbose"], zsh: ["no-rcs", "no-globalrcs", "login", "verbose"] }[family] ?? [];
   const shortKnown = { fish: /^-[ilnNPvh]+$/, nu: /^-[ilnvh]+$/, sh: /^[-+](?=[A-Za-z])[aefhiklmnpruvxBCEHP]*[oO]?$/, zsh: /^[-+](?=[A-Za-z])[aefhiklmnpruvxBCEHP]*o?$/ }[family];
@@ -698,7 +706,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   for (let i = 0; i < options.length && !handed; i++) {
     if (family && family !== "pwsh" && (options[i] === "--" || options[i] === "-")) { handed = i + 1 < options.length; break; }
     if (!known(options[i])) handed = true;
-    else if (valued(options[i])) { i++; handed = i >= options.length; }
+    else if (valued(options[i])) { i++; handed = i >= options.length || (family !== "pwsh" && !setName(options[i])); }
   }
   if (namesShell(found, names, shut) && handed) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1, names);

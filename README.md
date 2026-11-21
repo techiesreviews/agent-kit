@@ -378,7 +378,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     counts). Options are read in order by that shell's rules, and a word taken as a value is never read as an option:
     the sh family, zsh, fish and nu get only a short list of plain options that load no file (`-eu`, `+x`, `--norc`,
     `--noprofile`; bash runs `—payload` as a script, `bash --rcfile -o payload` runs `payload`, and zsh's `-b` ends its
-    options), with a value only after the sh family's `-o` and `-O` and zsh's `-o`, and never at the end of the line;
+    options), with a value only after the sh family's `-o` and `-O` and zsh's `-o`, never at the end of the line, and
+    only from a short list of names (`pipefail`, `errexit`, `nounset`, `extglob` and the like; `zsh -o shinstdin` is `-s`);
     other shells (rc, es, csh, tcsh and the like) get no options at all; and pwsh only the option names and
     short forms it documents, written out in full, apart from `-ConfigurationFile` and `-SettingsFile`, which load
     code from a file (it runs `-payload.ps1`, or a `-File:` word, as a script). The run's PATH leaves those folders out, so
