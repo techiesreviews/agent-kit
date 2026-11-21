@@ -137,7 +137,7 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
   section("House rules", [
     "Dev must always work: only a working, checked increment merges into dev (or the project's landing branch). Unfinished work stays on its branch.",
     ...(reviewing ? [] : ["Report what stays on a branch and why, including the branch name and the next step. If no PR was opened, report `PR none, branch <branch>, head <SHA>, next <step>` instead of a PR URL and merge SHA."]),
-    "The lead must start each feature with 3 to 5 plain lines for Lex: what Lex will see on the preview, where (link), and when (after which step).",
+    "For context only: the lead must start each feature with 3 to 5 plain lines for Lex: what Lex will see on the preview, where (link), and when (after which step). Helpers do not post these lines; this reminder adds no helper report or review requirement.",
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
     `Second look: ${lookModels(order)}; ${reviewersRule}; GPT never for a docs-only change, and once per PR, except as the last resort after the free OpenCode model fails; \`second look: skipped (<reason>)\` when none can run.`,
     // kit pr counts the fix rounds from the review records (TOOLS-287).
