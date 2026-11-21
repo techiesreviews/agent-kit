@@ -1413,6 +1413,26 @@ test("TOOLS-390 R1-6: a PATH folder or entry that passes through a worktree link
   assert.match(String(wrapped.command), new RegExp(`^PATH=${leadPattern}:/usr/bin:/bin \\S+/timeout 30 ssh$`));
 });
 
+// The Windows bug itself (a walk that splits C:\ paths on / only) cannot be shown on Linux, whose path functions read no
+// \ or drive letter, and CI has no Windows runner; so this test passes on the code before the fix too. It runs the
+// Windows branch with the platform faked and pins what it must still catch there.
+test("TOOLS-390 SL-1: on Windows a PATH folder is judged by the system's own link reading, so a junction into the worktree, or a folder written inside it, is not trusted", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-sl1-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const root = join(dir, "work"), tools = join(root, "tools"), bin = join(dir, "bin"), junction = join(dir, "junction");
+  for (const folder of [root, tools, bin]) mkdirSync(folder);
+  writeFileSync(join(tools, "kit-sl1-tool"), "#!/bin/sh\nexit 1\n"); chmodSync(join(tools, "kit-sl1-tool"), 0o755);
+  // A link stands in for a junction: an outside folder that leads to <worktree>\tools.
+  symlinkSync(tools, junction);
+  symlinkSync(bin, join(root, "tools-link"));
+  asPlatform("win32", () => {
+    const viaJunction = { ...process.env, PATH: `${junction}:/usr/bin:/bin` };
+    assert.equal(runPath(viaJunction, { worktree: root }), "/usr/bin:/bin");
+    assert.equal(runProgram("kit-sl1-tool", viaJunction, { worktree: root, kind: "test" }), "kit-sl1-tool", "not taken from the junction, so started by its bare name with the run's PATH");
+    assert.equal(runPath({ ...process.env, PATH: `${join(root, "tools-link")}:/usr/bin:/bin` }, { worktree: root }), "/usr/bin:/bin");
+  });
+});
+
 test("TOOLS-326: a percent-coded host is read as the bytes git passes on, decoded as UTF-8", () => {
   assert.equal(remoteHost("ssh://caf%C3%A9.example/a"), "café.example");
   assert.equal(remoteHost("ssh://git@CAF%C3%89.example:22/a"), "café.example");

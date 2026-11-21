@@ -342,7 +342,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   - **Programs by name.** The runner and `kit pr` start git, `gh`, bubblewrap and a CLI by their full path, found only
     in PATH's full-path folders outside the worktree and the repository's Git folder (links followed, and a folder
     reached through a link there, such as `<worktree>/tools-link -> /usr/bin`, or one that leads into `/proc`, through
-    `/dev` too (`/dev/fd/../cwd`), counts as inside; TOOLS-390), and a script's
+    `/dev` too (`/dev/fd/../cwd`), counts as inside; TOOLS-390; on Windows the system follows the links and
+    junctions, and a folder counts as inside where it leads there or is written there, but not where it only passes
+    through a worktree link on the way, as before; TOOLS-390 SL-1), and a script's
     interpreter the same way: a `#!/usr/bin/env node` CLI, or the API route's `#!/usr/bin/env bash` wrapper, starts the
     interpreter by its full path, never a link someone made into the worktree (an `npm link`, a dotfiles `bin`). A
     `#!/usr/bin/env -S MODE=review node` first line is split as env splits it (quotes, escapes, `NAME=value` words, which
