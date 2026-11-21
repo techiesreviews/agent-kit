@@ -1584,6 +1584,11 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.ok(!existsSync(marker), command);
   }
   assert.equal(sshCommand({ ...base, X: "/tmp/[s]h key", GIT_SSH_COMMAND: `ssh -i "$X" host` }, { worktree: root }).problem, null);
+  // sh may set IFS back to blanks at its start (dash does), so an empty IFS from the run still splits $X at blanks
+  // (GPT second look, round 8).
+  const emptyIfs = { ...base, IFS: "", X: "-v -J jump.example.invalid", GIT_SSH_COMMAND: `ssh $X -o "HostName=a'b" host` };
+  assert.match(sshCommand(emptyIfs, { worktree: root }).problem ?? "", /cannot be told: sh splits or expands what a \$ fills in/);
+  assert.match(refusedWith(emptyIfs), /^kit: git's ssh command \(.*\) cannot be told: sh splits or expands what a \$ fills in/m);
   // sh takes out a \ and the line break after it inside double quotes, so "s\<line break>h" is sh (GPT second look, round 4).
   const continued = sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ${dirname(shell)}/"s\\\nh" -c 'echo ran > ${marker}'` }, { worktree: root });
   assert.match(continued.problem ?? "", /cannot be told: it uses shell syntax beyond words and quotes/);
