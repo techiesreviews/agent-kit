@@ -527,20 +527,23 @@ const shutIn = (path, shut) => fromRoots(path, shut).some(place => shut.some(roo
 // them, while the kit sees its own node there (GPT second look, round 27). So a path that leads into /proc or /dev, by
 // a link or a folder link too, counts as a shell when it is a program file (/dev/null, an -F value, is none).
 const systemFolder = /^\/(?:proc|dev)(?:\/|$)/;
+// The kernel reads a .. after a folder link from where that link leads, so each step's folder is the one libc's
+// realpath finds, and a link's target is put after it as written, never tidied (Claude review, round 27).
 const magic = path => {
-  let place = resolve(path);
+  let place = isAbsolute(path) ? path : `${process.cwd()}/${path}`;
   for (let step = 0; step < 40; step++) {
-    if (systemFolder.test(place)) return true;
-    try { if (systemFolder.test(realpathSync(dirname(place)))) return true; } catch { return false; }
+    let folder;
+    try { folder = realpathSync.native(dirname(place)); } catch { return false; }
+    if (systemFolder.test(join(folder, basename(place)))) return true;
     let target;
     try { target = readlinkSync(place); } catch { return false; }
-    place = resolve(dirname(place), target);
+    place = isAbsolute(target) ? target : `${folder}/${target}`;
   }
   return true;
 };
 const namesShell = (word, env, shut) => {
   const files = word.includes("/") ? fromRoots(word, shut).filter(executable) : [programFor(word, env, shut)].filter(Boolean);
-  return shellNamed(word) || (word.includes("/") && files.some(magic)) || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es|nu)$/.test(basename(name))));
+  return shellNamed(word) || files.some(magic) || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es|nu)$/.test(basename(name))));
 };
 // ssh splits an option from its value at any blank, a line break and carriage return too, or an =.
 const viaShell = /(?<!permit)(proxy|local)command(?:\s*=\s*|\s+|$)(.*)$/is;
@@ -684,8 +687,10 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   if (basename(interpreter) !== "env") {
     if (shutIn(interpreter, shut)) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
     // The same holds for a shell the line names itself, which gets what follows it as one word (#!/bin/bash
-    // <worktree>/payload, #!/bin/bash -s; GPT second look, round 27).
-    if (rest && namesShell(interpreter, names, shut) && handsScript(interpreter, interpreter, [rest])) refuse(`${file} starts with ${line}, which hands the shell (${basename(interpreter)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
+    // <worktree>/payload, #!/bin/bash -s; GPT second look, round 27), or on macOS as words split at blanks (Claude
+    // review, round 27).
+    const given = process.platform === "darwin" ? rest.split(/[ \t]+/) : [rest];
+    if (rest && namesShell(interpreter, names, shut) && handsScript(interpreter, interpreter, given)) refuse(`${file} starts with ${line}, which hands the shell (${basename(interpreter)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
     // A binary interpreter the kernel starts itself; one that is a script again is followed (the kernel passes what
     // follows the interpreter as one argument, before the script).
     const next = interpreted(interpreter, [...(rest ? [rest] : []), file, ...args], env, shut, refuse, depth + 1, names);

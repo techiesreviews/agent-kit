@@ -369,7 +369,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     than `user@host:port` names in it is refused, and so is one beside a word with a `'` in it or an `-F` path with
     more than plain characters (ssh writes a host written there and that path into the same command). `rc`, `es` and
     `nu` count only where they name a program PATH or a path leads to, and a copy of a shell under a name of its own is not
-    recognised; a program file a path leads to in `/proc` or `/dev` counts as a shell (`/proc/self/exe` is whatever
+    recognised; a program file a path or PATH leads to in `/proc` or `/dev` counts as a shell (`/proc/self/exe` is whatever
     program opens it, the shell itself when a shell runs it). A plain ssh command (`ssh -i ~/.ssh/key`, `timeout 30 ssh`, `-J git@jump.example.com`,
     `PermitLocalCommand=no`) and an ssh wrapper script still run; an env -S first line may still name the script's own
     shell (`#!/usr/bin/env -S bash -eu -o pipefail`), as long as it is not told to run a string (`-c` or `+c`, fish's
