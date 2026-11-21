@@ -1584,6 +1584,21 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.ok(!existsSync(marker), command);
   }
   assert.equal(sshCommand({ ...base, X: "/tmp/[s]h key", GIT_SSH_COMMAND: `ssh -i "$X" host` }, { worktree: root }).problem, null);
+  // sh takes out a \ and the line break after it inside double quotes, so "s\<line break>h" is sh (GPT second look, round 4).
+  const continued = sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ${dirname(shell)}/"s\\\nh" -c 'echo ran > ${marker}'` }, { worktree: root });
+  assert.match(continued.problem ?? "", /cannot be told: it uses shell syntax beyond words and quotes/);
+  spawnSync("/bin/sh", ["-c", continued.command!], { env: base, encoding: "utf8" });
+  assert.ok(!existsSync(marker));
+  // What sh fills in from quoted variables gets the env and setting checks too: env itself, and PATH= or BASH_ENV= for
+  // it, also behind timeout (GPT second look, round 4).
+  for (const [command, env, why] of [[`timeout 30 "$E" "$X" ssh`, { E: "/usr/bin/env", X: `PATH=${toLinks}` }, /sh fills in a \$ in it as PATH=, which sets PATH itself/],
+    [`timeout 30 "$E" "$X" ssh`, { E: "/usr/bin/env", X: `BASH_ENV=${startup}` }, /sh fills in a \$ in it as BASH_ENV=, which sets BASH_ENV itself/],
+    [`timeout 30 "$E" ssh`, { E: "/usr/bin/env" }, /sh fills in a \$ in it as env, which looks its program up on PATH/],
+    [`timeout 30 gnuenv "$X" ssh`, { X: `PATH=${toLinks}` }, /sh fills in a \$ in it as PATH=, which sets PATH itself/],
+    [`timeout 30 gnuenv "$X" ssh`, { X: "-S${A}${B} ssh" }, /sh fills in a \$ in it as a word an env there could read as PATH= or BASH_ENV=/]] as const) {
+    assert.match(sshCommand({ ...base, ...env, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", why, command);
+    assert.match(refusedWith({ ...base, ...env, GIT_SSH_COMMAND: command }), /^kit: git's ssh command \(.*\) cannot be told: sh fills in a \$ in it as/m, command);
+  }
   // A pattern sh expands after the program could name a shell too.
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ${dirname(shell)}/s? -c 'ssh "$@"' ssh` }, { worktree: root }).problem ?? "", /cannot be told: sh expands a pattern in it, which could name a shell/);
   // GIT_SSH naming a shell starts one as well.

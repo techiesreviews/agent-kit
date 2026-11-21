@@ -723,6 +723,8 @@ function shellWords(line) {
         value += "\x04";
         for (at++; at < line.length && line[at] !== '"'; at++) {
           let inner = line[at], escaped = false;
+          // sh takes out a \ and the line break after it inside double quotes too, so "s\<line break>h" is sh.
+          if (inner === "\\" && line[at + 1] === "\n") return null;
           if (inner === "\\" && '"\\$`'.includes(line[at + 1] ?? "")) { inner = line[++at]; escaped = true; }
           else if (inner === "`" || (inner === "$" && line[at + 1] === "(")) return null;
           value += inner === "$" && !escaped ? "\x01" : inner;
@@ -817,6 +819,11 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     }).replace(/^\x03/, home(env)).replace(/[\0\x04\x05]/g, ""));
     if (reshaped) return unknown("sh splits or expands what a $ fills in, which could name a shell");
     if (filled.some(other => other.includes("\x01"))) return unknown("sh fills in a $ in it, which could name a shell");
+    // What sh fills in gets the env and setting checks above too: "$E" "$X" with E=/usr/bin/env and X=PATH=… is
+    // timeout 30 env PATH=… by then (GPT second look, round 4).
+    const filledSetting = lineSetting(filled);
+    if (filledSetting) return unknown(`sh fills in a $ in it as ${[FILLED, INNER].includes(filledSetting) ? "a word an env there could read as PATH= or BASH_ENV=" : `${filledSetting}=, which sets ${filledSetting} itself`}`);
+    if (filled.slice(1).some(namesEnv)) return unknown("sh fills in a $ in it as env, which looks its program up on PATH");
     const started = startedShell(filled, env, shut);
     if (started) return unknown(`it starts a shell (${started}), and a shell can build PATH= or BASH_ENV= out of pieces${shellAdvice(started, "") ? `; ${shellAdvice(started, "")}` : ""}`);
     program = word.value; before = shell.slice(0, word.start); after = shell.slice(word.end);
