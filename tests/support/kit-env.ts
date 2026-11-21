@@ -48,8 +48,12 @@ function testHome() {
   return folder;
 }
 export const testHomeFolder = testHome();
+// Build sessions keep private state beside their temporary work so a real run can resume. Give each test process
+// its own temp root; removing it also removes those retained sessions, without scanning another process's folders.
+const testTemporary = mkdtempSync(join(tmpdir(), "kit-test-tmp-"));
+process.once("exit", () => rmSync(testTemporary, { recursive: true, force: true }));
 Object.assign(process.env, { HOME: testHomeFolder, XDG_CONFIG_HOME: join(testHomeFolder, ".config"), XDG_CACHE_HOME: join(testHomeFolder, ".cache"),
-  XDG_DATA_HOME: join(testHomeFolder, ".local/share") });
+  XDG_DATA_HOME: join(testHomeFolder, ".local/share"), TMPDIR: testTemporary, TMP: testTemporary, TEMP: testTemporary });
 // ASE_KEY_GUARD and KIT_KEY_PATHS from the shell that started the tests would change what the lock does in every
 // fixture (off: no lock is tested at all; a path: one more folder to search), so they are dropped; a test of either
 // sets it itself.
