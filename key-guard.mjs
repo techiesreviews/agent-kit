@@ -532,8 +532,8 @@ const jumpOption = /proxyjump(?:\s*=\s*|\s+|$)(.*)$/is;
 // Variables sh sets or changes itself as it starts or runs (bash's and dash's), whatever the run's environment holds:
 // "$BASH" and "$_" are the shell itself there, and bash sets SHELL where the run has none (GPT second look, round 19).
 const shellSets = /^(?:BASH\w*|SHELL\w*|_|PPID|PWD|OLDPWD|UID|EUID|GROUPS|HOSTNAME|HOSTTYPE|MACHTYPE|OSTYPE|RANDOM|SRANDOM|SECONDS|EPOCH\w*|LINENO|SHLVL|HIST\w*|FUNCNAME|DIRSTACK|PIPESTATUS|COMP_\w*|READLINE_\w*|REPLY|OPTIND|OPTERR|OPTARG|PS[0-4]|IFS|MAILCHECK|COLUMNS|LINES|TMOUT)$/;
-// The value of ssh's flag `letter` in words[i], joined to it in a bundle (-4J host, and -1 and -2, which ssh still
-// takes and ignores: GPT second look, round 19) or in the next word; null if none.
+// The value of ssh's flag `letter` in words[i], joined to it in a bundle (-4J host; -2J too, which ssh ignores, and -1J,
+// which it refuses, so such a line fails anyway: GPT second look, round 19) or in the next word; null if none.
 const flagValue = (words, i, letter) => {
   const flag = new RegExp(`^-[1246AaCfGgKkMNnqsTtVvXxYy]*${letter}(.*)$`, "s").exec(words[i]);
   return flag ? flag[1] || (words[i + 1] ?? "") : null;
@@ -591,7 +591,10 @@ const runsString = (option, kind) => {
     const name = /^[-–—―]{1,2}([A-Za-z]+)(?::|$)/.exec(option.trim())?.[1]?.toLowerCase();
     return Boolean(name) && (["cwa", "ec"].includes(name) || ["command", "commandwithargs", "encodedcommand"].some(full => full.startsWith(name)));
   }
+  // fish takes any start of a long option's name that tells it apart (--com, --init-com=…): GPT second look, round 20.
+  const fishName = kind === "fish" ? /^--([A-Za-z-]+)(?:=|$)/.exec(option)?.[1] : undefined;
   return /^[-+][A-Za-z]*c/.test(option) || (kind === "fish" && /^-[A-Za-z]*C/.test(option)) || /^--(?:command|init-command)(?:=|$)/.test(option)
+    || Boolean(fishName && ["command", "init-command"].some(full => full.startsWith(fishName)))
     || (kind === "nu" && /^(?:-[A-Za-z]*e|--(?:commands|execute)(?:=|$))/.test(option));
 };
 
