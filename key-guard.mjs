@@ -508,7 +508,8 @@ const namesEnv = word => basename(word) === "env" || (word.includes("/") && base
 // bash -c …', a value after an =); so do ssh's ProxyCommand and LocalCommand (but none), which ssh runs through the
 // user's shell: anywhere in a word, so in a bundle of ssh's flags (-4oProxyCommand=…) and with quotes or \ in its name
 // too, which ssh takes out (PermitLocalCommand is another option). ssh also writes a ProxyJump's (-J's) hosts into a
-// command of its own that it runs through that shell, so one with more than user@host:port names in it counts. rc and
+// command of its own that it runs through that shell, so one with more than user@host:port names in it counts, and so
+// does one beside a word with a ' in it or an -F path with more than plain characters, which land in that command. rc and
 // es, too short to tell from other words, count only where PATH or a path leads to such a program, and take no version.
 // A copy of a shell under a name of its own is not recognised. startedShell gives what starts the shell, in words, or
 // null; shellAdvice what to do about it.
@@ -527,7 +528,8 @@ const flagValue = (words, i, letter) => {
 };
 const jumpOf = (words, i) => jumpOption.exec(words[i].replace(/["'\\]/g, ""))?.[1] ?? flagValue(words, i, "J");
 const startedShell = (words, env, shut) => {
-  // A ProxyJump's command holds the -F path as it is and the host (%h, from HostName too) in single quotes.
+  // A ProxyJump's command holds the -F path as it is and the host (%h, from HostName too) in single quotes: a host
+  // written in these words is checked here, one git adds from the push address is not (the README says so).
   const jumping = words.some((_, i) => !/^(?:none)?$/i.test(jumpOf(words, i)?.trim() ?? ""));
   for (const [i, word] of words.entries()) {
     const option = viaShell.exec(word.replace(/["'\\]/g, ""));
@@ -541,7 +543,7 @@ const startedShell = (words, env, shut) => {
   }
   return null;
 };
-const shellAdvice = (started, where) => started.startsWith("ProxyJump beside") ? `keep the host and the -F path${where} plain, or drop ProxyJump (-J)`
+const shellAdvice = (started, where) => started.startsWith("ProxyJump beside") ? `keep every word${where} free of ' and the -F path plain, or drop ProxyJump (-J)`
   : started.startsWith("ProxyJump") ? `give ProxyJump (-J)${where} plain user@host:port names`
   : /^(?:Proxy|Local)Command/.test(started) ? `drop ProxyCommand and LocalCommand${where}, or use ProxyJump (-J) with plain host names instead` : null;
 // A shell told to run a string instead of the script: -c alone or bundled (-ec), --command, --init-command, and fish's
