@@ -532,6 +532,8 @@ const systemFolder = /^\/(?:proc|dev)(?:\/|$)/;
 const magic = path => {
   let place = isAbsolute(path) ? path : `${process.cwd()}/${path}`;
   for (let step = 0; step < 40; step++) {
+    // A path written into /proc or /dev goes there whatever realpath makes of it (/proc/self/cwd is the kit's folder).
+    if (systemFolder.test(place)) return true;
     let folder;
     try { folder = realpathSync.native(dirname(place)); } catch { return false; }
     if (systemFolder.test(join(folder, basename(place)))) return true;
