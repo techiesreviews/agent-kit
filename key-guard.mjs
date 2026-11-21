@@ -350,8 +350,10 @@ export function codexPaths(paths) {
   return found.filter(path => !found.some(other => other !== path && inside(path, other)));
 }
 
-// A path and the ones inside it: a masked folder hides what is inside, so only the outermost is mounted.
+// A path and the ones inside it: a masked folder hides what is inside, so only the outermost is mounted. Windows paths
+// ignore case, so there c:\work\bin is inside C:\work (Claude review R6-2).
 function inside(path, folder) {
+  if (process.platform === "win32") { path = path.toLowerCase(); folder = folder.toLowerCase(); }
   return path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
 }
 
@@ -445,12 +447,21 @@ const pathFolders = env => (env.PATH === undefined ? systemPath : String(env.PAT
 // stops, and so does this.
 // On Windows the walk reads a path's parts by / alone, so C:\ paths and their links and junctions would not be followed
 // at all (TOOLS-390 SL-1): there `end` is every link followed by the system (realpathSync, as far as the path exists,
-// as before the walk), and `passed` is the path as written, so a folder written inside the worktree still counts.
+// as before the walk), and `passed` is the path as written, so a folder written inside the worktree still counts. A
+// link or junction whose target is not there yet is followed to that target, as the walk does (Claude review R6-1).
 function walkWindows(path) {
   const full = resolve(path), rest = [];
-  for (let at = full; ; at = dirname(at)) {
+  let at = full, links = 0;
+  for (;;) {
     try { return { end: join(realpathSync(at), ...rest), passed: [full] }; }
-    catch { if (dirname(at) === at) return { end: full, passed: [full] }; rest.unshift(basename(at)); }
+    catch {
+      let target = null;
+      try { if (lstatSync(at).isSymbolicLink()) target = readlinkSync(at); } catch { /* Not there. */ }
+      if (target !== null && ++links <= 40) { at = resolve(dirname(at), target); continue; }
+      if (dirname(at) === at) return { end: join(at, ...rest), passed: [full] };
+      rest.unshift(basename(at));
+      at = dirname(at);
+    }
   }
 }
 function walk(path) {
