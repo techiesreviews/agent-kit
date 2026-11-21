@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
 # Shared helpers for agent-kit commands. Sourcing this file has no side effects.
 
-# The project's top folder: KIT_ROOT, else the git worktree's. Outside git it is the project around a kit kept in
-# its scripts/agents/ (where a project's settings file sits), else the kit folder itself, which is the folder given
-# (the front door passes its own) or this file's. kitRoot in kit-lib.mjs follows the same rule.
+# The project's top folder: KIT_ROOT (the front door sets it to the answer it found), else kitRoot in kit-lib.mjs
+# asked about the kit folder given (the front door passes its own) or this file's. Without Node it prints nothing
+# and returns 1.
 kit_root() {
-  if [[ -n ${KIT_ROOT:-} ]]; then
-    printf '%s\n' "$KIT_ROOT"
-  elif ! git rev-parse --show-toplevel 2>/dev/null; then
-    local here
-    here=$(cd -- "${1:-$(dirname -- "${BASH_SOURCE[0]}")}" && pwd -P)
-    if [[ $here == */scripts/agents ]]; then (cd -- "$here/../.." && pwd -P); else printf '%s\n' "$here"; fi
-  fi
+  if [[ -n ${KIT_ROOT:-} ]]; then printf '%s\n' "$KIT_ROOT"; return; fi
+  kit_lib_node 'console.log(lib.kitRoot(process.argv[2]))' "$(cd -- "${1:-$(dirname -- "${BASH_SOURCE[0]}")}" && pwd -P)"
 }
 
 # The shared kit's folder: KIT_HOME, else the folder holding this file. A KIT_HOME some front door
@@ -64,8 +59,8 @@ kit_dev_root() {
 }
 
 # The persistent main checkout, as kitMainRoot in kit-lib.mjs finds it: KIT_MAIN_ROOT, else the settings' mainRoot
-# (only from a valid file), else the main worktree. Without Node it is the main worktree, quietly, so the front door
-# still runs and kit doctor can say Node is missing.
+# (only from a valid file), else the main worktree. Without Node it is the main worktree, quietly, so a command run
+# on its own (kit doctor by path) can still say Node is missing.
 kit_main_root() {
   local root common
   if [[ -n ${KIT_MAIN_ROOT:-} ]]; then printf '%s\n' "$KIT_MAIN_ROOT"; return; fi
@@ -143,26 +138,30 @@ kit_node() {
   export KIT_NODE=$node
 }
 
-# Text with every URL's user-info part taken out (https://user:token@host/… prints as https://host/…), so no
-# message, log or report the kit writes shows a remote's token.
-kit_hide_user_info() {
-  printf '%s\n' "${1-}" | sed -E 's|([A-Za-z][A-Za-z0-9+.-]*://)[^[:space:]/?#]*@|\1|g'
+# The front door's RESULT line when it finds no Node >=24 (kit_node says so on stderr): fixed words, so nothing in it
+# needs hiding.
+kit_node_missing() {
+  printf '%s\n' 'RESULT: fail no Node >=24 found (system, npx cache or nvm)'
 }
 
+# Text with every URL's user-info part taken out, as kitHideUserInfo in kit-lib.mjs does it, so no message, log or
+# report the kit writes shows a remote's token. The text goes to Node on stdin, whole: Git Bash on Windows rewrites
+# path-like arguments it hands Node. Without Node it prints nothing and returns 1.
+kit_hide_user_info() {
+  printf '%s' "${1-}" | kit_lib_node 'process.stdout.write(`${lib.kitHideUserInfo((await import("node:fs")).readFileSync(0, "utf8"))}\n`)'
+}
+
+# The RESULT line, as kitResult in kit-lib.mjs writes it: the status, then the other words joined by spaces, on one
+# line, with URL user-info hidden; returns 2 for a status other than ok or fail. Status and words go to Node on stdin,
+# split by a NUL (which no shell word holds). Without Node it prints the front door's fixed line and returns 1.
 kit_result() {
   local status=${1-} text
   local IFS=' '
   if (( $# )); then shift; fi
-  case $status in
-    ok|fail) text="$*" ;;
-    *) text="kit_result: bad status $status"; status=bad ;;
-  esac
-  text=${text//$'\n'/ }
-  text=${text//$'\r'/ }
-  text=$(kit_hide_user_info "$text")
-  if [[ $status == bad ]]; then
-    printf 'RESULT: fail %s\n' "$text"
-    return 2
-  fi
-  printf 'RESULT: %s %s\n' "$status" "$text"
+  text="$*"
+  printf '%s\0%s' "$status" "$text" | kit_lib_node 'const [status, text] = (await import("node:fs")).readFileSync(0, "utf8").split("\0"); lib.kitResult(status, text);' && return
+  status=$?
+  if (( status == 2 )); then return 2; fi
+  if kit_node_find > /dev/null; then printf '%s\n' 'RESULT: fail kit-lib.mjs did not run (its error is above)'; else kit_node_missing; fi
+  return 1
 }

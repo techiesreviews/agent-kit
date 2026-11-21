@@ -12,10 +12,13 @@ function git(args, env = process.env) {
   catch { return ""; }
 }
 
-/** Return the current worktree root, with KIT_ROOT taking precedence. */
-export function kitRoot() {
-  // Outside git: the project around a kit kept in its scripts/agents/, else the kit's own folder (kit_root in kit-lib.sh).
-  const outside = /[\\/]scripts[\\/]agents$/.test(import.meta.dirname) ? resolve(import.meta.dirname, "../..") : import.meta.dirname;
+/**
+ * The project's top folder: KIT_ROOT, else the git worktree's. Outside git it is the project around a kit kept in its
+ * scripts/agents/ (where a project's settings file sits), else the kit folder itself: `here` (the front door passes its
+ * own) or this file's. kit_root in kit-lib.sh asks this one.
+ */
+export function kitRoot(here = import.meta.dirname) {
+  const outside = /[\\/]scripts[\\/]agents$/.test(here) ? resolve(here, "../..") : here;
   return process.env.KIT_ROOT || (git(["rev-parse", "--show-toplevel"]) || outside);
 }
 

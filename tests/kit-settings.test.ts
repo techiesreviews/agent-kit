@@ -239,7 +239,7 @@ test("without Node the shell helpers still answer: the settings go unchecked, th
   assert.equal(problems.status, 1);
   assert.equal(problems.stdout, "scripts/agents/kit.json was not checked (kit-lib.mjs did not run)\n");
   assert.match(problems.stderr, /no Node >=24 found/);
-  // The main worktree, quietly, so the front door still runs and kit doctor can say Node is missing.
+  // The main worktree, quietly, so kit doctor run on its own can still say Node is missing.
   const main = bash("kit_main_root", noNode);
   assert.equal(main.stdout, `${root}\n`, main.stderr);
   assert.equal(main.stderr, "");
