@@ -1826,16 +1826,26 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   assert.deepEqual(start(pipefail), ["/usr/bin/env", ["X=1", bash, "-eu", "-o", "pipefail", pipefail]]);
   const noclobber = wrapper("own-shell-noclobber", "X=1", "bash -eC");
   assert.deepEqual(start(noclobber), ["/usr/bin/env", ["X=1", bash, "-eC", noclobber]]);
-  // A shell runs its first word that is not an option, or what -s reads, in place of the script, and no program on the
-  // line gets a path inside the worktree (GPT second look, round 21).
-  for (const [name, words, why] of [["shell-payload", `bash ${join(root, "payload")}`, /hands the program a path inside the worktree/],
-    ["shell-relative", "bash payload", /hands the shell \(bash\) a script or -s/], ["shell-stdin", "bash -s", /hands the shell \(bash\) a script or -s/],
-    ["shell-stdin-bundle", "bash -es", /hands the shell \(bash\) a script or -s/], ["pwsh-file", "pwsh -NoProfile -File payload", /hands the shell \(pwsh\) a script or -s/],
-    ["pwsh-file-short", "pwsh -f payload", /hands the shell \(pwsh\) a script or -s/], ["ssh-config", `ssh -F ${join(root, "cfg")}`, /hands the program a path inside the worktree/]] as const) {
+  // A shell runs its first word that is not an option, or what -s reads, in place of the script (GPT second look,
+  // round 21), and every word after -- or a lone - is one (round 22); pwsh's switches take no value (Claude review,
+  // round 21).
+  for (const [name, words] of [["shell-payload", `bash ${join(root, "payload")}`], ["shell-relative", "bash payload"], ["shell-stdin", "bash -s"],
+    ["shell-stdin-bundle", "bash -es"], ["shell-dashes", "bash -- -e"], ["shell-dash", "bash - -e"], ["pwsh-file", "pwsh -NoProfile -File payload"],
+    ["pwsh-file-short", "pwsh -f payload"], ["pwsh-switch", "pwsh -NoProfile payload.ps1"], ["pwsh-stdin", "pwsh -NoProfile -"]]) {
     const file = wrapper(name, "X=1", words);
+    const why = new RegExp(`hands the shell \\(${words.split(" ")[0]}\\) a script or -s`);
     assert.throws(() => start(file), why, words);
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: file }, { worktree: root }).problem ?? "", why, words);
   }
+  // Option values still count, and an ssh line with key files outside the worktree still starts.
+  assert.doesNotThrow(() => start(wrapper("pwsh-valued", "X=1", "pwsh -NoProfile -ep Bypass -WorkingDirectory /tmp")));
+  for (const words of ["ssh -i ~/.ssh/id_ed25519 -o IdentityFile=/etc/ssh/key -o UserKnownHostsFile=/etc/ssh/known", "ssh -i/etc/ssh/key -F/etc/ssh/ssh_config"]) {
+    assert.doesNotThrow(() => start(wrapper(`ssh-keys-${words.length}`, "X=1", words)), words);
+    assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: words }, { worktree: root }).problem, null, words);
+  }
+  // SHELL is the shell ssh runs a ProxyJump through, so a line does not set it (Claude review, round 21).
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `SHELL=${join(root, "x")} ssh -J jump.example.invalid host` }, { worktree: root }).problem ?? "", /sets SHELL itself/);
+  assert.throws(() => start(wrapper("shell-setting", `SHELL=${join(root, "x")}`, "ssh -J jump.example.invalid")), /sets SHELL itself/);
   // fish's other long options still start it (Claude review, round 20).
   for (const words of ["fish --no-config", "fish --private"]) {
     assert.doesNotThrow(() => startCommand(wrapper(`own-${words.replace(/\W+/g, "-")}`, "X=1", words), [], withOthers, { worktree: root, kind: "test" }), words);

@@ -346,7 +346,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     would expand (`${NAME}`) or that holds another env option is refused (TOOLS-320), as is one that starts env again,
     as its program or among its words (`busybox env`, `timeout 30 env`), or that sets anywhere in it (joined to an `-S`
     option or inside one quoted string too) `PATH` or a shell variable that runs code from elsewhere: `BASH_ENV`, `ENV`,
-    a `BASH_FUNC_<name>%%` function, `SHELLOPTS`, `BASHOPTS`, `PS4` or `ZDOTDIR` (TOOLS-326, TOOLS-329). An env under
+    a `BASH_FUNC_<name>%%` function, `SHELLOPTS`, `BASHOPTS`, `PS4`, `ZDOTDIR`, or `SHELL` (the shell ssh runs a
+    `ProxyJump` through) (TOOLS-326, TOOLS-329). An env under
     another name (GNU env installed as `gnuenv`) joins a name split by quotes, so `'PA''TH=…'` counts as `PATH=` too, and
     an `-S` string among the words (`--split` and other short forms of `--split-string` too) that holds `${…}`, which
     that env could fill in as `PATH=`, is refused; so is a word, or a piece of a `sh -c '…'` string, with only name
@@ -372,9 +373,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     `PermitLocalCommand=no`) and an ssh wrapper script still run; an env -S first line may still name the script's own
     shell (`#!/usr/bin/env -S bash -eu -o pipefail`), as long as it is not told to run a string (`-c` or `+c`, fish's
     `-C` and any start of `--command` or `--init-command`, nu's `-e`, `--commands` and `--execute`, or pwsh's
-    `-Command` and its short forms) and gets only options: no script of its own and no `-s` (a value after `-o` or `-O`,
-    and for pwsh after any option but `-File`, still counts). No word on such a line may be a path inside the worktree
-    or its Git folder (`ssh -F <worktree>/cfg`, `node <worktree>/x.js`). The run's PATH leaves
+    `-Command` and its short forms) and gets only options: no script of its own, nothing after `--` or a lone `-`, and
+    no `-s` (a value after `-o` or `-O`, and after pwsh's options that take one, such as `-ExecutionPolicy`, still
+    counts). The run's PATH leaves
     those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
     node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is
@@ -398,7 +399,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   which a build or a check can change and `kit pr` then runs, the machine's kit copy where builds and checks run
   unlocked (no bubblewrap, or `ASE_KEY_GUARD=off`; Codex's own sandbox keeps it read-only), a `kit pr` started through
   `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), what a program an env -S first line or
-  git's ssh command starts does with its own words (only the line's words are read: a program other than a shell can
+  git's ssh command starts does with its own words (only the line's words are read, not the files they name, so
+  `node payload.js` there runs a file a build may have written in the worktree; a program other than a shell can
   set PATH in its own way, and `timeout 30 node` looks node up by name on the run's PATH, where a link elsewhere into the worktree
   stays), variables there that have a loader or a runtime load code (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `NODE_OPTIONS`,
   `PYTHONPATH` and the like) or move another shell's start-up folder (`HOME` for zsh, `XDG_CONFIG_HOME` for fish), a

@@ -472,14 +472,15 @@ const programFor = (name, env, shut) => lookup(name, env, shut).file;
 const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the worktree or its Git folder (${real(file)}), where a build can change it, so it is not started; put a ${name} from outside them on PATH, or set ASE_KEY_GUARD=off to run without the lock`;
 // The variable a word sets for an env that reads it, or undefined: PATH, or one that has a bash or sh it starts run code
 // from elsewhere (TOOLS-329): BASH_ENV or ENV (a file it reads before anything else), a BASH_FUNC_<name>%% function, or
-// SHELLOPTS, BASHOPTS or PS4 (a trace prompt it expands), or ZDOTDIR (the folder whose .zshenv every zsh reads). It
+// SHELLOPTS, BASHOPTS or PS4 (a trace prompt it expands), or ZDOTDIR (the folder whose .zshenv every zsh reads), or
+// SHELL (the shell ssh runs a ProxyJump's command through: Claude review, round 21). It
 // counts at the word's start, after a character no variable name holds (a blank inside one quoted -S string, an option's
 // =), or joined to an -S option (-SPATH=…, -iSPATH=…), so another env the line starts (busybox env, coreutils env)
 // cannot hide one in its own words; XPATH= and MY_ENV= are other variables. It also counts the word as such an env
 // would split it when the kit cannot tell it is env (GNU env installed as gnuenv): quotes and backslashes join
 // ('PA''TH=…', BA""SH_ENV=…), and \_ and the blank escapes break (X=1\_PATH=…; inside quotes that refuses a bit more).
 const ownSetting = word => [word, word.replace(/\\[_tnvfr]/g, " ").replace(/['"\\]/g, "")]
-  .map(text => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV|BASH_FUNC_[^=\s]*|SHELLOPTS|BASHOPTS|PS4|ZDOTDIR)=/.exec(text)?.[1]).find(Boolean);
+  .map(text => /(?:^|[^A-Za-z0-9_]|^-[A-Za-z]*S)(PATH|BASH_ENV|ENV|BASH_FUNC_[^=\s]*|SHELLOPTS|BASHOPTS|PS4|ZDOTDIR|SHELL)=/.exec(text)?.[1]).find(Boolean);
 // What a line's words set (ownSetting), or FILLED where an -S string among them (after -S or --split-string, or joined
 // to it) holds a ${…}: such an env fills it in before it reads a NAME=, so A=PATH B== gnuenv -S '${A}${B}…' sets
 // PATH. An -S of another program (ssh's control path) with a ${…} in it is refused too; ssh -i '${HOME}/…' is not.
@@ -667,13 +668,18 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   const kind = ["fish", "pwsh", "nu"].find(names => [name, real(found)].some(word => shellNamed(word, names)));
   const shell = startedShell(options, names, shut) ?? (namesShell(found, names, shut) && options.some(option => runsString(option, kind)) ? basename(name) : null);
   if (shell) refuse(`${file} starts with env ${rest}, which starts a shell (${shell}), and a shell can build PATH= or BASH_ENV= out of pieces; ${shellAdvice(shell, " from that line") ?? "start the program from that line directly"}, or set ASE_KEY_GUARD=off to run without the lock`);
-  // A program handed a path inside the worktree or the Git folder runs or reads a file a build wrote (node <worktree>/x),
-  // and a shell runs its first word that is not an option, or what it reads with -s, in place of this script (bash
-  // <worktree>/payload; GPT second look, round 21). So no word on the line leads inside, and a shell takes options only
-  // (with a value after -o or -O, and for pwsh after any option but -File).
-  if (options.some(option => option.includes("/") && shutIn(option.replace(/^-[^=]*=/, ""), shut))) refuse(`${file} starts with env ${rest}, which hands the program a path inside the worktree or its Git folder, where a build can change it; drop that path from the line, or set ASE_KEY_GUARD=off to run without the lock`);
-  const valueAfter = before => kind === "pwsh" ? /^[-–—―]{1,2}([A-Za-z]+)$/.test(before) && !"file".startsWith(before.replace(/^[-–—―]+/, "").toLowerCase()) : /^[-+][A-Za-z]*[oO]$/.test(before);
-  const operand = (option, i) => (kind !== "pwsh" && /^[-+][A-Za-z]*s/.test(option)) || (!/^[-+–—―]/.test(option) && !valueAfter(options[i - 1] ?? ""));
+  // A shell runs its first word that is not an option, or what it reads with -s, in place of this script (bash
+  // <worktree>/payload; GPT second look, round 21), and every word after -- or a lone - is one (bash -- -e runs a file
+  // called -e; round 22). So a shell takes options only: with a value after -o or -O, and for pwsh after the options
+  // that take one (any of its switches, -NoProfile and the like, takes none; Claude review, round 21).
+  const pwshValued = ["executionpolicy", "workingdirectory", "outputformat", "inputformat", "settingsfile", "configurationname", "configurationfile", "windowstyle", "custompipename"];
+  const pwshName = word => /^[-–—―]{1,2}([A-Za-z]+)$/.exec(word)?.[1]?.toLowerCase();
+  const valueAfter = before => kind === "pwsh"
+    ? Boolean(pwshName(before)) && (["ep", "ex", "wd", "of", "o", "if", "w"].includes(pwshName(before)) || (pwshName(before).length >= 3 && pwshValued.some(full => full.startsWith(pwshName(before)))))
+    : /^[-+][A-Za-z]*[oO]$/.test(before);
+  const ended = options.findIndex(option => option === "--" || option === "-");
+  const operand = (option, i) => (ended >= 0 && (i > ended || (kind === "pwsh" && i === ended))) || (kind !== "pwsh" && /^[-+][A-Za-z]*s/.test(option))
+    || (!/^[-+–—―]/.test(option) && !valueAfter(options[i - 1] ?? ""));
   if (namesShell(found, names, shut) && options.some(operand)) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1, names);
   if (!assignments.length) return [command, commandArgs];
