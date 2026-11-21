@@ -537,6 +537,10 @@ test("doctor says the kit needs repair, not the settings, when Node runs but kit
   const result = f.run([], f.build, { KIT_LIB: join(broken, "kit-lib.sh") }, true);
   assert.ok(result.stdout.includes("✗ settings: scripts/agents/kit.json was not checked (kit-lib.mjs did not run); fix: repair the kit: run scripts/agents/kit update, or restore kit-lib.mjs and the files beside it\n"), result.stdout);
   assert.doesNotMatch(result.stdout, /edit scripts\/agents\/kit\.json/);
+  // Run on its own with no root given, it cannot find the project, and says the kit needs repair, not Node.
+  const rootless = f.run([], f.build, { KIT_LIB: join(broken, "kit-lib.sh"), KIT_ROOT: undefined, KIT_MAIN_ROOT: undefined }, true);
+  assert.equal(rootless.status, 1, rootless.stderr);
+  assert.equal(rootless.stdout, "RESULT: fail doctor cannot find the project: kit-lib.mjs did not load (its error is above); run scripts/agents/kit update to repair the kit\n");
 });
 
 for (const kind of ["missing", "real directory", "dangling link", "different shared directory", "shared missing", "shared dangling"]) {
