@@ -589,7 +589,9 @@ const magic = path => {
   return "";
 };
 // Whether a path leads into /proc, where what it names is another program, or another folder's file, for each process.
-const leadsToProc = path => /^\/proc(?:\/|$)/.test(magic(path));
+// One into /dev counts too: /dev/fd is /proc/self/fd, so /dev/fd/../cwd is /proc/self/cwd (GPT second look on
+// 0868fa4), and no program or PATH folder belongs there.
+const leadsToProc = path => magic(path) !== "";
 const intoProc = (path, shut) => path.includes("/") && fromRoots(path, shut).some(place => magic(place));
 // A path's file is read as the kernel reads it (real walks a .. after a link from where the link leads), so
 // <out>/link/../../shell-alias is the shell that link's folder holds (GPT second look on be0bc9b).

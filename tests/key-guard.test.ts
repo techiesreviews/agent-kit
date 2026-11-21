@@ -1316,6 +1316,10 @@ test("TOOLS-390 R1-5: a PATH folder that holds a link into /proc, or leads there
   symlinkSync("/proc/self/cwd/ssh", join(procLinks, "ssh"));
   const cwdFolder = join(dir, "cwd-folder");
   symlinkSync("/proc/self/cwd", cwdFolder);
+  // /dev/fd is /proc/self/fd, so /dev/fd/../cwd is /proc/self/cwd too, as a folder or an entry (GPT second look on 0868fa4).
+  const devCwd = "/dev/fd/../cwd", devLinks = join(dir, "dev-links");
+  mkdirSync(devLinks);
+  symlinkSync("/dev/fd/../cwd/ssh", join(devLinks, "ssh"));
   // The lead's own wrapper, outside the worktree, starts ssh by its bare name.
   const wrapper = join(wrappers, "git-ssh");
   writeFileSync(wrapper, "#!/bin/sh\nexec ssh \"$@\"\n"); chmodSync(wrapper, 0o755);
@@ -1332,18 +1336,22 @@ test("TOOLS-390 R1-5: a PATH folder that holds a link into /proc, or leads there
   const throughCwd = { ...process.env, PATH: `${cwdFolder}:${lead}:/usr/bin:/bin` };
   assert.equal(runProgram("kit-r15-tool", throughCwd, { worktree: root, kind: "test" }), join(lead, "kit-r15-tool"));
   assert.deepEqual(startCommand("kit-r15-tool", [], throughCwd, { worktree: root, kind: "test" }), [join(lead, "kit-r15-tool"), []]);
-  for (const first of [procLinks, cwdFolder]) {
-    const env = { ...process.env, HOME: home, PATH: `${first}:${wrappers}:${lead}:/usr/bin:/bin`, GIT_SSH_COMMAND: wrapper,
+  // A wrapper script, and a program that starts ssh by its bare name (timeout), both run git's ssh for real.
+  for (const first of [procLinks, cwdFolder, devCwd, devLinks]) for (const command of [wrapper, "timeout 30 ssh"]) {
+    const env = { ...process.env, HOME: home, PATH: `${first}:${wrappers}:${lead}:/usr/bin:/bin`, GIT_SSH_COMMAND: command,
       GIT_CONFIG_GLOBAL: undefined, GIT_CONFIG_NOSYSTEM: undefined, GIT_SSH: undefined, GIT_CONFIG_COUNT: undefined } as NodeJS.ProcessEnv;
     const safe = gitSafety({ worktree: root, env, network: true, git: realGit });
-    assert.equal(safe.problem, null);
+    const label = `${first} with ${command}`;
+    assert.equal(safe.problem, null, label);
     rmSync(noted, { force: true });
     spawnSync(realGit, ["-C", root, "ls-remote", "ssh://example.invalid/repo.git"], { env: { ...env, ...safe.env }, encoding: "utf8" });
     const ran = existsSync(noted) ? readFileSync(noted, "utf8") : "";
-    assert.doesNotMatch(ran, /planted ssh/, first);
-    assert.match(ran, /^lead's ssh .*example\.invalid/, first);
-    assert.equal(safe.env.GIT_SSH_COMMAND, `PATH=${wrappers}:${lead}:/usr/bin:/bin ${wrapper}`, first);
+    assert.doesNotMatch(ran, /planted ssh/, label);
+    assert.match(ran, /^lead's ssh .*example\.invalid/, label);
+    assert.ok(String(safe.env.GIT_SSH_COMMAND).startsWith(`PATH=${wrappers}:${lead}:/usr/bin:/bin /`), `${label}: ${safe.env.GIT_SSH_COMMAND}`);
+    if (command === wrapper) assert.equal(safe.env.GIT_SSH_COMMAND, `PATH=${wrappers}:${lead}:/usr/bin:/bin ${wrapper}`, label);
   }
+  assert.equal(runPath({ ...process.env, PATH: `${devCwd}:/usr/bin:/bin` }, { worktree: root }), "/usr/bin:/bin");
 });
 
 test("TOOLS-390 R1-6: a PATH folder or entry that passes through a worktree link leading out (tools-link -> a bin folder) is not trusted by the run's PATH, the kit's starts or git's ssh", t => {
