@@ -494,8 +494,10 @@ test("kit update --install-timer writes both unit files, starts the timer and is
   assert.equal(readFileSync(timer, "utf8"), readFileSync("systemd/agent-kit-update.timer", "utf8"));
   assert.match(readFileSync(timer, "utf8"), /^\[Timer\]\n(?:#.*\n)*OnCalendar=\*:0\/15\nPersistent=true\n\n\[Install\]\nWantedBy=timers\.target\n$/m);
   const written = readFileSync(service, "utf8");
-  // Run on its own, update finds Node itself and leads the service's plain PATH with that Node's folder.
-  const node = spawnSync("bash", ["-c", "source kit-lib.sh && kit_node_find"], { env: k.env, encoding: "utf8" }).stdout.trim();
+  // The service's plain PATH starts with the folder of the front door's Node (KIT_NODE, set when the tests run through
+  // kit unit), or of the one update finds itself when run on its own.
+  const node = k.env.KIT_NODE
+    || spawnSync("bash", ["-c", "source kit-lib.sh && kit_node_find"], { env: k.env, encoding: "utf8" }).stdout.trim();
   assert.ok(node, "the test machine has a Node 24 or newer");
   assert.equal(written, readFileSync("systemd/agent-kit-update.service", "utf8")
     .replace("@DATA_HOME@", join(k.directory, "data")).replace("@KIT_REPO@", k.env.KIT_REPO!)
