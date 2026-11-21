@@ -815,7 +815,8 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     // characters, * ? [) could name one unseen.
     const later = words.filter(other => other.start >= word.start);
     if (later.some(other => other.marked.includes("\x02"))) return unknown("sh expands a pattern in it, which could name a shell");
-    const splitters = [...String(env.IFS ?? " \t\n"), "*", "?", "["];
+    // sh may set IFS back to blanks at its start (dash does), so those count whatever IFS the run has.
+    const splitters = [" ", "\t", "\n", ...String(env.IFS ?? ""), "*", "?", "["];
     let reshaped = false;
     const filled = later.map(other => other.bounded.replace(/(\x05?)\x01(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g, (_, outside, braced, bare) => {
       const value = env[braced ?? bare] ?? "";
