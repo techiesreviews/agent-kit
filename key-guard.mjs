@@ -1389,16 +1389,17 @@ function onDisk(base, value) {
 // The folders the room swaps for empty ones: the worktree, the Git folder, the main worktree (the folder that holds the
 // Git folder as .git, or the one its core.worktree names) and every linked worktree the Git folder lists, where the two
 // agree as git checks them (worktrees/<name>/gitdir names a .git file whose gitdir line leads back to that entry).
-// A build can write the Git folder, so a folder found there is skipped when it is /, holds the home folder or a system
-// folder, or lies inside a system folder (the loader and libc, /etc/ssh, /proc/<pid>): hiding one would stop every
+// A build can write the Git folder, so a folder found there is skipped when it is /, holds the home folder, /opt, /tmp,
+// /var or a system folder, or lies inside a system folder (the loader and libc, /etc/ssh, /proc/<pid>, the agent's
+// socket and DNS settings in /run): hiding one would stop every
 // fetch, or send the search for ssh on to the next PATH folder. Only a folder below /usr/local/src or /usr/src, where
 // checkouts live (/usr/local/src/project), is hidden there, as any worktree is, PATH folders in it too. Real paths of folders
 // that exist, so bubblewrap makes no folder on the real file system; one inside another is hidden with it.
 // {folders, problem}: problem when core.worktree cannot be read (coreWorktree).
 function roomFolders(env, worktree, common, git) {
   const real = path => { try { return realpathSync.native(path); } catch { return null; } };
-  const system = ["/bin", "/dev", "/etc", "/lib", "/lib64", "/proc", "/sbin", "/sys", "/usr"].map(real).filter(Boolean);
-  const kept = [...system, ...[home(env), "/opt"].map(real).filter(Boolean)];
+  const system = ["/bin", "/dev", "/etc", "/lib", "/lib64", "/proc", "/run", "/sbin", "/sys", "/usr"].map(real).filter(Boolean);
+  const kept = [...system, ...[home(env), "/opt", "/tmp", "/var"].map(real).filter(Boolean)];
   const checkouts = ["/usr/local/src", "/usr/src"].map(real).filter(Boolean);
   const found = [];
   const add = (folder, fromGit) => {
