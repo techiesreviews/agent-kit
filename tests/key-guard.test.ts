@@ -1676,7 +1676,8 @@ test("TOOLS-390 room: a folder the Git folder names is hidden only as git would 
   // hidden: a checkout there. The loader and libc, /etc/ssh, a locally built ssh's /usr/local/etc and the rest are not.
   const values: [string, string[]][] = [[main, [root, linked, main]], ["../../main", [root, linked, main]], ["/", [root, linked]], ["/etc", [root, linked]],
     ["/usr/bin", [root, linked]], ["/usr/share", [root, linked]], ["/usr/lib", [root, linked]], ["/dev", [root, linked]], ["/usr/local", [root, linked]]];
-  for (const folder of ["/etc/ssh", "/usr/local/etc", "/usr/local/lib", "/usr/local/src", "/usr/src"]) if (existsSync(folder)) values.push([folder, [root, linked]]);
+  // /run holds the agent's socket and DNS settings; /var and /tmp hold more of the machine.
+  for (const folder of ["/etc/ssh", "/usr/local/etc", "/usr/local/lib", "/usr/local/src", "/usr/src", "/run", "/run/user", "/var", "/tmp"]) if (existsSync(folder)) values.push([folder, [root, linked]]);
   const checkout = existsSync("/usr/src") && readdirSync("/usr/src", { withFileTypes: true }).find(item => item.isDirectory());
   const checkoutPath = checkout ? realpathSync(join("/usr/src", checkout.name)) : null;
   if (checkoutPath) values.push([checkoutPath, [root, linked, checkoutPath]]);
@@ -1808,13 +1809,19 @@ test("TOOLS-390 room: a plink command with a redirection keeps plink's kind, so 
   // A ; inside quotes does not end the first word.
   const quoted = join(lead, "a;b");
   mkdirSync(quoted); copyFileSync(plink, join(quoted, "plink")); chmodSync(join(quoted, "plink"), 0o755);
-  for (const command of [`${plink} -batch 2>/dev/null`, `${plink} -batch "$@" | cat; :`, `X=1 ${plink} -batch 2>&1`, `'${quoted}/plink' -batch 2>/dev/null`, `${plink} -pw "$(printf dummy)" -batch`]) {
+  const cases: NodeJS.ProcessEnv[] = [`${plink} -batch 2>/dev/null`, `${plink} -batch "$@" | cat; :`, `X=1 ${plink} -batch 2>&1`, `'${quoted}/plink' -batch 2>/dev/null`, `${plink} -pw "$(printf dummy)" -batch`]
+    .map(command => ({ GIT_SSH_COMMAND: command }));
+  // The kind set to auto, in the variable or in ssh.variant, leaves it to git, which would tell it from bubblewrap.
+  cases.push({ GIT_SSH_COMMAND: `${plink} -batch`, GIT_SSH_VARIANT: "auto" },
+    { GIT_SSH_COMMAND: `${plink} -batch`, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "ssh.variant", GIT_CONFIG_VALUE_0: "auto" });
+  for (const settings of cases) {
+    const label = JSON.stringify(settings);
     rmSync(noted, { force: true });
-    const env = { ...base, GIT_SSH_COMMAND: command };
+    const env = { ...base, ...settings };
     const safe = gitSafety({ worktree: root, env, network: true, git: gitProgram() });
-    assert.equal(safe.env.GIT_SSH_VARIANT, "plink", command);
+    assert.equal(safe.env.GIT_SSH_VARIANT, "plink", label);
     spawnSync(gitProgram(), ["-C", root, "ls-remote", "ssh://host.invalid:2222/x"], { env: { ...env, ...safe.env }, encoding: "utf8", timeout: 30_000 });
-    assert.match(existsSync(noted) ? readFileSync(noted, "utf8") : "", /^plink .*-P 2222 .*host\.invalid/m, command);
+    assert.match(existsSync(noted) ? readFileSync(noted, "utf8") : "", /^plink .*-P 2222 .*host\.invalid/m, label);
   }
 });
 
@@ -1833,6 +1840,9 @@ test("TOOLS-390 room: git's ssh command starts bubblewrap by its full path with 
   assert.equal(safety({ ...base, GIT_SSH_COMMAND: join(dir, "wrapper") }).GIT_SSH_VARIANT, undefined, "a wrapper's kind git finds out itself");
   assert.equal(safety({ ...base, GIT_SSH_VARIANT: "simple" }).GIT_SSH_VARIANT, undefined, "the lead's own kind stays");
   assert.equal(safety({ ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "ssh.variant", GIT_CONFIG_VALUE_0: "simple" }).GIT_SSH_VARIANT, undefined);
+  assert.equal(safety({ ...base, GIT_SSH_VARIANT: "auto" }).GIT_SSH_VARIANT, "ssh", "auto leaves the kind to be told");
+  // The variable comes before ssh.variant, as git reads them.
+  assert.equal(safety({ ...base, GIT_SSH_VARIANT: "simple", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "ssh.variant", GIT_CONFIG_VALUE_0: "auto" }).GIT_SSH_VARIANT, undefined);
   // A call without the network starts no ssh: nothing changes.
   assert.equal(gitSafety({ worktree: root, env: base }).env.GIT_SSH_COMMAND, undefined);
   // A worktree that holds the home folder would hide ssh's keys too: git's ssh says so and fails.
