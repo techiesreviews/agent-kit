@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings } from "../review-findings.mjs";
-import { branchRisk, budgetReport, fixRoundsDone, isAncestorOf, isNit, ledgerRows, modelsLine, prLine, renderLedger, roundLimit, secondLookRows, stoppingFindings, waiverCheck, waiverRefusal } from "../review-loop.mjs";
+import { branchRisk, fixRoundsDone, isAncestorOf, isNit, roundLimit } from "../review-loop.mjs";
+import { reviewGate, shortText } from "../review-gate.mjs";
 import { coveringReview, earlierSecondLooks, findingsSeenAt, readReviewReport, reviewChain, reviewReportPath, reviewsFolder, secondLookMark } from "../review-records.mjs";
 import { projectCommand, spoken } from "../review-brief.mjs";
 import { releaseCheck as releaseCheckRun } from "../release-check.mjs";
@@ -17,7 +18,7 @@ const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineL
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
 );
 const { runSpecs } = await import(pathToFileURL(resolve(import.meta.dirname, "../spec-runner.mjs")).href);
-const { checkSteps, classify, docsOnly, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, lookFamily, lookFamilyWords, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
+const { checkSteps, classify, docsOnly, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, lookFamily, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
 const { coverageHash, readUxResult, uxGuard, visibleFiles } = await import(pathToFileURL(resolve(import.meta.dirname, "../ux-gate.mjs")).href);
 const { checkLock, keyGuardOn, runPath, runProgram, startCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../key-guard.mjs")).href);
 const { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, gitTop, loopbackRemote } = await import(pathToFileURL(resolve(import.meta.dirname, "../git-safety.mjs")).href);
@@ -72,14 +73,6 @@ function extraChecks(extra) {
 }
 
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
-// Short form of a finding for the console, PR body and PR comment; the ticket keeps the full text.
-// The cut counts graphemes, so it never splits an emoji, flag or accented letter.
-const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-const findingsWord = count => `${count} open finding${count === 1 ? "" : "s"}`;
-const shortText = text => {
-  const characters = Array.from(graphemes.segment(text), part => part.segment);
-  return characters.length > 160 ? `${characters.slice(0, 160).join("").trimEnd()}…` : text;
-};
 
 /** A YAML list or scalar as plain strings: `[main, 'dev']`, `main`, or nothing. */
 const yamlList = value => {
@@ -1264,7 +1257,9 @@ async function main(args) {
     step = "review";
     console.log(`PR #${number}; ${review ? "review running" : `review: skipped (${plan.tier} tier)`}`);
     // The docs tier has no model review; CI still gates the merge.
-    let waived = 0, waivedFindings = [], seenFindings = findingsSeenAt(reviewsFolder(kitMainRoot()), kitOwner(), startHead), reviewedHeads = startRebased ? 1 : 0, loopRounds = null, loopSummary = null, loopLeft = 0, loopBudgetUsed = false, secondLookSkipped = null, secondLookModel = null, secondRows = [], loopDeclined = [], nothingToReview = false;
+    // The gate weighs both looks' findings and the waiver (review-gate.mjs); the looks and the GitHub side stay here.
+    const gate = reviewGate({ waives: flags.waives, waive: flags.waive, risky: loopRisk.risky,
+      seen: findingsSeenAt(reviewsFolder(kitMainRoot()), kitOwner(), startHead), reviewedHeads: startRebased ? 1 : 0 });
     // `name` is "review" (Claude's) or "second look", whose lines and summary say so.
     async function recordFollowups(findings, name = "review", budgetUsed = true, nitsOnly = true) {
       if (!findings.length) return;
@@ -1342,8 +1337,7 @@ async function main(args) {
     }
     // Claude's review (none in the docs tier), then the second look on every change; both weigh findings the same way.
     async function reviewHead() {
-      reviewedHeads++;
-      waived = 0; waivedFindings = []; loopRounds = null; loopSummary = null; loopLeft = 0; loopBudgetUsed = false; secondLookSkipped = null; secondLookModel = null; secondRows = []; loopDeclined = []; nothingToReview = false;
+      gate.newHead();
       const base = await git("review", ["merge-base", `origin/${flags.base}`, "HEAD"]);
       // A PR that already says "approved" for an earlier head (a "behind" rebase brought a new one) never keeps saying it
       // while the new head is reviewed, or when that review stops the landing.
@@ -1353,12 +1347,11 @@ async function main(args) {
         await replaceBlock(`Verdict: pending (the new head ${head.slice(0, 7)} is being reviewed)`);
         if (review && !await lookAt(base, false)) { await stopped("open findings", "see the review comments"); return false; }
         if (!await lookAt(base, true)) { await stopped("open findings", "see the review comments"); return false; }
-        // Once both looks have run, the waiver is checked against every finding it lets through, so a count covers both looks
-        // and a reason that names some ids covers them all.
-        const all = waivedFindings.length ? waiverCheck(flags.waives, waivedFindings) : null;
-        if (all && (all.unnamed.length || (all.mode === "count" && all.count !== waivedFindings.length))) {
-          console.log(waiverRefusal({ mode: all.mode, count: all.count, open: all.unnamed.length ? all.unnamed : waivedFindings }));
-          kitResult("fail", `pr #${number} the waiver does not match the ${findingsWord(waivedFindings.length)} it would let through`);
+        // Once both looks have run, the waiver is checked against every finding it lets through.
+        const mismatch = gate.finalWaiver();
+        if (mismatch) {
+          console.log(mismatch.text);
+          kitResult("fail", `pr #${number} ${mismatch.why}`);
           await stopped("open findings", "see the review comments");
           return false;
         }
@@ -1394,23 +1387,9 @@ async function main(args) {
     // Rule: the PR says how it was reviewed. The block sits between markers, so a later run (a "behind" merge, a new head)
     // replaces it instead of adding a second line and ledger.
     async function recordReviewLoop() {
-      // A tier with no Claude review (docs) still says what the second look did; with nothing to say, no block.
-      const skippedTier = !review && !loopSummary && !nothingToReview && Boolean(secondLookModel || secondLookSkipped);
-      if (!loopSummary && !nothingToReview && !skippedTier) { await replaceBlock(null); return; }
-      const open = `${loopLeft} open finding${loopLeft === 1 ? "" : "s"}`;
-      const verdict = !loopLeft ? "approved" : loopBudgetUsed ? `not approved (budget used, ${open} left for Lex${waived ? ", waived by the lead" : ""})`
-        : waived ? `not approved (${open} waived by the lead)` : `not approved (${open} left for Lex: no reason was given for it)`;
-      // A PR whose diff is empty was never reviewed: it says so in place of a verdict and a ledger.
-      // A tier with no Claude review still shows what its second look found: the verdict and the ledger rows.
-      const line = loopSummary ? prLine({ ...loopSummary, verdict })
-        : skippedTier ? `Review: Claude's review skipped (${plan.tier} tier).${secondRows.length ? ` Verdict: ${verdict}.` : ""}`
-        : `Review: nothing to review (the diff against ${flags.base} is empty).`;
-      // A second look that no model could take is said in the PR too, so the PR never reads as fully double-checked.
-      const skipped = secondLookSkipped ? `${secondLookSkipped}\n\n` : "";
-      // The model that took the second look, in plain words, so the PR says who looked after Claude.
-      const looked = secondLookModel ? `Second look by ${secondLookModel} (${lookFamilyWords(secondLookModel)}).\n\n` : "";
-      const block = loopSummary ? `<!-- review-loop -->\n${line}\n\n${skipped}${looked}${renderLedger([...loopSummary.rows, ...secondRows])}\n<!-- /review-loop -->`
-        : `<!-- review-loop -->\n${line}${skipped || looked ? `\n\n${(skipped + looked).trimEnd()}` : ""}${skippedTier && secondRows.length ? `\n\n${renderLedger(secondRows)}` : ""}\n<!-- /review-loop -->`;
+      const said = gate.verdict({ review, tier: plan.tier, base: flags.base });
+      if (!said) { await replaceBlock(null); return; }
+      const { line, block } = said;
       const current = readFileSync(body, "utf8");
       const next = /<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/.test(current)
         ? current.replace(/<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/, () => block) : `${current.replace(/\n*$/, "\n")}\n${block}\n`;
@@ -1457,14 +1436,14 @@ async function main(args) {
         // Findings need a review, so there are none to weigh; CI still gates the merge.
         if (!second && outcome.exit === 3 && outcome.nothing) {
           console.log(`review: skipped (nothing to review: ${outcome.nothing})`);
-          nothingToReview = true;
+          gate.nothingToReview();
           return true;
         }
         // The second look's kind, model and any fallback, as the look said them.
         if (second) for (const line of outcome.notes ?? []) console.log(line);
         // No model could take the second look: it never blocks on availability.
         if (second && outcome.exit === 3) {
-          secondLookSkipped = outcome.skipped ?? "second look: skipped (no reason was given)";
+          gate.secondLookSkipped(outcome.skipped ?? "second look: skipped (no reason was given)");
           return true;
         }
         // With nothing on stderr, the outcome's own words: those of kit review's RESULT line.
@@ -1474,7 +1453,7 @@ async function main(args) {
         resultPath = reviewReportPath(folder);
       }
       // The model a second look's own mark names (fresh or reused).
-      if (second) { const model = secondLookMark(folder)?.model; secondLookModel = typeof model === "string" && model ? model : null; }
+      if (second) gate.secondLookModel(secondLookMark(folder)?.model);
       let resultMd = "";
       try { resultMd = readReviewReport(folder); }
       catch { /* Missing or unreadable evidence fails closed through openFindings. */ }
@@ -1486,72 +1465,20 @@ async function main(args) {
       // head worked out (the docs tier, with no Claude review, counts its second looks alone). The second looks are found from the
       // head Claude's review saw, which a review reused after a same-patch rebase keeps. A review at a head already in the base
       // (an earlier branch of the same name that landed) counts none. Rounds the cut kit fix saved for the branch (.scratch/kit-fix) still count.
-      const legacyRounds = completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
-        join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
-      const claude = second ? [] : chain;
-      const rounds = loopRounds ?? Math.max(legacyRounds, fixRoundsDone(claude,
-        earlierSecondLooks(reviewsFolder(kitMainRoot()), { branch, head: claude.at(-1)?.head ?? head, root, base }), commit => isAncestorOf(root, commit, base)));
-      loopRounds = rounds;
-      const limit = roundLimit(loopRisk.risky);
-      // Nits alone never block or call for a round; blockers and shoulds do while the budget lasts, then only blockers (nits stop the loop; out of budget is never approval).
-      const relaxed = rounds >= limit;
-      const blocking = stoppingFindings(findings, rounds, loopRisk.risky);
-      const ids = new Map(findings.map((item, index) => [item, second ? `SL-${index + 1}` : chain.at(-1)?.findings[index]?.id]));
-      // What is left that is not a nit, across both looks: out of budget it is reported for Lex and the PR is never called approved.
-      const left = findings.filter(item => !isNit(item));
-      if (findings.length) {
-        const ordered = [...blocking, ...findings.filter(item => !blocking.includes(item))];
-        for (const finding of ordered.slice(0, 15)) console.log(`${finding.group}: ${shortText(finding.text)}`);
-        if (findings.length > 15) console.log(`… and ${findings.length - 15} more`);
-        // Out of budget with findings left is reported for Lex to decide, never taken as approval: every open item, blockers first, and the builder's side.
-        if (relaxed && left.length) {
-          const open = [...blocking, ...left.filter(item => !blocking.includes(item))].map(item => ({ ...item, id: ids.get(item) }));
-          console.log(budgetReport({ rounds, limit, open, declined: [...loopDeclined, ...chain.flatMap(record => record.declined)] }));
-        }
-        if (blocking.length && !flags.waive) {
-          kitResult("fail", `pr #${number} ${name} has ${blocking.length} open findings (${resultPath})`);
-          return false;
-        }
-        // A waiver lets through only the findings it names (or counts), as the lead saw them: a rebase (at the start or later) brings a
-        // new head and a fresh review, and a waiver given for the old findings never covers a finding that is new there, by id or by
-        // count. A review reused from before the run is what the lead saw.
-        // A finding carried into this round ("R1-1 still open") is also named by the id the ledger keeps, back to its first round.
-        const earlier = chain.flatMap(record => record.findings);
-        const carriedFrom = item => {
-          const out = [];
-          for (let text = String(item.text ?? ""), found; out.length < 10 && (found = /^(R\d+-\d+) still open/.exec(text)); text = String(earlier.find(entry => entry.id === found[1])?.text ?? "")) out.push(found[1]);
-          return out;
-        };
-        const waivable = blocking.map(item => ({ id: ids.get(item) ?? (second ? `SL-${findings.indexOf(item) + 1}` : `review-${findings.indexOf(item) + 1}`),
-          aliases: carriedFrom(item), severity: item.severity ?? "", text: item.text }));
-        const refuse = (text, why) => {
-          console.log(text);
-          kitResult("fail", `pr #${number} ${name} ${why} (${resultPath})`);
-          return false;
-        };
-        const novel = reviewedHeads > 1 && !saved ? waivable.filter(item => !seenFindings.has(`${item.id}\n${item.text}`)) : [];
-        if (novel.length) return refuse(waiverRefusal({ mode: "new", open: novel }), `has ${findingsWord(novel.length)} that ${novel.length === 1 ? "is" : "are"} new at the new head`);
-        if (waivable.length) {
-          // The mode is worked out from every waived finding so far, so a second look cannot fall back to counting when the first one was named.
-          const soFar = [...waivedFindings, ...waivable], check = waiverCheck(flags.waives, soFar);
-          if (check.unnamed.length) return refuse(waiverRefusal({ mode: check.mode, open: check.unnamed }), `has ${findingsWord(check.unnamed.length)} the waiver does not name`);
-          // A count already too small is refused before the next look starts.
-          if (check.mode === "count" && soFar.length > check.count)
-            return refuse(waiverRefusal({ mode: "count", count: check.count, open: soFar }), "has more open findings than the waiver counts");
-          waivedFindings.push(...waivable);
-          for (const item of waivable) seenFindings.add(`${item.id}\n${item.text}`);
-        }
-        waived += blocking.length;
+      const rounds = () => {
+        const legacyRounds = completedFixRounds(join(kitMainRoot(), ".scratch/kit-fix", encodeURIComponent(branch)),
+          join(root, ".scratch/kit-fix", encodeURIComponent(branch)));
+        const claude = second ? [] : chain;
+        return Math.max(legacyRounds, fixRoundsDone(claude,
+          earlierSecondLooks(reviewsFolder(kitMainRoot()), { branch, head: claude.at(-1)?.head ?? head, root, base }), commit => isAncestorOf(root, commit, base)));
+      };
+      const { lines, refusal, rest, relaxed } = gate.weigh({ second, findings, chain, rounds, saved: Boolean(saved) });
+      for (const line of lines) console.log(line);
+      if (refusal) {
+        kitResult("fail", `pr #${number} ${name} ${refusal.why} (${resultPath})`);
+        return false;
       }
-      const rest = findings.filter(item => !blocking.includes(item));
       if (rest.length) await recordFollowups(rest, name, relaxed, rest.every(isNit));
-      loopLeft += left.length;
-      if (left.length && relaxed) loopBudgetUsed = true;
-      // A second look has no rounds to mark its findings, so its rows only say what the landing did with them; the builder's side stays the first look's.
-      if (!second) loopDeclined = chain.flatMap(record => record.declined);
-      if (second) secondRows = secondLookRows(findings, { ids, waived: blocking });
-      // The PR line and the ledger come from the first review's own evidence and are written once both looks have passed.
-      else if (chain.length) loopSummary = { rounds: chain.length, model: modelsLine(chain), rows: ledgerRows(chain) };
       ok(name);
       return true;
     }
@@ -1572,10 +1499,11 @@ async function main(args) {
     }
     // A lead's waiver of the feature-list guard is recorded like waived review findings.
     const featuresWaived = features.line?.startsWith("Feature list: waived");
-    const waivedAny = () => waived || featuresWaived ? flags.waive : null;
+    const waivedAny = () => gate.waived || featuresWaived ? flags.waive : null;
     async function recordWaiver() {
       if (!waivedAny()) return;
       const reason = flags.waive.replace(/[\r\n]+/g, " ");
+      const { waived } = gate;
       const what = [waived && `with ${waived} waived findings`, featuresWaived && "without a feature-list update"].filter(Boolean).join(" and ");
       appendFileSync(body, `\nmerged ${what}: ${reason}\n`);
       await gh("waiver", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
