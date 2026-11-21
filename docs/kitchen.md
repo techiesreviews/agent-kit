@@ -49,6 +49,11 @@ says where its job went.
 
 ## House rules
 
+- **Dev must always work:** only a working, checked increment merges into dev (or the project's landing
+  branch). Unfinished work stays on its branch. Builders report what stays on a branch and why, including
+  the branch name and the next step.
+- **Start each feature plainly:** the lead starts with 3 to 5 plain lines for Lex: what he will see on
+  the preview, where (link), and when (after which step).
 - **Agent Kit for every coding step, every model:** `scripts/agents/kit`, `kit doctor` first. A kit
   command that cannot run is reported in the result; it is never skipped silently.
 - **One job, one worktree:** `git worktree add -b <branch> ../<project>-<branch> origin/<land>` (or the

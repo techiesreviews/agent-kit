@@ -135,6 +135,8 @@ export function composeBrief({ messages = kitMessagesToLexRule(), reviewLoop = k
     "Anything Lex sees or clicks follows the prototype he tried and approved (linked from the card); a bug fix or work behind the scenes has no prototype, but still has its grill. Once it lands, Lex tries the result next to the prototype.",
   ]);
   section("House rules", [
+    "Dev must always work: only a working, checked increment merges into dev (or the project's landing branch). Unfinished work stays on its branch. Report what stays on a branch and why, including the branch name and the next step.",
+    "The lead must start each feature with 3 to 5 plain lines for Lex: what Lex will see on the preview, where (link), and when (after which step).",
     "Paid skills never go in a repo: name a skill, never copy its text (`skill-guard.mjs` runs in `kit pr`).",
     `Second look: ${lookModels(order)}; ${reviewersRule}; GPT never for a docs-only change, and once per PR, except as the last resort after the free OpenCode model fails; \`second look: skipped (<reason>)\` when none can run.`,
     // kit pr counts the fix rounds from the review records (TOOLS-287).
