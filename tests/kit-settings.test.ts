@@ -248,7 +248,7 @@ test("without Node the shell helpers still answer: the settings go unchecked, th
   }
   // Another run holds the quiet lock: without Node nothing waits, and nothing says so.
   writeFileSync(lock, "1 someone 60\n");
-  const quiet = bash(`flock -x ${JSON.stringify(lock)} sleep 3 > /dev/null 2>&1 & holder=$!; sleep 0.3; start=$SECONDS; kit_quiet_wait; echo "waited $((SECONDS - start))"; kill "$holder"`, noNode);
+  const quiet = bash(`flock -x ${JSON.stringify(lock)} sleep 3 > /dev/null 2>&1 & holder=$!; while flock -n ${JSON.stringify(lock)} true; do sleep 0.05; done; start=$SECONDS; kit_quiet_wait; echo "waited $((SECONDS - start))"; kill "$holder"`, noNode);
   assert.equal(quiet.stdout, "waited 0\n", quiet.stderr);
   assert.equal(quiet.stderr, "");
 });

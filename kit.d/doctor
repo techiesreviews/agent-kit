@@ -59,7 +59,7 @@ elif [[ -f $(kit_settings_file) ]] && ! kit_node_find > /dev/null; then
   pass settings 'skipped (Node >=24 not found)'
 elif [[ -f $(kit_settings_file) && $problems == *'was not checked'* ]]; then
   # Node ran but kit-lib.mjs did not load (a file beside it is missing or broken): the kit needs repair, not the settings.
-  fail settings "$problems" 'repair the kit: run scripts/agents/kit update, or kit-lib.mjs and the files beside it'
+  fail settings "$problems" 'repair the kit: run scripts/agents/kit update, or restore kit-lib.mjs and the files beside it'
 else
   if [[ -f $(kit_settings_file) ]]; then
     fix='edit scripts/agents/kit.json as the problem says'

@@ -512,6 +512,17 @@ test("doctor reports Node below 24 without searching the user's installations", 
   assert.ok(missing.stdout.includes('✗ settings: no scripts/agents/kit.json; fix: add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }\n'), missing.stdout);
 });
 
+test("doctor says the kit needs repair, not the settings, when Node runs but kit-lib.mjs does not load", (t) => {
+  const f = fixture(t);
+  // A kit library without review-findings.mjs, which kit-lib.mjs imports.
+  const broken = join(f.directory, "broken-kit");
+  mkdirSync(broken);
+  for (const name of ["kit-lib.sh", "kit-lib.mjs"]) copyFileSync(join(repo, name), join(broken, name));
+  const result = f.run([], f.build, { KIT_LIB: join(broken, "kit-lib.sh") }, true);
+  assert.ok(result.stdout.includes("✗ settings: scripts/agents/kit.json was not checked (kit-lib.mjs did not run); fix: repair the kit: run scripts/agents/kit update, or restore kit-lib.mjs and the files beside it\n"), result.stdout);
+  assert.doesNotMatch(result.stdout, /edit scripts\/agents\/kit\.json/);
+});
+
 for (const kind of ["missing", "real directory", "dangling link", "different shared directory", "shared missing", "shared dangling"]) {
   test(`doctor rejects node_modules: ${kind}`, (t) => {
     const f = fixture(t);
