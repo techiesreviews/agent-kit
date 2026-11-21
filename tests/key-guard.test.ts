@@ -1884,6 +1884,16 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     writeFileSync(line, `#!${interpreter} ${rest}\nexec ssh "$@"\n`); chmodSync(line, 0o755);
     assert.deepEqual(start(line), [line, []], rest);
   }
+  // macOS splits what follows the interpreter at blanks, so each word is read on its own there.
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  try {
+    const macScript = join(wrappers, "mac-script"), macOptions = join(wrappers, "mac-options");
+    writeFileSync(macScript, `#!${bash} -e ${join(root, "payload")}\nexec ssh "$@"\n`); chmodSync(macScript, 0o755);
+    writeFileSync(macOptions, `#!${bash} -e -u\nexec ssh "$@"\n`); chmodSync(macOptions, 0o755);
+    assert.throws(() => start(macScript), /hands the shell \(bash\) a script or -s/);
+    assert.deepEqual(start(macOptions), [macOptions, []]);
+  } finally { Object.defineProperty(process, "platform", platform); }
   // /proc/self/exe is whatever program opens it, so a path into /proc or /dev counts as a shell, through a link or a
   // folder link too, when it is a program file (round 27).
   symlinkSync("/proc/self/exe", join(dir, "self-exe"));
@@ -1895,7 +1905,9 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   mkdirSync(join(dir, "a", "b"), { recursive: true });
   symlinkSync(join(dir, "a", "b"), join(dir, "up"));
   symlinkSync("../../self-exe", join(dir, "a", "b", "sh2"));
-  for (const program of ["/proc/self/exe", "/proc/thread-self/exe", join(dir, "self-exe"), join(dir, "self-folder", "exe"), `/dev/fd/${bashOpen}`, `/proc/self/root${bash}`, `${dir}/up/sh2`]) {
+  // A path written into /proc counts even where realpath leads out of it (/proc/self/root/…, /proc/self/cwd/…).
+  writeFileSync(join(dir, "tool"), "exit 0\n"); chmodSync(join(dir, "tool"), 0o755);
+  for (const program of ["/proc/self/exe", "/proc/thread-self/exe", join(dir, "self-exe"), join(dir, "self-folder", "exe"), `/dev/fd/${bashOpen}`, `/proc/self/root${bash}`, `${dir}/up/sh2`, `/proc/self/root${join(dir, "tool")}`]) {
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `${program} -c true` }, { worktree: root }).problem ?? "", /it starts a shell/, program);
     assert.throws(() => start(wrapper(`proc-${basename(program)}-${program.length}`, "X=1", `${program} -c true`)), /, which starts a shell/, program);
   }
