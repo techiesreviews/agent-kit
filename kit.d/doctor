@@ -589,10 +589,12 @@ if [[ $quiet == false ]]; then
     esac
     # Keyed steps (TOOLS-390): whether git's ssh for a fetch or push runs in the clean room, where the worktrees and the
     # Git folder are empty. Only a room that cannot start on Linux is a warning: such a fetch or push stops. Where the
-    # key lock cannot start either (bubblewrap is missing or blocked), the RESULT line keeps that one warning.
+    # key lock cannot start for the same reason (bubblewrap is missing or blocked), the RESULT line keeps that one warning.
     room_state=${room_report%%$'\t'*} room_text=${room_report#*$'\t'}
     if [[ $room_state == problem ]]; then
-      [[ $guard_state == problem ]] || api_warning="${api_warning:+$api_warning; }keyed steps cannot start their clean room (see the ✗ keyed steps line)"
+      room_cause=${room_text#clean room cannot start: }
+      [[ $guard_state == problem && $room_cause != "$room_text" && $guard_text == *"$room_cause"* ]] ||
+        api_warning="${api_warning:+$api_warning; }keyed steps cannot start their clean room (see the ✗ keyed steps line)"
       printf '✗ keyed steps: %s (a fetch or push from an ssh remote stops until it works); fix: the step named above, or set ASE_KEY_GUARD=off to run without the lock\n' "$room_text"
     else
       printf 'keyed steps: %s\n' "$room_text"

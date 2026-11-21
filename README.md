@@ -311,23 +311,32 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     - **On Linux it runs in a clean room (TOOLS-390).** The key lock cannot hold it: ssh needs the keys that lock
       hides. So it runs in the mirror image, a bubblewrap room (started by its full path) where the worktree, every
       other worktree of the repository and the Git folder are empty folders, while the rest of the machine is as it is,
-      so ssh still reads its keys, its agent and `known_hosts`. The room has a process list of its own and starts in
-      `/`. A path that leads into the build's folders ends in "not found" there, however it is written: a
-      `/proc/self/cwd/ssh` link on PATH, a link folder such as `<worktree>/tools-link`, another process's
-      `/proc/<pid>/cwd`, or a link a build changes after the kit looked. So the lead's own ssh command runs as written
-      (a wrapper script, `env`, `sh -c`, a `$` word), with none of the line rules below, and git keeps telling its kind
-      of ssh from the lead's first word (`GIT_SSH_VARIANT`, unless the lead set one). Where the room cannot start
-      (bubblewrap missing or blocked), or would hide the home folder or ssh's agent (a repository that holds them), a
-      call to an ssh remote stops with a line that says why (`ASE_KEY_GUARD=off` runs it without). Inside `kit pr`'s
-      lock for its checks no second sandbox starts (see `kit pr`'s checks, below), so git's ssh there keeps the path
-      filter; the key files are hidden there anyway. `kit doctor` says which: `keyed steps: clean room on`, or not on
-      this machine.
+      so ssh still reads its keys, its agent and `known_hosts`. The other worktrees are the main one (the folder that
+      holds the Git folder as `.git`, or the one its `core.worktree` names) and each linked one whose entry in the Git
+      folder and `.git` file point at each other, as git checks them. Since a build can write the Git folder, a folder
+      named there is not hidden when it is `/` or holds the home folder or a system folder (`/usr`, `/etc`, …). The
+      room has a process list of its own and starts in `/`. A path that leads into the build's folders ends in "not
+      found" there, however it is written: a `/proc/self/cwd/ssh` link on PATH, a link folder such as
+      `<worktree>/tools-link`, another process's `/proc/<pid>/cwd`, or a link a build changes after the kit looked and
+      before the room starts; the kit then adds one line that names the empty folders. So the lead's own ssh command
+      runs as written (a wrapper script, `env`, `sh -c`, a `$` word), with none of the line rules below, and git keeps
+      telling its kind of ssh from the lead's first word (`GIT_SSH_VARIANT`, unless the lead set one). An ssh command
+      that lives in one of those folders (another worktree of the same repository) is not found either. Each fetch or
+      push ends every process its room started, so an ssh `ControlPersist` connection does not outlast it. Where the
+      room cannot start (bubblewrap missing or blocked), or would hide the home folder or ssh's agent (a repository
+      that holds them), a call to an ssh remote stops with a line that says why (`ASE_KEY_GUARD=off` runs it
+      without). Inside `kit pr`'s lock for its checks no second sandbox starts (see `kit pr`'s checks, below), so
+      git's ssh there keeps the path filter; the key files are hidden there anyway. `kit doctor` says which:
+      `keyed steps: clean room on`, or not on this machine.
     - **What the room does not close.** Git itself still reads the Git folder before it starts ssh; its settings stay
       guarded as above (no hooks, program settings set empty). Files a build wrote outside its own folders still run
       with the keys: `~/.gitconfig` (a fetch or push reads the global config), `~/.bashrc`, a PATH folder under HOME
       such as `~/.local/bin`, `~/.ssh/config`. And a remote over https never starts ssh at all: it signs in through the
       credential helper the global config names, a file a build can write. Only a fence on where a build may write
-      closes those (TOOLS-397).
+      closes those (TOOLS-397). A build process still running when the room is up (the build's lock lets one outlive
+      the build) could move a hidden folder aside and put another folder at its path, which the room does not hide; a
+      link into it then reaches that folder. And a main worktree the Git folder does not record (a Git folder made with
+      `--separate-git-dir` and no `core.worktree`) stays visible during a fetch or push from a linked worktree.
     - **On macOS and Windows (no bubblewrap) it is as before:** git's ssh starts by its full path (TOOLS-320), found as
       the programs below are, with the command's other words kept, and where a PATH folder holds a link into the
       worktree or the Git folder, or into `/proc` (`ssh -> /proc/self/cwd/ssh`, or `/dev/fd/../cwd/ssh`, the same through

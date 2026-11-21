@@ -1175,7 +1175,9 @@ export function bwrapWorks(env = process.env, shut = []) {
     // Linux installs it with one command; another system has none, and only ASE_KEY_GUARD=on makes that a problem.
     if (absent) probed = process.platform === "linux" ? "bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" : lockAsked;
     else {
-      const result = spawnSync(bwrap, ["--dev-bind", "/", "/", "--", "true"], { env, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", timeout: 15_000 });
+      // The kit's own Node by its full path, never a program PATH names: this runs where the keys are (GPT second look,
+      // TOOLS-390 round 1).
+      const result = spawnSync(bwrap, ["--dev-bind", "/", "/", "--", process.execPath, "-e", "0"], { env, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", timeout: 15_000 });
       const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
       // The usual refusal: the system does not let ordinary users make the namespaces a sandbox needs.
       const blocked = /namespace|uid map|Operation not permitted|Permission denied/i.test(said);
@@ -1347,28 +1349,73 @@ function roomWorks(env, shut) {
   const problem = bwrapWorks(env, shut);
   if (problem) return problem;
   if (roomProbed === undefined) {
-    const result = spawnSync(bwrap, [...roomArgs, "--", "true"], { env, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", timeout: 15_000 });
+    // The kit's own Node by its full path, as in bwrapWorks: this room starts with the keys readable.
+    const result = spawnSync(bwrap, [...roomArgs, "--", process.execPath, "-e", "0"], { env, stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", timeout: 15_000 });
     const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
     roomProbed = result.status === 0 ? null : `bubblewrap cannot start it here (${said}); run bwrap ${roomArgs.join(" ")} -- true to see why`;
   }
   return roomProbed;
 }
 
+// core.worktree from the Git folder's own config file, or null: the [core] section's worktree key, as written there
+// (relative to the Git folder). Only that file: no includes, no other config.
+function coreWorktree(common) {
+  let text;
+  try { text = readFileSync(join(common, "config"), "utf8"); } catch { return null; }
+  let section = "", found = null;
+  for (const line of text.split("\n")) {
+    const header = /^\s*\[\s*([^\]\s"]+)\s*\]/.exec(line);
+    if (header) { section = header[1].toLowerCase(); continue; }
+    const entry = /^\s*worktree\s*=\s*(.*?)\s*$/i.exec(line);
+    if (section === "core" && entry) found = entry[1].replace(/^"(.*)"$/, "$1");
+  }
+  return found ? resolve(common, found) : null;
+}
+
 // The folders the room swaps for empty ones: the worktree, the Git folder, the main worktree (the folder that holds the
-// Git folder as .git) and every linked worktree the Git folder lists (worktrees/<name>/gitdir names its .git file).
-// Real paths of folders that exist, so bubblewrap makes no folder on the real file system; one inside another is
-// hidden with it.
-function roomFolders(worktree, common) {
-  const folders = [worktree, common];
-  if (common && basename(common) === ".git") folders.push(dirname(common));
+// Git folder as .git, or the one its core.worktree names) and every linked worktree the Git folder lists, where the two
+// agree as git checks them (worktrees/<name>/gitdir names a .git file whose gitdir line leads back to that entry).
+// A build can write the Git folder, so a folder found there is skipped when it is / or holds the home folder or a
+// system folder: hiding one would stop every fetch, or send the search for ssh on to another PATH folder. Real paths of
+// folders that exist, so bubblewrap makes no folder on the real file system; one inside another is hidden with it.
+function roomFolders(env, worktree, common) {
+  const real = path => { try { return realpathSync(path); } catch { return null; } };
+  const kept = [home(env), "/bin", "/etc", "/lib", "/opt", "/sbin", "/usr"].map(real).filter(Boolean);
+  const found = [];
+  const add = (folder, fromGit) => {
+    const path = folder && real(folder);
+    try { if (!path || !statSync(path).isDirectory() || found.includes(path)) return; } catch { return; }
+    if (fromGit && (path === "/" || kept.some(other => inside(other, path)))) return;
+    found.push(path);
+  };
+  add(worktree, false);
+  add(common, false);
   if (common) {
+    if (basename(common) === ".git") add(dirname(common), true);
+    add(coreWorktree(common), true);
     let names = [];
     try { names = readdirSync(join(common, "worktrees")); } catch { /* No linked worktrees. */ }
-    for (const name of names) try { folders.push(dirname(resolve(join(common, "worktrees", name), readFileSync(join(common, "worktrees", name, "gitdir"), "utf8").trim()))); } catch { /* Not a worktree's entry. */ }
+    for (const name of names) try {
+      const entry = join(common, "worktrees", name);
+      const gitFile = resolve(entry, readFileSync(join(entry, "gitdir"), "utf8").trim());
+      const back = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(gitFile, "utf8"))?.[1];
+      if (back && real(resolve(dirname(gitFile), back)) === real(entry)) add(dirname(gitFile), true);
+    } catch { /* Not a worktree's entry. */ }
   }
-  const found = [];
-  for (const folder of folders.filter(Boolean)) try { const path = realpathSync(folder); if (statSync(path).isDirectory() && !found.includes(path)) found.push(path); } catch { /* Not there. */ }
   return found.filter(path => !found.some(other => other !== path && inside(path, other))).sort();
+}
+
+// What ssh needs that the room would hide, in words that follow "the clean room for git's ssh", or null: the home folder
+// (its keys and known_hosts) or the agent's socket inside the worktree or the Git folder.
+function roomHides(env, folders) {
+  const realOr = path => { try { return realpathSync(path); } catch { return resolve(path); } };
+  const needed = [["your home folder, and ssh's keys with it", home(env)], ["ssh's agent", env.SSH_AUTH_SOCK]]
+    .filter(([, path]) => path && isAbsolute(path)).map(([what, path]) => [what, realOr(path)]);
+  for (const [what, path] of needed) {
+    const folder = folders.find(other => inside(path, other));
+    if (folder) return `would hide ${what} (${path}), which is inside the worktree or the Git folder (${folder}); keep the repository out of it, or set ASE_KEY_GUARD=off to run without the lock`;
+  }
+  return null;
 }
 
 // git's kind of ssh for a program name, as git tells it (any letter case, .exe or not).
@@ -1381,7 +1428,9 @@ const sshKind = name => /^(ssh|plink|tortoiseplink)(\.exe)?$/i.exec(basename(nam
  * sandbox cannot start inside another). The command starts bubblewrap by its full path, which runs the lead's own ssh
  * command (GIT_SSH_COMMAND, `configured`: core.sshCommand from the lead's own config, GIT_SSH, or ssh) as written,
  * where the worktrees and the Git folder are empty (roomFolders): whatever path leads there, a /proc/<pid>/cwd link, a
- * link folder, a link a build changes after this check, it ends in "not found". The rules sshCommand asks of the line
+ * link folder, a link a build changes after this check and before the room starts, it ends in "not found". A build
+ * process still running could move a hidden folder aside once the room is up and put another at its path; the room
+ * does not close that (README, "What the room does not close"). The rules sshCommand asks of the line
  * are not needed there. Where the room cannot start on Linux, or would hide the home folder or ssh's agent, `command`
  * says why and fails, so only a call that really starts ssh stops. `variant` is the kind of ssh git would have told
  * from the lead's first word, since the command's own first word is bubblewrap now.
@@ -1391,26 +1440,26 @@ export function sshRoom(env = process.env, { worktree, common, configured } = {}
   const refused = problem => ({ command: `printf '%s\\n' ${shellQuote(`kit: ${problem}`)} >&2; false`, problem, variant: "ssh" });
   const problem = roomWorks(env, buildFolders(worktree, common));
   if (problem) return refused(`the clean room for git's ssh cannot start: ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
-  const folders = roomFolders(worktree, common);
-  const realOr = path => { try { return realpathSync(path); } catch { return resolve(path); } };
-  const needed = [["your home folder, and ssh's keys with it", home(env)], ["ssh's agent", env.SSH_AUTH_SOCK]]
-    .filter(([, path]) => path && isAbsolute(path)).map(([what, path]) => [what, realOr(path)]);
-  for (const [what, path] of needed) {
-    const folder = folders.find(other => inside(path, other));
-    if (folder) return refused(`the clean room for git's ssh would hide ${what} (${path}), which is inside the worktree or the Git folder (${folder}); keep the repository out of it, or set ASE_KEY_GUARD=off to run without the lock`);
-  }
+  const folders = roomFolders(env, worktree, common);
+  const hidden = roomHides(env, folders);
+  if (hidden) return refused(`the clean room for git's ssh ${hidden}`);
   const named = env.GIT_SSH_COMMAND || configured || null;
   const inner = named ?? (env.GIT_SSH ? shellQuote(env.GIT_SSH) : "ssh");
   // As sh reads the line: an unquoted NAME=value before the program sets a variable.
   const first = named === null ? (env.GIT_SSH || "ssh") : shellWords(named)?.find(({ start, end }) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(named.slice(start, end)))?.value;
-  const command = [bwrap, ...roomArgs, ...folders.flatMap(folder => ["--tmpfs", folder]), "--", "/bin/sh", "-c", `${inner} "$@"`, "sh"].map(shellQuote).join(" ");
+  // A program the shell cannot start (exit 127), such as an ssh PATH holds only as a link into a hidden folder, gets one
+  // line in plain words after the shell's own ("not found").
+  const notFound = `kit: git's ssh, or a program it starts, could not be started in the clean room, where these folders are empty: ${folders.join(", ")}; start it from a folder outside them`;
+  const script = `${inner} "$@"\nstatus=$?\n[ "$status" -ne 127 ] || printf '%s\\n' ${shellQuote(notFound)} >&2\nexit "$status"`;
+  const command = [bwrap, ...roomArgs, ...folders.flatMap(folder => ["--tmpfs", folder]), "--", "/bin/sh", "-c", script, "sh"].map(shellQuote).join(" ");
   return { command, problem: null, variant: first ? sshKind(first) : null };
 }
 
 /**
  * kit doctor's keyed-steps note: {state, text}, whether git's ssh runs in the clean room here. States: on; off
  * (ASE_KEY_GUARD=off); missing (a system without bubblewrap: the path filter, as before); inside (kit pr's lock for its
- * checks: the path filter there); problem (on Linux the room cannot start: a fetch or push from an ssh remote stops).
+ * checks: the path filter there); problem (on Linux the room cannot start, or it would hide the home folder or ssh's
+ * agent: a fetch or push from an ssh remote stops).
  */
 export function cleanRoomReport(env = process.env, { worktree = process.cwd(), common } = {}) {
   if (!keyGuardOn(env)) return { state: "off", text: "off (ASE_KEY_GUARD=off)" };
@@ -1418,6 +1467,9 @@ export function cleanRoomReport(env = process.env, { worktree = process.cwd(), c
   if (outerLock(env)) return { state: "inside", text: "inside kit pr's key lock for its checks: git's ssh is checked by its path there" };
   const problem = roomWorks(env, buildFolders(worktree, common));
   if (problem) return { state: "problem", text: `clean room cannot start: ${problem}` };
+  // The same refusal a fetch or push would meet (sshRoom), so "on" is said only where the room really starts.
+  const hidden = roomHides(env, roomFolders(env, worktree, common));
+  if (hidden) return { state: "problem", text: `clean room ${hidden}` };
   return { state: "on", text: "clean room on (git's ssh starts where the worktrees and the Git folder are empty)" };
 }
 
