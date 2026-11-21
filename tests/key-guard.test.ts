@@ -1614,6 +1614,21 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   const joinedLine = wrapper("gnuenv-joined-shell", `timeout 30 gnuenv -S "ba's'h -c 'ssh'"`, "");
   assert.throws(() => start(joinedLine), /, which starts a shell \(bash\)/);
   assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: joinedLine }), /^kit: \S+ starts with env -S .*, which starts a shell/m);
+  // env -S's \_ splits where it stands, so \_bash in an -S string is bash (GPT second look, round 11).
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 gnuenv -S '\\_bash -c "echo ran"'` }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(bash\)/);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: `timeout 30 gnuenv -S '\\_bash -c ssh'` }), /^kit: git's ssh command \(.*\) cannot be told: it starts a shell \(bash\)/m);
+  const escapedLine = wrapper("gnuenv-escaped-shell", `timeout 30 gnuenv -S '\\_bash -c ssh'`, "");
+  assert.throws(() => start(escapedLine), /, which starts a shell \(bash\)/);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: escapedLine }), /^kit: \S+ starts with env -S .*, which starts a shell/m);
+  // A bash run as sh expands braces, so ba{s..s}h is bash; a ${…} is no brace pattern (GPT second look, round 11).
+  assert.equal(spawnSync(bash, ["--posix", "-c", "echo ba{s..s}h"], { encoding: "utf8" }).stdout.trim(), "bash");
+  for (const command of [`timeout 30 ba{s..s}h -c 'echo ran > ${marker}'`, `timeout 30 {bash,x} -c 'echo ran > ${marker}'`, `timeout 30 \\\${a,b} -c true`]) {
+    const result = sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root });
+    assert.match(result.problem ?? "", /cannot be told: sh expands a pattern in it, which could name a shell/, command);
+    spawnSync(bash, ["--posix", "-c", result.command!], { env: base, encoding: "utf8" });
+    assert.ok(!existsSync(marker), command);
+  }
+  assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -i ${HOME}/.ssh/id_ed25519 host" }, { worktree: root }).problem, null);
   // sh may set IFS back to blanks at its start (dash does), so an empty IFS from the run still splits $X at blanks
   // (GPT second look, round 8).
   const emptyIfs = { ...base, IFS: "", X: "-v -J jump.example.invalid", GIT_SSH_COMMAND: `ssh $X -o "HostName=a'b" host` };
