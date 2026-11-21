@@ -1642,6 +1642,21 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   const relativeLine = join(wrappers, "relative-line");
   writeFileSync(relativeLine, "#!tools/ssh\n"); chmodSync(relativeLine, 0o755);
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: relativeLine }, { worktree: root }).problem ?? "", /starts with tools\/ssh, inside the worktree or its Git folder/);
+  // The same for the program an env -S line names by path (Claude review, round 15).
+  for (const [name, program] of [["env-relative", "tools/ssh"], ["env-outside-link", join(root, "outside-ssh")]]) {
+    const line = join(wrappers, name);
+    writeFileSync(line, `#!/usr/bin/env -S ${program}\n`); chmodSync(line, 0o755);
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: line }, { worktree: root }).problem ?? "", /starts with env \S+, inside the worktree or its Git folder/, name);
+  }
+  // env -S's split counts for ssh's -J and -F as well: a -J inside the string beside an -F outside it, and the other
+  // way round (GPT second look, round 16); a plain jump host still runs. A ProxyCommand\_none in an -S string is
+  // refused too: only a plain none is none.
+  for (const command of [`timeout 30 gnuenv -S 'ssh -J jump.example.invalid' -F './cfg;printf PROBE;' host`, `timeout 30 gnuenv -S 'ssh -F ./cfg;x' -J jump.example.invalid host`]) {
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /it starts a shell \(ProxyJump beside a ' or an -F path/, command);
+    assert.throws(() => start(wrapper(`gnuenv-jump-${command.length}`, command.replace(/ host$/, ""), "")), /, which starts a shell \(ProxyJump beside/, command);
+  }
+  assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -J jump.example.invalid' host" }, { worktree: root }).problem, null);
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -o ProxyCommand\\_none host'" }, { worktree: root }).problem ?? "", /ProxyCommand, which ssh runs/);
   // env -S's \_ is a blank inside ssh's options too: ProxyCommand\_nc is ProxyCommand nc (GPT second look, round 15).
   for (const [words, why] of [[`ssh -o "ProxyCommand\\_printf\\_PROBE" example.invalid`, /ProxyCommand, which ssh runs/],
     [`ssh -o PermitLocalCommand=yes -o "LocalCommand\\_true" example.invalid`, /LocalCommand, which ssh runs/],
