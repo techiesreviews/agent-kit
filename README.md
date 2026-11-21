@@ -355,7 +355,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     ``ssh -o 'SetEnv=X=`…`'`` is refused too. No shell starts from git's ssh command or from an env -S first line (Lex's
     decision, TOOLS-329), since a shell can build `PATH=` out of pieces no word holds (`"$1$2"`, `"${1}${2}"`, `IFS=`
     with `"$*"`): a line that names `sh`, `bash`, `dash`, `zsh`, `ksh` or another shell (by name, by a path or a link
-    that leads to one, from a variable sh fills in such as `$SHELL`, or inside a quoted string), behind a wrapper too
+    that leads to one, a relative one counted from the worktree too, from a variable sh fills in such as `$SHELL`, or
+    inside a quoted string, also as an env -S string joins or ends it: `ba's'h`, `\_bash`, `sh\c`), behind a wrapper too
     (`timeout 30 sh -c '…'`, `nice bash`, `busybox sh`, `gnuenv zsh`), is refused, and so is a pattern sh would expand
     there (`*`, `?`, `[`, or a `{` outside quotes, which a bash run as sh expands). A `$NAME` counts as sh fills it in
     (`"$E"sh` is `sh`), and a `$NAME` outside quotes whose value holds a pattern or a blank or is empty is refused, as

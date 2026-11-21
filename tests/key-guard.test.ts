@@ -1621,6 +1621,19 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   const escapedLine = wrapper("gnuenv-escaped-shell", `timeout 30 gnuenv -S '\\_bash -c ssh'`, "");
   assert.throws(() => start(escapedLine), /, which starts a shell \(bash\)/);
   assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: escapedLine }), /^kit: \S+ starts with env -S .*, which starts a shell/m);
+  // env -S stops at \c, so sh\c in an -S string is sh (GPT second look, round 14).
+  const stopped = sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 gnuenv -S 'sh\\c' -c 'echo ran > ${marker}'` }, { worktree: root });
+  assert.match(stopped.problem ?? "", /cannot be told: it starts a shell \(sh\)/);
+  spawnSync("/bin/sh", ["-c", stopped.command!], { env: base, encoding: "utf8" });
+  assert.ok(!existsSync(marker));
+  assert.throws(() => start(wrapper("gnuenv-stopped-shell", `timeout 30 gnuenv -S 'sh\\c' -c ssh`, "")), /, which starts a shell \(sh\)/);
+  // git runs its ssh command in the worktree, so a relative path counts from there too, not only from the kit's own
+  // folder (GPT second look, round 14).
+  symlinkSync(bash, join(root, "runner"));
+  assert.notEqual(process.cwd(), root);
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ./runner -c 'echo ran > ${marker}'` }, { worktree: root }).problem ?? "", /cannot be told: it starts a shell \(runner\)/);
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: "timeout 30 ./runner -c 'ssh \"$@\"' ssh" }), /^kit: git's ssh command \(.*\) cannot be told: it starts a shell \(runner\)/m);
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "./tools/ssh" }, { worktree: root }).problem ?? "", /git's ssh \(\.\/tools\/ssh\) is inside the worktree or its Git folder/);
   // A bash run as sh expands braces, so ba{s..s}h is bash; a ${…} is no brace pattern (GPT second look, round 11).
   assert.equal(spawnSync(bash, ["--posix", "-c", "echo ba{s..s}h"], { encoding: "utf8" }).stdout.trim(), "bash");
   for (const command of [`timeout 30 ba{s..s}h -c 'echo ran > ${marker}'`, `timeout 30 {bash,x} -c 'echo ran > ${marker}'`, `timeout 30 \\\${a,b} -c true`]) {
