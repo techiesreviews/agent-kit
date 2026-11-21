@@ -357,7 +357,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     with `"$*"`): a line that names `sh`, `bash`, `dash`, `zsh`, `ksh` or another shell (by name, by a path or a link
     that leads to one, from a variable sh fills in such as `$SHELL`, or inside a quoted string), behind a wrapper too
     (`timeout 30 sh -c '…'`, `nice bash`, `busybox sh`, `gnuenv zsh`), is refused, and so is a pattern sh would expand
-    there (`*`, `?`, `[`, or a `{` outside quotes, which a bash run as sh expands) (`"$E"sh` counts as `sh`) or a `$NAME` outside quotes whose value holds a pattern or a blank or is empty, a `~user` or `~+` path (only `~` and `~/…` are HOME),
+    there (`*`, `?`, `[`, or a `{` outside quotes, which a bash run as sh expands). A `$NAME` counts as sh fills it in
+    (`"$E"sh` is `sh`), and a `$NAME` outside quotes whose value holds a pattern or a blank or is empty is refused, as
+    is a `~user` or `~+` path (only `~` and `~/…` are HOME),
     or ssh's `ProxyCommand` or `LocalCommand` (not a plain `none`; a quoted `"none"` is a command), which ssh runs through the
     user's shell, also in a bundle of flags (`-4oProxyCommand=…`) or with its name quoted. ssh runs `ProxyJump` (`-J`)
     through that shell too, as a command of its own with the jump hosts written into it, so a `ProxyJump` with more
