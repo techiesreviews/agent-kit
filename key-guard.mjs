@@ -541,18 +541,23 @@ const unescaped = word => unquoted(word.replace(/\\[_tnvfrc]/g, " "));
 const jumpOf = (words, i) => (jumpOption.exec(unquoted(words[i])) ?? jumpOption.exec(unescaped(words[i])))?.[1] ?? flagValue(words, i, "J");
 const startedShell = (given, env, shut) => {
   // A word an env -S string (gnuenv) splits counts as the words it splits into too, so an -J or -F there is checked
-  // beside the line's own (GPT second look, round 16).
-  const words = [...given, ...given.flatMap(word => /[\s\\]/.test(word) ? unescaped(word).split(/\s+/).filter(Boolean) : [])];
+  // beside the line's own (GPT second look, round 16): split by env's own rules (quotes keep a blank in a word), each
+  // piece right after its word, so the line's next word follows the last piece (round 17, Claude review round 16).
+  const split = word => /[\s\\"']/.test(word) ? splitWords(word) ?? unescaped(word).split(/\s+/).filter(Boolean) : [];
+  const entries = given.flatMap(word => [{ word, line: true }, ...split(word).map(piece => ({ word: piece, line: false }))]);
+  const words = entries.map(entry => entry.word);
+  // A ProxyJump option is read in the line's own words, which hold its value beside its name; in a piece, only -J.
+  const jumpAt = i => entries[i].line ? jumpOf(words, i) : flagValue(words, i, "J");
   // A ProxyJump's command holds the -F path as it is and the host (%h, from HostName too) in single quotes: a host
   // written in these words is checked here, one git adds from the push address is not (the README says so).
   // ssh keeps quotes and \ in an option's value, so only a plain none turns the option off: "none" and n\one are
   // values like any other (GPT second look, round 9).
-  const jumping = words.some((word, i) => { const jump = jumpOf(words, i)?.trim(); return jump !== undefined && (!/^(?:none)?$/i.test(jump) || /["'\\]/.test(word)); });
+  const jumping = words.some((word, i) => { const jump = jumpAt(i)?.trim(); return jump !== undefined && (!/^(?:none)?$/i.test(jump) || /["'\\]/.test(word)); });
   for (const [i, word] of words.entries()) {
     // ProxyCommand and LocalCommand are read in the line's own words, which hold the value beside the name.
-    const option = i < given.length ? viaShell.exec(unquoted(word)) ?? viaShell.exec(unescaped(word)) : null;
+    const option = entries[i].line ? viaShell.exec(unquoted(word)) ?? viaShell.exec(unescaped(word)) : null;
     if (option && !(option[2].trim().toLowerCase() === "none" && /command["']*(?:\s*=\s*|\s+)none\s*$/i.test(word))) return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
-    const jump = jumpOf(words, i);
+    const jump = jumpAt(i);
     if (jump !== null && !jump.trim().split(",").every(name => /^[\w.@:[\]][\w.@:[\]-]*$/.test(name))) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
     if (jumping && (word.includes("'") || !/^[\w./@:,+~-]*$/.test(flagValue(words, i, "F") ?? ""))) return "ProxyJump beside a ' or an -F path with more than plain characters in it, which ssh writes into the command it runs through the user's shell";
     // Braces and commas split too: where /bin/sh is bash, {s,h} would be a shell's name by brace expansion.
