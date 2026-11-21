@@ -26,7 +26,7 @@ if [[ ${1-} == --home && $# == 1 ]]; then printf '%s\n' "$KIT_HOME"; exit 0; fi
 lib_runs=true
 if ! kit_node; then
   lib_runs=false refusal=$(kit_node_missing)
-elif [[ -n ${KIT_ROOT:-} ]] && ! kit_lib_node ''; then
+elif [[ -n ${KIT_ROOT:-} ]] && ! kit_lib_node '' > /dev/null; then
   lib_runs=false refusal='RESULT: fail kit-lib.mjs did not run (its error is above)'
   unset KIT_ROOT
 elif ! KIT_ROOT=$(kit_root "$kit_dir"); then
