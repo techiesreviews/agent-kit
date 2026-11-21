@@ -472,6 +472,8 @@ test("Node lookup handles npm alone, absent system node, and unsupported install
   const update = run(["update", "--help"], env);
   assert.equal(update.status, 0, update.stderr);
   assert.match(update.stdout, /^Usage: kit update /);
+  // Its help is usage text, not a run, as with Node: no RESULT line.
+  assert.equal(results(update.stdout).length, 0, update.stdout);
 });
 
 // Node on Windows (Git Bash) ends `node --version` with CRLF; the carriage return is not part of the version (TOOLS-335).
