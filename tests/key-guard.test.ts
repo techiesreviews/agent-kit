@@ -1700,7 +1700,7 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // folder of their own, so the plain rc words above stay plain.
   const otherShells = join(dir, "other shells");
   mkdirSync(otherShells);
-  for (const name of ["rc", "fish", "ysh", "nu"]) { writeFileSync(join(otherShells, name), "#!/bin/sh\nexit 0\n"); chmodSync(join(otherShells, name), 0o755); }
+  for (const name of ["rc", "fish", "ysh", "nu", "zsh", "tcsh"]) { writeFileSync(join(otherShells, name), "#!/bin/sh\nexit 0\n"); chmodSync(join(otherShells, name), 0o755); }
   const withOthers = { ...base, PATH: `${otherShells}:${bin}:/usr/bin:/bin` };
   for (const name of ["rc", "ysh", "nu"]) {
     assert.match(sshCommand({ ...withOthers, GIT_SSH_COMMAND: `timeout 30 ${name} -c true` }, { worktree: root }).problem ?? "", new RegExp(`cannot be told: it starts a shell \\(${name}\\)`));
@@ -1840,11 +1840,15 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     ["pwsh-mixed-dashes", "pwsh -—NoProfile"], ["pwsh-value-chain", "pwsh -CustomPipeName -ep payload.ps1"],
     ["pwsh-config-file", "pwsh -ConfigurationFile x.pssc"], ["pwsh-settings-file", "pwsh -SettingsFile x.json"],
     ["shell-rcfile", `bash --rcfile -o ${join(root, "payload")}`], ["shell-init-file", "bash --init-file -O payload"],
-    ["shell-value-chain", "bash -o -o payload"], ["shell-unknown-long", "bash --debugger"]]) {
+    ["shell-value-chain", "bash -o -o payload"], ["shell-unknown-long", "bash --debugger"],
+    // Each shell's own letters: zsh's -O takes no value and its -b, like tcsh's, ends the options; an option that takes
+    // a value and ends the line takes the script (Claude review, round 24; GPT second look, round 25).
+    ["zsh-correct-all", "zsh -O payload"], ["rc-no-value", "rc -o payload"], ["zsh-break", "zsh -b -e"], ["tcsh-break", "tcsh -b -e"], ["tcsh-bundle", "tcsh -fb"],
+    ["pwsh-value-last", "pwsh -CustomPipeName"], ["shell-value-last", "bash -eu -o"]]) {
     const file = wrapper(name, "X=1", words);
     const why = new RegExp(`hands the shell \\(${words.split(" ")[0]}\\) a script or -s`);
-    assert.throws(() => start(file), why, words);
-    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: file }, { worktree: root }).problem ?? "", why, words);
+    assert.throws(() => startCommand(file, [], withOthers, { worktree: root, kind: "test" }), why, words);
+    assert.match(sshCommand({ ...withOthers, GIT_SSH_COMMAND: file }, { worktree: root }).problem ?? "", why, words);
   }
   // Option values still count, and an ssh line with key files outside the worktree still starts.
   assert.doesNotThrow(() => start(wrapper("pwsh-valued", "X=1", "pwsh -NoProfile -ep Bypass -WorkingDirectory /tmp")));
@@ -1852,6 +1856,9 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // A -- that ends the line hands bash nothing besides the script (Claude review, round 22).
   const dashes = wrapper("own-shell-dashes", "X=1", "bash -eu --");
   assert.deepEqual(start(dashes), ["/usr/bin/env", ["X=1", bash, "-eu", "--", dashes]]);
+  // The long options the README names still start bash (Claude review, round 24).
+  const norc = wrapper("own-shell-norc", "X=1", "bash --norc --noprofile");
+  assert.deepEqual(start(norc), ["/usr/bin/env", ["X=1", bash, "--norc", "--noprofile", norc]]);
   for (const words of ["ssh -i ~/.ssh/id_ed25519 -o IdentityFile=/etc/ssh/key -o UserKnownHostsFile=/etc/ssh/known", "ssh -i/etc/ssh/key -F/etc/ssh/ssh_config"]) {
     const keys = wrapper(`ssh-keys-${words.length}`, "X=1", words);
     assert.deepEqual(start(keys), ["/usr/bin/env", ["X=1", join(bin, "ssh"), ...words.split(" ").slice(1), keys]], words);
