@@ -436,15 +436,34 @@ export function codexProfile(kind, common, paths) {
 const systemPath = "/bin:/usr/bin";
 const executable = file => { try { accessSync(file, constants.X_OK); return statSync(file).isFile(); } catch { return false; } };
 const pathFolders = env => (env.PATH === undefined ? systemPath : String(env.PATH)).split(delimiter);
-// A path with every link in it followed, as far as it exists: a folder that is not there yet is read through the
-// links of the folders above it, so making it later moves it nowhere else.
-function real(path) {
-  const rest = [];
-  for (let at = resolve(path); ; at = dirname(at)) {
-    try { return join(realpathSync(at), ...rest); }
-    catch { if (dirname(at) === at) return resolve(path); rest.unshift(basename(at)); }
+// A path walked one part at a time as the kernel walks it (as magic does): a link, a folder link too, is swapped for
+// its target before anything past it is read, and a .. climbs from where the walk has got to, so <out>/link/../x is x
+// beside where link leads, not beside link (GPT second look on be0bc9b). `end` is where the path leads, every link in
+// it followed; `passed` holds each entry the walk read on the way, where it sits (its folder's links followed, its own
+// not), for a build can point one inside the worktree elsewhere after the check. A part that is not there yet ends the
+// walk, and the rest counts as written from there, so making it later moves it nowhere else; past 40 links the kernel
+// stops, and so does this.
+function walk(path) {
+  const passed = [];
+  let at = "/", rest = (isAbsolute(path) ? path : `${process.cwd()}/${path}`).split("/"), links = 0;
+  while (rest.length) {
+    const part = rest.shift();
+    if (part === "" || part === ".") continue;
+    if (part === "..") { at = dirname(at); continue; }
+    const next = join(at, part);
+    passed.push(next);
+    let target;
+    try { if (!lstatSync(next).isSymbolicLink()) { at = next; continue; } target = readlinkSync(next); }
+    catch { return { end: resolve(next, ...rest), passed }; }
+    if (++links > 40) return { end: resolve(next, ...rest), passed };
+    if (isAbsolute(target)) at = "/";
+    rest = [...target.split("/"), ...rest];
   }
+  return { end: at, passed };
 }
+const real = path => walk(path).end;
+// A PATH folder's entry by that name, as written: a .. in the folder stays for real and walk to read in kernel order.
+const inFolder = (folder, name) => folder.split("/").includes("..") ? `${folder}/${name}` : join(folder, name);
 // The two folders a build is meant to write, for the comparison: the worktree and the Git folder, links followed.
 const buildFolders = (worktree, common) => [worktree, common].filter(Boolean).map(real);
 const trustedFolders = (env, shut) => pathFolders(env).filter(folder => isAbsolute(folder) && !shut.some(root => inside(real(folder), root)));
@@ -461,7 +480,7 @@ const runFolders = (env, shut) => { const folders = trustedFolders(env, shut); r
 function lookup(name, env, shut) {
   let refused = null;
   for (const folder of runFolders(env, shut)) {
-    const file = join(folder, name);
+    const file = inFolder(folder, name);
     if (leadsToProc(file)) { refused ??= file; continue; }
     if (!executable(file)) continue;
     if (!shut.some(root => inside(real(file), root))) return { file, refused };
@@ -505,8 +524,9 @@ const splitString = (word, before = "") => {
 const innerFill = word => /`|\$\(/.test(word) || word.split(/[\s;&|()]+/).some(piece => /^[A-Za-z0-9_]*\$.*=/s.test(piece.replace(/['"\\]/g, "")));
 const lineSetting = words => words.map(ownSetting).find(Boolean)
   ?? (words.some((word, i) => splitString(word, words[i - 1])?.includes("${")) ? FILLED : words.some(innerFill) ? INNER : undefined);
-// Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it.
-const namesEnv = word => basename(word) === "env" || (word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
+// Whether a word names env: by name or by a path to it (links followed), or as a multi-call binary's choice of it, a
+// leading dash too, which busybox takes off the name it is started by (the loader's --argv0 -env: GPT second look on be0bc9b).
+const namesEnv = word => /^-?env$/.test(basename(word)) ||(word.includes("/") && basename(real(word)) === "env") || /^--coreutils-prog(?:-shebang)?=env$/.test(word);
 // No shell starts from git's ssh command or from an env -S first line but the script's own interpreter (Lex's decision,
 // 2026-11-20, TOOLS-329): a shell can build PATH= or BASH_ENV= out of pieces no word holds ("$1$2", "${1}${2}", IFS=
 // with "$*"), which no check here could read. A shell counts by name (a version may follow: bash5, zsh-5.9), by a path
@@ -517,20 +537,22 @@ const namesEnv = word => basename(word) === "env" || (word.includes("/") && base
 // command of its own that it runs through that shell, so one with more than user@host:port names in it counts, and so
 // does one beside a word with a ' in it or an -F path with more than plain characters, which land in that command. rc,
 // es and nu, too short to tell from other words, count only where PATH or a path leads to such a program, and take no
-// version.
+// version. A name with a leading dash counts too: a login shell is started by such a name, and busybox, handed one by
+// the loader's --argv0 (ld-linux --argv0 -sh busybox), runs that shell (GPT second look on be0bc9b).
 // A copy of a shell under a name of its own is not recognised. startedShell gives what starts the shell, in words, or
 // null; shellAdvice what to do about it.
 const shells = "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|zsh|yash|posh|hush|sash|csh|tcsh|fish|osh|ysh|pwsh|xonsh|elvish";
-const shellNamed = (word, names = shells) => new RegExp(`^(?:${names})(?:-static)?(?:[-.]?\\d[\\d.]*)?$`).test(basename(word));
+const shellNamed = (word, names = shells) => new RegExp(`^-?(?:${names})(?:-static)?(?:[-.]?\\d[\\d.]*)?$`).test(basename(word));
 // sh and env take a relative path from the folder git runs in, which is not the kit's own folder: such a path counts
-// from there too, the worktree or the Git folder (GPT second look, round 14).
-const fromRoots = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map(root => join(root, path))];
-// Whether a path, relative ones from there too, leads into the worktree or the Git folder, or passes through a folder
-// there on the way as it is written: a build can point a link it placed there elsewhere after the check (Claude review,
-// round 14), a folder link too (<worktree>/tools -> /usr/bin; landing review R1-3). Each folder on the way counts with
-// its links followed, so a worktree reached through a link of its own counts as well.
-const writtenFolders = place => { const folders = []; for (let at = dirname(resolve(place)); ; at = dirname(at)) { folders.push(at); if (dirname(at) === at) return folders; } };
-const shutIn = (path, shut) => fromRoots(path, shut).some(place => [place, ...writtenFolders(place)].some(at => shut.some(root => inside(real(at), root))));
+// from there too, the worktree or the Git folder (GPT second look, round 14); as written, never tidied, so a .. counts
+// as the kernel reads it (walk).
+const fromRoots = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map(root => `${root}/${path}`)];
+// Whether a path, relative ones from there too, leads into the worktree or the Git folder, or passes through an entry
+// there on the way, in the order the kernel walks it (walk; a .. after a link climbs from where the link leads: Claude
+// review R2-5): a build can point a link it placed there elsewhere after the check (Claude review, round 14), a folder
+// link too (<worktree>/tools -> /usr/bin; landing review R1-3). The walk goes on through each link, so a worktree
+// reached through a link of its own counts as well.
+const shutIn = (path, shut) => fromRoots(path, shut).some(place => { const { end, passed } = walk(place); return [end, ...passed].some(at => shut.some(root => inside(at, root))); });
 // /proc/self/exe and the like are whatever program opens them: the shell git starts, when it is that shell that runs
 // them, while the kit sees its own node there (GPT second look, round 27). So a path that leads into /proc or /dev, by
 // a link or a folder link too, counts as a shell: one in /proc whatever the kit sees there (/proc/self/cwd is the
@@ -560,15 +582,15 @@ const magic = path => {
 };
 // Whether a path leads into /proc, where what it names is another program, or another folder's file, for each process.
 const leadsToProc = path => /^\/proc(?:\/|$)/.test(magic(path));
-// A path as written, from the kit's folder and from each shut folder, never tidied (a .. counts as the kernel reads it).
-const rawPlaces = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map(root => `${root}/${path}`)];
-const intoProc = (path, shut) => path.includes("/") && rawPlaces(path, shut).some(place => magic(place));
+const intoProc = (path, shut) => path.includes("/") && fromRoots(path, shut).some(place => magic(place));
+// A path's file is read as the kernel reads it (real walks a .. after a link from where the link leads), so
+// <out>/link/../../shell-alias is the shell that link's folder holds (GPT second look on be0bc9b).
 const namesShell = (word, env, shut) => {
   const found = word.includes("/") ? null : lookup(word, env, shut);
   const files = found ? [found.file].filter(Boolean) : fromRoots(word, shut).filter(executable);
   const leadsIn = place => { const where = magic(place); return where.startsWith("/proc") || (where !== "" && executable(place)); };
   // A bare name a PATH entry before it leads into /proc for counts too: the program that looks it up opens that one.
-  return shellNamed(word) || Boolean(found?.refused && leadsToProc(found.refused)) || (found ? files : rawPlaces(word, shut)).some(leadsIn)
+  return shellNamed(word) || Boolean(found?.refused && leadsToProc(found.refused)) || (found ? files : fromRoots(word, shut)).some(leadsIn)
     || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es|nu)$/.test(basename(name))));
 };
 // ssh splits an option from its value at any blank, a line break and carriage return too, or an =.
@@ -706,6 +728,10 @@ const handsScript = (found, name, options) => {
   }
   return null;
 };
+// What to do about what handsScript found, in words a person can act on (Claude review R2-6): options passed as one
+// word are joined into one (-e -u as -eu), an option with nothing after it gets its setting, anything else goes.
+const scriptAdvice = handed => handed.startsWith('"') ? "join those options into one word (-eu for -e -u)"
+  : handed.includes(" with nothing after it,") ? "give that option its setting" : "keep only options on that line";
 
 // A script's first line names its interpreter, and `#!/usr/bin/env node` has env look node up by its bare name on PATH,
 // where a link a person made into the worktree or the Git folder stays (only the names the kit starts are looked up past
@@ -738,7 +764,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
     // review, round 27).
     const given = process.platform === "darwin" ? rest.split(/[ \t]+/) : [rest];
     const handed = rest && namesShell(interpreter, names, shut) ? handsScript(interpreter, interpreter, given) : null;
-    if (handed) refuse(`${file} starts with ${line}, which hands the shell (${basename(interpreter)}) ${handed}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
+    if (handed) refuse(`${file} starts with ${line}, which hands the shell (${basename(interpreter)}) ${handed}; ${scriptAdvice(handed)}, or set ASE_KEY_GUARD=off to run without the lock`);
     // A binary interpreter the kernel starts itself; one that is a script again is followed (the kernel passes what
     // follows the interpreter as one argument, before the script).
     const next = interpreted(interpreter, [...(rest ? [rest] : []), file, ...args], env, shut, refuse, depth + 1, names);
@@ -786,7 +812,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   if (shell) refuse(`${file} starts with env ${rest}, which starts a shell (${shell}), and a shell can build PATH= or BASH_ENV= out of pieces; ${shellAdvice(shell, " from that line") ?? "start the program from that line directly"}, or set ASE_KEY_GUARD=off to run without the lock`);
   // A shell given anything but options would run something else in place of this script (handsScript).
   const handed = namesShell(found, names, shut) ? handsScript(found, name, options) : null;
-  if (handed) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) ${handed}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
+  if (handed) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) ${handed}; ${scriptAdvice(handed)}, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1, names);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).
@@ -916,7 +942,7 @@ function cleanFolders(env, shut) {
   const folders = runFolders(env, shut).filter(folder => {
     let entries = [];
     try { entries = readdirSync(folder, { withFileTypes: true }); } catch { return true; }
-    return !entries.some(entry => entry.isSymbolicLink() && shut.some(root => inside(real(join(folder, entry.name)), root)));
+    return !entries.some(entry => entry.isSymbolicLink() && shut.some(root => inside(real(inFolder(folder, entry.name)), root)));
   });
   return folders.length ? folders : systemPath.split(delimiter);
 }

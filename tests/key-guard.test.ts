@@ -1940,12 +1940,12 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     ["pwsh -ConfigurationFile x.pssc", /hands the shell \(pwsh\) -ConfigurationFile, which loads code from a file/],
     ["bash --debugger", /hands the shell \(bash\) --debugger, an option the kit does not know/],
     ["bash -O extdebug", /hands the shell \(bash\) -O extdebug, a setting the kit does not know/],
-    ["bash -eu -o", /hands the shell \(bash\) -o with nothing after it, so it would take this script as its value/]] as const) {
+    ["bash -eu -o", /hands the shell \(bash\) -o with nothing after it, so it would take this script as its value; give that option its setting,/]] as const) {
     assert.throws(() => start(wrapper(`why-${words.replace(/\W+/g, "-").slice(-40)}`, "X=1", words)), why, words);
   }
   const oneWord = join(wrappers, "why-one-word");
   writeFileSync(oneWord, `#!${bash} -e -u\nexec ssh "$@"\n`); chmodSync(oneWord, 0o755);
-  assert.throws(() => start(oneWord), /hands the shell \(bash\) "-e -u" as one word \(Linux passes all that follows the interpreter as one\), which is no option it knows/);
+  assert.throws(() => start(oneWord), /hands the shell \(bash\) "-e -u" as one word \(Linux passes all that follows the interpreter as one\), which is no option it knows; join those options into one word \(-eu for -e -u\),/);
   // A folder link into /proc/self/cwd is git's folder, the worktree, when git opens a path through it, so a path
   // through it counts as one into /proc (landing review R1-1), and so does a program a PATH entry leads to there,
   // which the kit's folder does not hold (R1-2).
@@ -2002,6 +2002,61 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   const safe = gitSafety({ worktree: root, env: { ...base, GIT_SSH_COMMAND: "MY_ENV=1 ssh" }, network: true, git: realGit });
   spawnSync(realGit, ["-C", root, "ls-remote", "ssh://example.invalid/repo.git"], { env: { ...base, GIT_SSH_COMMAND: "MY_ENV=1 ssh", ...safe.env }, encoding: "utf8" });
   assert.match(readFileSync(noted, "utf8"), /^lead's ssh .*example\.invalid/);
+});
+
+// GPT second look on be0bc9b: the loader's --argv0 hands busybox the name it acts on, so -sh (a login shell's name)
+// starts its shell and -env its env; and the kernel follows a link before it reads a .. after it, so link/../x is x
+// beside where the link leads, not beside the link.
+test("TOOLS-329: a login shell name the loader hands busybox, and a .. after a link, are read as the kernel reads them", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-kernel-names-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const root = join(dir, "work"), bin = join(dir, "bin"), out = join(dir, "out"), wrappers = join(dir, "wrappers");
+  for (const folder of [join(root, "deep", "dir"), join(root, "sub"), join(root, "tools"), bin, join(out, "deep", "dir"), join(dir, "far", "sub"), wrappers]) mkdirSync(folder, { recursive: true });
+  const bash = ["/usr/bin/bash", "/bin/bash"].find(file => existsSync(file))!;
+  writeFileSync(join(bin, "ssh"), "#!/bin/sh\nexit 1\n"); chmodSync(join(bin, "ssh"), 0o755);
+  const base = { ...process.env, PATH: `${bin}:/usr/bin:/bin`, GIT_SSH: undefined, GIT_SSH_COMMAND: undefined, BASH_ENV: undefined, ENV: undefined } as NodeJS.ProcessEnv;
+  const ssh = (command: string, env = base) => sshCommand({ ...env, GIT_SSH_COMMAND: command }, { worktree: root });
+  const start = (name: string, line: string) => {
+    const file = join(wrappers, name);
+    writeFileSync(file, `#!${line}\nexec ssh "$@"\n`); chmodSync(file, 0o755);
+    return startCommand(file, [], base, { worktree: root, kind: "test" });
+  };
+  // P0-1: busybox acts on its first word with a leading dash taken off, as a login shell is named.
+  const loader = "/lib64/ld-linux-x86-64.so.2";
+  for (const name of ["-sh", "-bash", "/x/-ash"]) {
+    assert.match(ssh(`${loader} --argv0 ${name} /usr/bin/busybox -c 'printf PROBE'`).problem ?? "", /it starts a shell/, name);
+    assert.throws(() => start(`loader${name.replace(/\W+/g, "-")}`, `/usr/bin/env -S ${loader} --argv0 ${name} /usr/bin/busybox -c ssh`), /, which starts a shell/, name);
+  }
+  assert.match(ssh(`${loader} --argv0 -env /usr/bin/busybox ssh host`).problem ?? "", /env looks its program up on PATH/);
+  assert.throws(() => start("loader-env", `/usr/bin/env -S ${loader} --argv0 -env /usr/bin/busybox ssh`), /starts env again/);
+  // P0-2: out/link/../../shell-alias is out/shell-alias, a link to bash, behind a wrapper and in an env -S line; inside
+  // the worktree too.
+  symlinkSync(join(out, "deep", "dir"), join(out, "link"));
+  symlinkSync(bash, join(out, "shell-alias"));
+  symlinkSync(join(root, "deep", "dir"), join(root, "link"));
+  symlinkSync(bash, join(root, "shell-alias"));
+  for (const path of [`${out}/link/../../shell-alias`, `${root}/link/../../shell-alias`]) {
+    assert.match(ssh(`timeout 1 ${path} -c 'printf PROBE'`).problem ?? "", /it starts a shell/, path);
+    assert.throws(() => start(`dots-${path.length}`, `/usr/bin/env -S timeout 1 ${path} -c ssh`), /, which starts a shell/, path);
+  }
+  // A .. after a link that leads into the worktree is in the worktree: out-link/../payload is the worktree's payload
+  // (Claude review R2-5), as an interpreter, as git's ssh, and as an env -S program.
+  writeFileSync(join(root, "payload"), "#!/bin/sh\nexit 1\n"); chmodSync(join(root, "payload"), 0o755);
+  symlinkSync(join(root, "sub"), join(dir, "out-link"));
+  const payload = `${dir}/out-link/../payload`;
+  assert.throws(() => start("dots-interpreter", payload), /inside the worktree or its Git folder/);
+  assert.match(ssh(`${payload} host`).problem ?? "", /inside the worktree or its Git folder/);
+  assert.throws(() => start("dots-env", `/usr/bin/env -S X=1 ${payload}`), /inside the worktree or its Git folder/);
+  // A PATH folder written with a .. after a link is the folder the kernel reaches: one that holds a link into the
+  // worktree (far/ssh) leaves the command's PATH, so timeout never finds it.
+  writeFileSync(join(root, "tools", "ssh"), "#!/bin/sh\nexit 1\n"); chmodSync(join(root, "tools", "ssh"), 0o755);
+  symlinkSync(join(root, "tools", "ssh"), join(dir, "far", "ssh"));
+  symlinkSync(join(dir, "far", "sub"), join(dir, "hop"));
+  const hops = { ...base, PATH: `${dir}/hop/..:${bin}:/usr/bin:/bin` };
+  const command = ssh("timeout 1 ssh host", hops);
+  assert.equal(command.problem, null);
+  assert.ok(command.command?.startsWith("PATH=") && !command.command.includes("hop"), command.command ?? "");
+  assert.ok(ssh("ssh host", hops).command?.endsWith(`${join(bin, "ssh")} host`));
 });
 
 // TOOLS-329 (SL-1): env -S splits its string on carriage return, vertical tab and form feed as on blanks, so a first
