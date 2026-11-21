@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const { orbitBringsSecret } = await import(pathToFileURL(resolve(import.meta.dirname, "../orbit-client.mjs")).href);
 const { projectCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../review-brief.mjs")).href);
@@ -73,270 +73,281 @@ line), and the Issue is closed with a comment naming its card (ORBIT_ROLE=lead).
 and closes what is left; an Issue whose text holds a secret stays open. --close does the same there.
 `;
 
-// fail never returns: it prints the RESULT line and exits, so it also ends expressions such as readJson's catch.
-const fail = (text, code = 1) => { kitResult("fail", `init ${text}`); process.exit(code); };
+// A run ends by throwing Exit, never by process.exit: init() turns it into the exit code, so a test can run kit
+// init in-process and the script run passes the code on.
+class Exit { constructor(code) { this.code = code; } }
+const exit = (code) => { throw new Exit(code); };
+// fail never returns: it prints the RESULT line and ends the run, so it also ends expressions such as readJson's catch.
+const fail = (text, code = 1) => { kitResult("fail", `init ${text}`); exit(code); };
 const isObject = (value) => value && typeof value === "object" && !Array.isArray(value);
-const options = { light: false, full: false, land: "", issues: false, close: false, check: false, all: false, pieces: false };
-const args = process.argv.slice(2);
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-  if (arg === "--help" || arg === "-h") { process.stdout.write(usage); process.exit(0); }
-  else if (arg === "--light") options.light = true;
-  else if (arg === "--full") options.full = true;
-  else if (arg === "--check") options.check = true;
-  else if (arg === "--all") options.all = true;
-  else if (arg === "--pieces") options.pieces = true;
-  else if (arg === "--issues") options.issues = true;
-  else if (arg === "--close") options.close = true;
-  else if (arg === "--land") {
-    if (!args[i + 1] || args[i + 1].startsWith("-")) { process.stderr.write(usage); fail("--land needs a branch name", 2); }
-    options.land = args[++i];
+
+// kit init's entry: one run with these arguments (as on the command line), giving the run's exit code.
+export async function init(args) {
+  try { await run(args); return 0; }
+  catch (error) { if (error instanceof Exit) return error.code; throw error; }
+}
+
+async function run(args) {
+  const options = { light: false, full: false, land: "", issues: false, close: false, check: false, all: false, pieces: false };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--help" || arg === "-h") { process.stdout.write(usage); return; }
+    else if (arg === "--light") options.light = true;
+    else if (arg === "--full") options.full = true;
+    else if (arg === "--check") options.check = true;
+    else if (arg === "--all") options.all = true;
+    else if (arg === "--pieces") options.pieces = true;
+    else if (arg === "--issues") options.issues = true;
+    else if (arg === "--close") options.close = true;
+    else if (arg === "--land") {
+      if (!args[i + 1] || args[i + 1].startsWith("-")) { process.stderr.write(usage); fail("--land needs a branch name", 2); }
+      options.land = args[++i];
+    }
+    else { process.stderr.write(usage); fail(`unknown argument ${arg}`, 2); }
   }
-  else { process.stderr.write(usage); fail(`unknown argument ${arg}`, 2); }
-}
-if (options.close && !options.issues) { process.stderr.write(usage); fail("--close goes with --issues", 2); }
-if (options.issues && args.some((arg) => !["--issues", "--close"].includes(arg))) { process.stderr.write(usage); fail("--issues takes only --close", 2); }
-if (options.light && options.full) { process.stderr.write(usage); fail("--light and --full do not go together", 2); }
-for (const alone of ["--check", "--all", "--pieces"]) {
-  if (args.includes(alone) && args.length > 1) { process.stderr.write(usage); fail(`${alone} takes no other arguments`, 2); }
-}
-if (options.all) all();
+  if (options.close && !options.issues) { process.stderr.write(usage); fail("--close goes with --issues", 2); }
+  if (options.issues && args.some((arg) => !["--issues", "--close"].includes(arg))) { process.stderr.write(usage); fail("--issues takes only --close", 2); }
+  if (options.light && options.full) { process.stderr.write(usage); fail("--light and --full do not go together", 2); }
+  for (const alone of ["--check", "--all", "--pieces"]) {
+    if (args.includes(alone) && args.length > 1) { process.stderr.write(usage); fail(`${alone} takes no other arguments`, 2); }
+  }
+  if (options.all) all();
 
-const root = kitRoot();
-const git = (...gitArgs) => {
-  const result = spawnSync("git", ["-C", root, ...gitArgs], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  return result.status === 0 ? result.stdout.trim() : null;
-};
-if (!git("rev-parse", "--show-toplevel")) fail(`${root} is not in a git repo; run kit init in the project's top folder`);
-const at = (path) => resolve(root, path);
-const home = kitHome();
-if (options.issues) await issues();
+  const root = kitRoot();
+  const git = (...gitArgs) => {
+    const result = spawnSync("git", ["-C", root, ...gitArgs], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return result.status === 0 ? result.stdout.trim() : null;
+  };
+  if (!git("rev-parse", "--show-toplevel")) fail(`${root} is not in a git repo; run kit init in the project's top folder`);
+  const at = (path) => resolve(root, path);
+  const home = kitHome();
+  if (options.issues) await issues({ close: options.close, root, at, git });
 
-const old = ["scripts/agents/kit-lib.sh", "scripts/agents/kit-lib.mjs", "scripts/agents/kit.d/",
-  "scripts/agents/hooks/bash-guard.sh", "scripts/agents/hooks/agent-cap.sh", "scripts/agents/hooks/session-env.sh"].filter((path) => existsSync(at(path)));
-if (old.length && options.check) { kitResult("ok", `init check: old kit files (${old.join(", ")}); the move to the shared kit comes first`); process.exit(0); }
-if (old.length) {
-  console.log("kit init: this project holds old kit files; remove them on purpose first (the move does):");
-  for (const path of old) console.log(`  ${path}`);
-  fail(`old kit files: ${old.join(", ")}`);
-}
+  const old = ["scripts/agents/kit-lib.sh", "scripts/agents/kit-lib.mjs", "scripts/agents/kit.d/",
+    "scripts/agents/hooks/bash-guard.sh", "scripts/agents/hooks/agent-cap.sh", "scripts/agents/hooks/session-env.sh"].filter((path) => existsSync(at(path)));
+  if (old.length && options.check) { kitResult("ok", `init check: old kit files (${old.join(", ")}); the move to the shared kit comes first`); return; }
+  if (old.length) {
+    console.log("kit init: this project holds old kit files; remove them on purpose first (the move does):");
+    for (const path of old) console.log(`  ${path}`);
+    fail(`old kit files: ${old.join(", ")}`);
+  }
 
-// The file's text is kept beside its value, so a merge can check under the lock that nobody changed it meanwhile.
-const readText = (path) => {
-  try { return readFileSync(at(path), "utf8"); }
-  catch (error) { fail(`${path} is unreadable (${String(error.message).replace(/\n/g, " ")}); fix it first, kit init never overwrites it`); }
-};
-const readJson = (path, text = readText(path)) => {
-  try { return JSON.parse(text); }
-  catch (error) { fail(`${path} is unreadable (${String(error.message).replace(/\n/g, " ")}); fix it first, kit init never overwrites it`); }
-};
-const branchExists = (name) => git("rev-parse", "--verify", "--quiet", `refs/heads/${name}`) !== null ||
-  git("rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}`) !== null || git("symbolic-ref", "--short", "HEAD") === name;
-const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
-const gitMain = common ? dirname(common) : root;
+  // The file's text is kept beside its value, so a merge can check under the lock that nobody changed it meanwhile.
+  const readText = (path) => {
+    try { return readFileSync(at(path), "utf8"); }
+    catch (error) { fail(`${path} is unreadable (${String(error.message).replace(/\n/g, " ")}); fix it first, kit init never overwrites it`); }
+  };
+  const readJson = (path, text = readText(path)) => {
+    try { return JSON.parse(text); }
+    catch (error) { fail(`${path} is unreadable (${String(error.message).replace(/\n/g, " ")}); fix it first, kit init never overwrites it`); }
+  };
+  const branchExists = (name) => git("rev-parse", "--verify", "--quiet", `refs/heads/${name}`) !== null ||
+    git("rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}`) !== null || git("symbolic-ref", "--short", "HEAD") === name;
+  const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
+  const gitMain = common ? dirname(common) : root;
 
-const writes = [], kept = [], notes = [], visibilityNotes = [];
-const visibilityNote = (text) => { notes.push(text); visibilityNotes.push(text); };
-const extrasPath = "docs/agents/kitchen-extras.md", mapsPath = "docs/wayfinder", commandsPath = "scripts/agents/project.d";
+  const writes = [], kept = [], notes = [], visibilityNotes = [];
+  const visibilityNote = (text) => { notes.push(text); visibilityNotes.push(text); };
+  const extrasPath = "docs/agents/kitchen-extras.md", mapsPath = "docs/wayfinder", commandsPath = "scripts/agents/project.d";
 
-// How many commits `from` holds, in its local branch or origin's, that `to` lacks by patch: a release or a rebase merge writes
-// every commit anew, so the same change under another SHA is not missing. 0 when either branch is missing.
-const refsOf = (name) => ["refs/heads/", "refs/remotes/origin/"].map((prefix) => `${prefix}${name}`).filter((ref) => git("rev-parse", "--verify", "-q", ref) !== null);
-const commitsAhead = (from, to) => {
-  const a = refsOf(from), b = refsOf(to);
-  if (!a.length || !b.length) return 0;
-  // Against origin's `to` when it has one (what is live), else the local branch; the most any copy of `from` holds.
-  const target = b.find((ref) => ref.startsWith("refs/remotes/")) ?? b[0];
-  return Math.max(...a.map((x) => alreadyIn(target, x) ? 0 : Number(git("rev-list", "--count", "--cherry-pick", "--right-only", `${target}...${x}`) ?? 0) || 0));
-};
-// A squash merge writes one new commit for many, so no commit of `from` matches by patch. When merging `from` into `to`
-// would change nothing (git merge-tree's result tree is `to`'s own tree), everything on `from` is in `to` already.
-// A conflict, or a git older than 2.38 (no --write-tree), gives no tree: the commit count stands, the safe side.
-const alreadyIn = (to, from) => {
-  const merged = git("merge-tree", "--write-tree", to, from);
-  return merged !== null && merged.split("\n")[0] === git("rev-parse", `${to}^{tree}`);
-};
+  // How many commits `from` holds, in its local branch or origin's, that `to` lacks by patch: a release or a rebase merge writes
+  // every commit anew, so the same change under another SHA is not missing. 0 when either branch is missing.
+  const refsOf = (name) => ["refs/heads/", "refs/remotes/origin/"].map((prefix) => `${prefix}${name}`).filter((ref) => git("rev-parse", "--verify", "-q", ref) !== null);
+  const commitsAhead = (from, to) => {
+    const a = refsOf(from), b = refsOf(to);
+    if (!a.length || !b.length) return 0;
+    // Against origin's `to` when it has one (what is live), else the local branch; the most any copy of `from` holds.
+    const target = b.find((ref) => ref.startsWith("refs/remotes/")) ?? b[0];
+    return Math.max(...a.map((x) => alreadyIn(target, x) ? 0 : Number(git("rev-list", "--count", "--cherry-pick", "--right-only", `${target}...${x}`) ?? 0) || 0));
+  };
+  // A squash merge writes one new commit for many, so no commit of `from` matches by patch. When merging `from` into `to`
+  // would change nothing (git merge-tree's result tree is `to`'s own tree), everything on `from` is in `to` already.
+  // A conflict, or a git older than 2.38 (no --write-tree), gives no tree: the commit count stands, the safe side.
+  const alreadyIn = (to, from) => {
+    const merged = git("merge-tree", "--write-tree", to, from);
+    return merged !== null && merged.split("\n")[0] === git("rev-parse", `${to}^{tree}`);
+  };
 
-// The settings file: kept as it is when there, else filled from git and package.json.
-// unnamed: stub keys an existing settings file lacks, as [key, default, the stub file written there].
-let settings, unnamed = [], full = !options.light;
-if (options.check && !existsSync(at(kitSettingsFile))) { kitResult("ok", `init check: no ${kitSettingsFile} (run kit init to set the project up)`); process.exit(0); }
-if (options.pieces && !existsSync(at(kitSettingsFile))) fail(`--pieces needs ${kitSettingsFile}`);
-if (existsSync(at(kitSettingsFile))) {
-  settings = readJson(kitSettingsFile);
-  const problems = kitSettingsProblems(settings);
-  if (problems.length) fail(`${problems.join("; ")}; fix it first, kit init never overwrites it`);
-  kept.push(kitSettingsFile);
-  // A project stays as it was set up: full when its settings name the maps or the rulebook extras, or one of those
-  // stubs is at its default place (an older kit init wrote them there without naming them), else light. Its own
-  // commands folder says nothing: a light project may have one too.
-  full = options.full || (!options.light && (["maps", "rulebookExtras"].some((key) => settings[key]) ||
-    [`${mapsPath}/README.md`, extrasPath].some((path) => existsSync(at(path)))));
-  if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
-  // A private repo can land straight on main; the settings file is never edited, so the note names the change.
-  if (!options.pieces && !process.env.KIT_INIT_NO_VISIBILITY && settings.branches.direct !== false && !(Array.isArray(settings.init?.skip) && settings.init.skip.some((entry) => ["direct", kitSettingsFile].includes(entry)))) {
+  // The settings file: kept as it is when there, else filled from git and package.json.
+  // unnamed: stub keys an existing settings file lacks, as [key, default, the stub file written there].
+  let settings, unnamed = [], full = !options.light;
+  if (options.check && !existsSync(at(kitSettingsFile))) { kitResult("ok", `init check: no ${kitSettingsFile} (run kit init to set the project up)`); return; }
+  if (options.pieces && !existsSync(at(kitSettingsFile))) fail(`--pieces needs ${kitSettingsFile}`);
+  if (existsSync(at(kitSettingsFile))) {
+    settings = readJson(kitSettingsFile);
+    const problems = kitSettingsProblems(settings);
+    if (problems.length) fail(`${problems.join("; ")}; fix it first, kit init never overwrites it`);
+    kept.push(kitSettingsFile);
+    // A project stays as it was set up: full when its settings name the maps or the rulebook extras, or one of those
+    // stubs is at its default place (an older kit init wrote them there without naming them), else light. Its own
+    // commands folder says nothing: a light project may have one too.
+    full = options.full || (!options.light && (["maps", "rulebookExtras"].some((key) => settings[key]) ||
+      [`${mapsPath}/README.md`, extrasPath].some((path) => existsSync(at(path)))));
+    if (options.land) notes.push(`--land ignored: ${kitSettingsFile} already names "branches"`);
+    // A private repo can land straight on main; the settings file is never edited, so the note names the change.
+    if (!options.pieces && !process.env.KIT_INIT_NO_VISIBILITY && settings.branches.direct !== false && !(Array.isArray(settings.init?.skip) && settings.init.skip.some((entry) => ["direct", kitSettingsFile].includes(entry)))) {
+      const asked = kitRepoPrivate(root);
+      // Only these gate an ordinary change in kit pr (extra and css run for special changes only): the three checks and the
+      // browser specs (a project command). Unit test files (paths.unitTests) alone do not count: a project that names them
+      // but has no checks still gets the note.
+      const noChecks = !["check", "test", "lint"].some((key) => settings.checks?.[key]) && !projectCommand("specs", root, settings);
+      if (settings.branches.direct === true) {
+        // Already direct: a repo that turns out public, or one with no checks, needs a word.
+        if (noChecks) visibilityNote(`${kitSettingsFile} lands directly on ${settings.branches.land} and has no "checks": unless a CI workflow runs on pull requests, a change goes live after the review alone; add "checks"`);
+        if (asked.private === false) visibilityNote(`GitHub repo ${asked.repo} is public but ${kitSettingsFile} lands directly on ${settings.branches.land} (branches.direct): every merge goes live without Lex's go-ahead; to go back to a landing branch and a release branch set "branches": { "land": "dev", "release": "${settings.branches.land}" } (and drop "direct")`);
+      } else if (asked.private) {
+        // The branch that is live already: the release branch, else a main or master landing branch, else a main or master that exists.
+        const live = settings.branches.release || (["main", "master"].includes(settings.branches.land) ? settings.branches.land : ["main", "master"].find(branchExists));
+        const behind = live && settings.branches.land !== live ? commitsAhead(settings.branches.land, live) : 0;
+        visibilityNote(live && !branchExists(live) && settings.branches.release
+          ? `private GitHub repo ${asked.repo}, but its release branch ${live} is not here or on origin: branches.direct is not set (create it or fix "release" in ${kitSettingsFile} yourself first)`
+          : live && branchExists(live)
+          ? `private GitHub repo ${asked.repo}: to land directly on ${live} set "branches": { "land": "${live}", "release": "${live}", "direct": true } in ${kitSettingsFile} (kit init never edits it)` +
+            `; if the settings name a "devRoot", move its checkout to ${live} too` +
+            (behind ? `; merge ${settings.branches.land} into ${live} first, it has ${behind} commit${behind === 1 ? "" : "s"} ${live} lacks` : "")
+          : `private GitHub repo ${asked.repo}, but there is no main or master branch here to land on directly: branches.direct is not set (create that branch, then set "branches" in ${kitSettingsFile} yourself)`);
+      }
+      else if (asked.repo && asked.private === undefined) visibilityNote(`could not tell whether the GitHub repo ${asked.repo} is private (${asked.reason}); branches.direct is not set (add it yourself if the repo is private)`);
+    }
+    unnamed = full ? [["commands", commandsPath, `${commandsPath}/.gitkeep`], ["maps", mapsPath, `${mapsPath}/README.md`], ["rulebookExtras", extrasPath, extrasPath]]
+      .filter(([key]) => !settings[key]) : [];
+  } else {
+    const land = options.land || ["dev", "develop", "main", "master"].find(branchExists);
+    if (!land) fail("no dev, develop, main or master branch; name the landing branch with kit init --land <branch>", 2);
+    if (git("check-ref-format", "--branch", land) === null) fail(`--land ${land} is not a branch name`, 2);
+    if (!branchExists(land)) notes.push(`branch ${land} is not here or on origin yet; kit doctor's base check needs origin/${land} once the project has a GitHub repo`);
+    const release = ["dev", "develop"].includes(land) ? ["main", "master"].find(branchExists) : undefined;
+    const remote = kitHideUserInfo(git("remote", "get-url", "origin") ?? "");
+    // The last part of the remote's path, after "/" or the ":" of host:repo (a token in the url never becomes it).
+    const project = (remote && remote.replace(/\/+$/, "").split(/[/:]/).at(-1).replace(/\.git$/, "")) || basename(gitMain);
+    // A private GitHub repo lands straight on main (no dev branch, no release step); what gh cannot tell is never taken for private.
     const asked = kitRepoPrivate(root);
-    // Only these gate an ordinary change in kit pr (extra and css run for special changes only): the three checks and the
-    // browser specs (a project command). Unit test files (paths.unitTests) alone do not count: a project that names them
-    // but has no checks still gets the note.
-    const noChecks = !["check", "test", "lint"].some((key) => settings.checks?.[key]) && !projectCommand("specs", root, settings);
-    if (settings.branches.direct === true) {
-      // Already direct: a repo that turns out public, or one with no checks, needs a word.
-      if (noChecks) visibilityNote(`${kitSettingsFile} lands directly on ${settings.branches.land} and has no "checks": unless a CI workflow runs on pull requests, a change goes live after the review alone; add "checks"`);
-      if (asked.private === false) visibilityNote(`GitHub repo ${asked.repo} is public but ${kitSettingsFile} lands directly on ${settings.branches.land} (branches.direct): every merge goes live without Lex's go-ahead; to go back to a landing branch and a release branch set "branches": { "land": "dev", "release": "${settings.branches.land}" } (and drop "direct")`);
-    } else if (asked.private) {
-      // The branch that is live already: the release branch, else a main or master landing branch, else a main or master that exists.
-      const live = settings.branches.release || (["main", "master"].includes(settings.branches.land) ? settings.branches.land : ["main", "master"].find(branchExists));
-      const behind = live && settings.branches.land !== live ? commitsAhead(settings.branches.land, live) : 0;
-      visibilityNote(live && !branchExists(live) && settings.branches.release
-        ? `private GitHub repo ${asked.repo}, but its release branch ${live} is not here or on origin: branches.direct is not set (create it or fix "release" in ${kitSettingsFile} yourself first)`
-        : live && branchExists(live)
-        ? `private GitHub repo ${asked.repo}: to land directly on ${live} set "branches": { "land": "${live}", "release": "${live}", "direct": true } in ${kitSettingsFile} (kit init never edits it)` +
-          `; if the settings name a "devRoot", move its checkout to ${live} too` +
-          (behind ? `; merge ${settings.branches.land} into ${live} first, it has ${behind} commit${behind === 1 ? "" : "s"} ${live} lacks` : "")
-        : `private GitHub repo ${asked.repo}, but there is no main or master branch here to land on directly: branches.direct is not set (create that branch, then set "branches" in ${kitSettingsFile} yourself)`);
-    }
+    const mainBranch = ["main", "master"].find(branchExists);
+    // A dev or develop branch ahead of main holds work that going direct would strand (or push live in one go): no direct, a warning.
+    const liveBranch = options.land || mainBranch;
+    const compared = liveBranch ? ["dev", "develop"].filter(branchExists).map((name) => [name, commitsAhead(name, liveBranch)]).find(([, count]) => count > 0) : null;
+    const unmerged = options.land ? null : compared;
+    const direct = asked.private === true && !unmerged && !!(options.land ? ["main", "master"].includes(options.land) && branchExists(options.land) : mainBranch);
+    if (direct) visibilityNote(`private GitHub repo ${asked.repo}: it lands directly on ${options.land || mainBranch} (branches.direct)` + (options.land
+      ? (compared ? `; ${compared[0]} has ${compared[1]} commit${compared[1] === 1 ? "" : "s"} ${liveBranch} lacks, which stay behind` : "")
+      : mainBranch && ["dev", "develop"].some(branchExists) ? `; ${["dev", "develop"].filter(branchExists).join(" and ")} compared with ${mainBranch} as last fetched, so run git fetch first if unsure` : ""));
     else if (asked.repo && asked.private === undefined) visibilityNote(`could not tell whether the GitHub repo ${asked.repo} is private (${asked.reason}); branches.direct is not set (add it yourself if the repo is private)`);
+    else if (asked.private && unmerged) visibilityNote(`private GitHub repo ${asked.repo}, but ${unmerged[0]} has ${unmerged[1]} commit${unmerged[1] === 1 ? "" : "s"} ${mainBranch} lacks: branches.direct is not set (merge ${unmerged[0]} into ${mainBranch} first, then set "branches" in ${kitSettingsFile} yourself)`);
+    else if (asked.private) visibilityNote(options.land && !branchExists(options.land)
+      ? `private GitHub repo ${asked.repo}, but branch ${options.land} does not exist yet: branches.direct is not set (create it, then set "branches" in ${kitSettingsFile} yourself)`
+      : options.land
+        ? `private GitHub repo ${asked.repo}, but --land ${options.land} names a branch other than main or master: branches.direct is not set (${mainBranch ? `leave out --land to land directly on ${mainBranch}` : "there is no main or master branch here yet; create one first"})`
+        : `private GitHub repo ${asked.repo}, but there is no main or master branch here to land on directly: branches.direct is not set (create that branch, then set "branches" in ${kitSettingsFile} yourself)`);
+    const target = direct ? options.land || mainBranch : land;
+    settings = { project, mainRoot: gitMain, branches: direct ? { land: target, release: target, direct: true } : { land, ...(release ? { release } : {}) } };
+    const checks = guessChecks();
+    if (checks) settings.checks = checks;
+    if (direct && !checks) notes.push(`this project lands directly on ${target} and has no "checks" in ${kitSettingsFile}: unless a CI workflow runs on pull requests, a change goes live after the review alone; add "checks"`);
+    if (full) Object.assign(settings, { commands: commandsPath, maps: mapsPath, rulebookExtras: extrasPath });
+    writes.push({ path: kitSettingsFile, text: `${JSON.stringify(settings, null, 2)}\n`, said: `(${project}, lands on ${settings.branches.land})` });
   }
-  unnamed = full ? [["commands", commandsPath, `${commandsPath}/.gitkeep`], ["maps", mapsPath, `${mapsPath}/README.md`], ["rulebookExtras", extrasPath, extrasPath]]
-    .filter(([key]) => !settings[key]) : [];
-} else {
-  const land = options.land || ["dev", "develop", "main", "master"].find(branchExists);
-  if (!land) fail("no dev, develop, main or master branch; name the landing branch with kit init --land <branch>", 2);
-  if (git("check-ref-format", "--branch", land) === null) fail(`--land ${land} is not a branch name`, 2);
-  if (!branchExists(land)) notes.push(`branch ${land} is not here or on origin yet; kit doctor's base check needs origin/${land} once the project has a GitHub repo`);
-  const release = ["dev", "develop"].includes(land) ? ["main", "master"].find(branchExists) : undefined;
-  const remote = kitHideUserInfo(git("remote", "get-url", "origin") ?? "");
-  // The last part of the remote's path, after "/" or the ":" of host:repo (a token in the url never becomes it).
-  const project = (remote && remote.replace(/\/+$/, "").split(/[/:]/).at(-1).replace(/\.git$/, "")) || basename(gitMain);
-  // A private GitHub repo lands straight on main (no dev branch, no release step); what gh cannot tell is never taken for private.
-  const asked = kitRepoPrivate(root);
-  const mainBranch = ["main", "master"].find(branchExists);
-  // A dev or develop branch ahead of main holds work that going direct would strand (or push live in one go): no direct, a warning.
-  const liveBranch = options.land || mainBranch;
-  const compared = liveBranch ? ["dev", "develop"].filter(branchExists).map((name) => [name, commitsAhead(name, liveBranch)]).find(([, count]) => count > 0) : null;
-  const unmerged = options.land ? null : compared;
-  const direct = asked.private === true && !unmerged && !!(options.land ? ["main", "master"].includes(options.land) && branchExists(options.land) : mainBranch);
-  if (direct) visibilityNote(`private GitHub repo ${asked.repo}: it lands directly on ${options.land || mainBranch} (branches.direct)` + (options.land
-    ? (compared ? `; ${compared[0]} has ${compared[1]} commit${compared[1] === 1 ? "" : "s"} ${liveBranch} lacks, which stay behind` : "")
-    : mainBranch && ["dev", "develop"].some(branchExists) ? `; ${["dev", "develop"].filter(branchExists).join(" and ")} compared with ${mainBranch} as last fetched, so run git fetch first if unsure` : ""));
-  else if (asked.repo && asked.private === undefined) visibilityNote(`could not tell whether the GitHub repo ${asked.repo} is private (${asked.reason}); branches.direct is not set (add it yourself if the repo is private)`);
-  else if (asked.private && unmerged) visibilityNote(`private GitHub repo ${asked.repo}, but ${unmerged[0]} has ${unmerged[1]} commit${unmerged[1] === 1 ? "" : "s"} ${mainBranch} lacks: branches.direct is not set (merge ${unmerged[0]} into ${mainBranch} first, then set "branches" in ${kitSettingsFile} yourself)`);
-  else if (asked.private) visibilityNote(options.land && !branchExists(options.land)
-    ? `private GitHub repo ${asked.repo}, but branch ${options.land} does not exist yet: branches.direct is not set (create it, then set "branches" in ${kitSettingsFile} yourself)`
-    : options.land
-      ? `private GitHub repo ${asked.repo}, but --land ${options.land} names a branch other than main or master: branches.direct is not set (${mainBranch ? `leave out --land to land directly on ${mainBranch}` : "there is no main or master branch here yet; create one first"})`
-      : `private GitHub repo ${asked.repo}, but there is no main or master branch here to land on directly: branches.direct is not set (create that branch, then set "branches" in ${kitSettingsFile} yourself)`);
-  const target = direct ? options.land || mainBranch : land;
-  settings = { project, mainRoot: gitMain, branches: direct ? { land: target, release: target, direct: true } : { land, ...(release ? { release } : {}) } };
-  const checks = guessChecks();
-  if (checks) settings.checks = checks;
-  if (direct && !checks) notes.push(`this project lands directly on ${target} and has no "checks" in ${kitSettingsFile}: unless a CI workflow runs on pull requests, a change goes live after the review alone; add "checks"`);
-  if (full) Object.assign(settings, { commands: commandsPath, maps: mapsPath, rulebookExtras: extrasPath });
-  writes.push({ path: kitSettingsFile, text: `${JSON.stringify(settings, null, 2)}\n`, said: `(${project}, lands on ${settings.branches.land})` });
-}
 
-// Where the stubs go: the folders and file the settings name, else the defaults a new settings file names.
-const named = (key, fallback) => typeof settings[key] === "string" && settings[key].trim() ? settings[key].replace(/\/+$/, "") : fallback;
-const commandsDir = named("commands", commandsPath), mapsDir = named("maps", mapsPath), extrasFile = named("rulebookExtras", extrasPath);
+  // Where the stubs go: the folders and file the settings name, else the defaults a new settings file names.
+  const named = (key, fallback) => typeof settings[key] === "string" && settings[key].trim() ? settings[key].replace(/\/+$/, "") : fallback;
+  const commandsDir = named("commands", commandsPath), mapsDir = named("maps", mapsPath), extrasFile = named("rulebookExtras", extrasPath);
 
-// Every piece kit init writes into a project goes through piece(): its name (the one "init.skip" takes and --check
-// prints), its file, and what it is. One the project turned off (by name, or by its file's path) is left out;
-// the rest are what --check reports missing, kit doctor warns about and --all brings to every project.
-if (settings.init !== undefined && !isObject(settings.init)) fail(`"init" in ${kitSettingsFile} must be an object, as in "init": { "skip": [...] }; fix it first`);
-const skip = settings.init?.skip ?? [];
-if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string")) fail(`"init.skip" in ${kitSettingsFile} must be a list of piece names; fix it first`);
-const bare = (name) => name.trim().replace(/\/+$/, "");
-const off = [], missing = [], outdated = [];
-const turnedOff = (name, path) => skip.some((entry) => [name, path].map(bare).includes(bare(entry)));
-const piece = (name, path, what, list = missing) => {
-  if (turnedOff(name, path)) { off.push(name); return false; }
-  list.push(`${name} (${what})`);
-  return true;
-};
+  // Every piece kit init writes into a project goes through piece(): its name (the one "init.skip" takes and --check
+  // prints), its file, and what it is. One the project turned off (by name, or by its file's path) is left out;
+  // the rest are what --check reports missing, kit doctor warns about and --all brings to every project.
+  if (settings.init !== undefined && !isObject(settings.init)) fail(`"init" in ${kitSettingsFile} must be an object, as in "init": { "skip": [...] }; fix it first`);
+  const skip = settings.init?.skip ?? [];
+  if (!Array.isArray(skip) || skip.some((name) => typeof name !== "string")) fail(`"init.skip" in ${kitSettingsFile} must be a list of piece names; fix it first`);
+  const bare = (name) => name.trim().replace(/\/+$/, "");
+  const off = [], missing = [], outdated = [];
+  const turnedOff = (name, path) => skip.some((entry) => [name, path].map(bare).includes(bare(entry)));
+  const piece = (name, path, what, list = missing) => {
+    if (turnedOff(name, path)) { off.push(name); return false; }
+    list.push(`${name} (${what})`);
+    return true;
+  };
 
-// checks from package.json scripts, run as the lockfile's package manager does; printed for the lead to confirm.
-function guessChecks() {
-  if (!existsSync(at("package.json"))) { notes.push(`checks: none guessed (no package.json); add "checks" to ${kitSettingsFile}`); return null; }
-  const scripts = readJson("package.json")?.scripts ?? {};
-  const manager = existsSync(at("pnpm-lock.yaml")) ? "pnpm" : existsSync(at("yarn.lock")) ? "yarn"
-    : existsSync(at("bun.lock")) || existsSync(at("bun.lockb")) ? "bun" : "npm";
-  const run = (name) => manager === "npm" ? (name === "test" ? "npm test" : `npm run ${name}`) : manager === "yarn" ? `yarn ${name}` : `${manager} run ${name}`;
-  const usable = (name) => typeof scripts[name] === "string" && !/no test specified/.test(scripts[name]);
-  const checks = {};
-  const check = ["check", "typecheck"].find(usable);
-  if (check) checks.check = run(check);
-  if (usable("test")) checks.test = run("test");
-  if (usable("lint")) checks.lint = run("lint");
-  const names = Object.entries(checks).map(([key, command]) => `${key}=${command}`);
-  notes.push(names.length ? `checks guessed from package.json: ${names.join(", ")}; confirm them in ${kitSettingsFile}`
-    : `checks: none guessed (package.json has no check, typecheck, test or lint script); add "checks" to ${kitSettingsFile}`);
-  return names.length ? checks : null;
-}
-
-// A file written only when missing; one already there is kept as it is.
-const template = (path, source, mode, what) => {
-  if (existsSync(at(path))) { kept.push(path); return; }
-  if (piece(path, path, what)) writes.push({ path, text: readFileSync(join(home, source), "utf8"), mode });
-};
-template("scripts/agents/kit", "launcher/kit", 0o755, "the kit launcher");
-template("scripts/agents/hooks/run.sh", "launcher/hooks-run.sh", 0o755, "the hook launcher");
-
-// Hook entries, merged into each file: a missing entry is added beside the others, nothing is replaced.
-const hook = (name) => ({ type: "command", command: `bash "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"/scripts/agents/hooks/run.sh ${name}` });
-const agentCap = ["agent-cap"], session = ["session-env", "context-card"];
-// brief-guard refuses a child's brief kit brief did not write; stop-guard refuses a turn end while a kit go job runs.
-// Codex's PreToolUse sees only Bash, so it gets the Stop hook alone.
-const hookFiles = {
-  ".claude/settings.json": [["PreToolUse", "Bash", ["bash-guard"]], ["PreToolUse", "Agent|Task", agentCap],
-    ["PreToolUse", "mcp__t3-code__delegate_task|Agent|Task", ["brief-guard"]], ["PostToolUse", "Agent|Task", agentCap],
-    ["PostToolUseFailure", "Agent|Task", agentCap], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session],
-    ["Stop", undefined, ["stop-guard"]]],
-  ".codex/hooks.json": [["PreToolUse", "Bash", ["bash-guard"]], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session],
-    ["Stop", undefined, ["stop-guard"]]],
-};
-for (const [path, entries] of Object.entries(hookFiles)) {
-  const there = existsSync(at(path));
-  // A file turned off whole is left as it is: counted as left out when it is missing or not a hook file kit init
-  // could merge into, else entry by entry below (piece() matches its path), so only an entry it lacks counts.
-  if (turnedOff(path, path)) {
-    let config;
-    try { config = there ? JSON.parse(readFileSync(at(path), "utf8")) : null; } catch {}
-    if (!isObject(config) || (config.hooks !== undefined && !isObject(config.hooks)) ||
-      entries.some(([event]) => config.hooks?.[event] !== undefined && !Array.isArray(config.hooks[event]))) { off.push(path); continue; }
+  // checks from package.json scripts, run as the lockfile's package manager does; printed for the lead to confirm.
+  function guessChecks() {
+    if (!existsSync(at("package.json"))) { notes.push(`checks: none guessed (no package.json); add "checks" to ${kitSettingsFile}`); return null; }
+    const scripts = readJson("package.json")?.scripts ?? {};
+    const manager = existsSync(at("pnpm-lock.yaml")) ? "pnpm" : existsSync(at("yarn.lock")) ? "yarn"
+      : existsSync(at("bun.lock")) || existsSync(at("bun.lockb")) ? "bun" : "npm";
+    const run = (name) => manager === "npm" ? (name === "test" ? "npm test" : `npm run ${name}`) : manager === "yarn" ? `yarn ${name}` : `${manager} run ${name}`;
+    const usable = (name) => typeof scripts[name] === "string" && !/no test specified/.test(scripts[name]);
+    const checks = {};
+    const check = ["check", "typecheck"].find(usable);
+    if (check) checks.check = run(check);
+    if (usable("test")) checks.test = run("test");
+    if (usable("lint")) checks.lint = run("lint");
+    const names = Object.entries(checks).map(([key, command]) => `${key}=${command}`);
+    notes.push(names.length ? `checks guessed from package.json: ${names.join(", ")}; confirm them in ${kitSettingsFile}`
+      : `checks: none guessed (package.json has no check, typecheck, test or lint script); add "checks" to ${kitSettingsFile}`);
+    return names.length ? checks : null;
   }
-  const before = there ? readText(path) : null;
-  const config = there ? readJson(path, before) : {};
-  if (!isObject(config)) fail(`${path} must hold one JSON object; fix it first, kit init never overwrites it`);
-  if (config.hooks === undefined) config.hooks = {};
-  if (!isObject(config.hooks)) fail(`"hooks" in ${path} must be an object; fix it first, kit init never overwrites it`);
-  let added = 0;
-  for (const [event, matcher, names] of entries) {
-    const groups = config.hooks[event] ?? [];
-    if (!Array.isArray(groups)) fail(`"hooks.${event}" in ${path} must be a list; fix it first, kit init never overwrites it`);
-    const same = groups.filter((group) => isObject(group) && group.matcher === matcher);
-    for (const name of names) {
-      const entry = hook(name);
-      // Already there under any matcher of the event (say "Bash|Edit"): a second copy would run the hook twice.
-      if (groups.some((group) => isObject(group) && Array.isArray(group.hooks) && group.hooks.some((other) => other?.command === entry.command))) continue;
-      if (!piece(`${path} ${event} ${name}`, path, `the ${name} hook entry`)) continue;
-      config.hooks[event] = groups;
-      let group = same.find((candidate) => Array.isArray(candidate.hooks));
-      if (!group) { group = { ...(matcher === undefined ? {} : { matcher }), hooks: [] }; groups.push(group); same.push(group); }
-      group.hooks.push(entry);
-      added++;
+
+  // A file written only when missing; one already there is kept as it is.
+  const template = (path, source, mode, what) => {
+    if (existsSync(at(path))) { kept.push(path); return; }
+    if (piece(path, path, what)) writes.push({ path, text: readFileSync(join(home, source), "utf8"), mode });
+  };
+  template("scripts/agents/kit", "launcher/kit", 0o755, "the kit launcher");
+  template("scripts/agents/hooks/run.sh", "launcher/hooks-run.sh", 0o755, "the hook launcher");
+
+  // Hook entries, merged into each file: a missing entry is added beside the others, nothing is replaced.
+  const hook = (name) => ({ type: "command", command: `bash "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"/scripts/agents/hooks/run.sh ${name}` });
+  const agentCap = ["agent-cap"], session = ["session-env", "context-card"];
+  // brief-guard refuses a child's brief kit brief did not write; stop-guard refuses a turn end while a kit go job runs.
+  // Codex's PreToolUse sees only Bash, so it gets the Stop hook alone.
+  const hookFiles = {
+    ".claude/settings.json": [["PreToolUse", "Bash", ["bash-guard"]], ["PreToolUse", "Agent|Task", agentCap],
+      ["PreToolUse", "mcp__t3-code__delegate_task|Agent|Task", ["brief-guard"]], ["PostToolUse", "Agent|Task", agentCap],
+      ["PostToolUseFailure", "Agent|Task", agentCap], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session],
+      ["Stop", undefined, ["stop-guard"]]],
+    ".codex/hooks.json": [["PreToolUse", "Bash", ["bash-guard"]], ["SubagentStart", undefined, agentCap], ["SubagentStop", undefined, agentCap], ["SessionStart", undefined, session],
+      ["Stop", undefined, ["stop-guard"]]],
+  };
+  for (const [path, entries] of Object.entries(hookFiles)) {
+    const there = existsSync(at(path));
+    // A file turned off whole is left as it is: counted as left out when it is missing or not a hook file kit init
+    // could merge into, else entry by entry below (piece() matches its path), so only an entry it lacks counts.
+    if (turnedOff(path, path)) {
+      let config;
+      try { config = there ? JSON.parse(readFileSync(at(path), "utf8")) : null; } catch {}
+      if (!isObject(config) || (config.hooks !== undefined && !isObject(config.hooks)) ||
+        entries.some(([event]) => config.hooks?.[event] !== undefined && !Array.isArray(config.hooks[event]))) { off.push(path); continue; }
     }
+    const before = there ? readText(path) : null;
+    const config = there ? readJson(path, before) : {};
+    if (!isObject(config)) fail(`${path} must hold one JSON object; fix it first, kit init never overwrites it`);
+    if (config.hooks === undefined) config.hooks = {};
+    if (!isObject(config.hooks)) fail(`"hooks" in ${path} must be an object; fix it first, kit init never overwrites it`);
+    let added = 0;
+    for (const [event, matcher, names] of entries) {
+      const groups = config.hooks[event] ?? [];
+      if (!Array.isArray(groups)) fail(`"hooks.${event}" in ${path} must be a list; fix it first, kit init never overwrites it`);
+      const same = groups.filter((group) => isObject(group) && group.matcher === matcher);
+      for (const name of names) {
+        const entry = hook(name);
+        // Already there under any matcher of the event (say "Bash|Edit"): a second copy would run the hook twice.
+        if (groups.some((group) => isObject(group) && Array.isArray(group.hooks) && group.hooks.some((other) => other?.command === entry.command))) continue;
+        if (!piece(`${path} ${event} ${name}`, path, `the ${name} hook entry`)) continue;
+        config.hooks[event] = groups;
+        let group = same.find((candidate) => Array.isArray(candidate.hooks));
+        if (!group) { group = { ...(matcher === undefined ? {} : { matcher }), hooks: [] }; groups.push(group); same.push(group); }
+        group.hooks.push(entry);
+        added++;
+      }
+    }
+    if (!added) { kept.push(path); continue; }
+    writes.push({ path, text: `${JSON.stringify(config, null, 2)}\n`, before, said: there ? `(merged ${added} hook entr${added === 1 ? "y" : "ies"})` : "" });
   }
-  if (!added) { kept.push(path); continue; }
-  writes.push({ path, text: `${JSON.stringify(config, null, 2)}\n`, before, said: there ? `(merged ${added} hook entr${added === 1 ? "y" : "ies"})` : "" });
-}
 
-// Full only: the project's own commands folder (kept in git by .gitkeep) and the docs stubs.
-if (full) {
-  if (existsSync(at(commandsDir))) kept.push(`${commandsDir}/`);
-  else if (piece(`${commandsDir}/`, commandsDir, "the project's own commands folder")) writes.push({ path: `${commandsDir}/.gitkeep`, text: "" });
-  const extrasLink = relative(at("docs/agents"), at(extrasFile));
-  const pointer = `# The kitchen
+  // Full only: the project's own commands folder (kept in git by .gitkeep) and the docs stubs.
+  if (full) {
+    if (existsSync(at(commandsDir))) kept.push(`${commandsDir}/`);
+    else if (piece(`${commandsDir}/`, commandsDir, "the project's own commands folder")) writes.push({ path: `${commandsDir}/.gitkeep`, text: "" });
+    const extrasLink = relative(at("docs/agents"), at(extrasFile));
+    const pointer = `# The kitchen
 
 Run \`scripts/agents/kit rulebook\`: it prints the kitchen rulebook, the road from card to
 release, who decides, and the builder and reviewer pins. It has two parts:
@@ -349,175 +360,177 @@ A change to the shared kit is a ticket on the kitchen-everywhere board
 (\`docs/wayfinder/kitchen-everywhere/build/\` in native-site-editor, on \`dev\`), built only by that
 board's orchestrator: write it there, or ask the orchestrator to, and go on with this project's work.
 `;
-  if (existsSync(at("docs/agents/kitchen.md"))) kept.push("docs/agents/kitchen.md");
-  else if (piece("docs/agents/kitchen.md", "docs/agents/kitchen.md", "the kitchen pointer")) writes.push({ path: "docs/agents/kitchen.md", text: pointer });
-  if (existsSync(at(extrasFile))) kept.push(extrasFile);
-  else if (piece(extrasFile, extrasFile, "the project's kitchen extras")) {
-    const land = settings.branches.land, release = settings.branches.release || land;
-    const text = readFileSync(join(home, "docs/kitchen-extras-template.md"), "utf8")
-      .replaceAll("<project>", () => settings.project).replaceAll("<land>", () => land).replaceAll("<release>", () => release);
-    writes.push({ path: extrasFile, text });
-  }
-  const readme = `# Wayfinder maps
+    if (existsSync(at("docs/agents/kitchen.md"))) kept.push("docs/agents/kitchen.md");
+    else if (piece("docs/agents/kitchen.md", "docs/agents/kitchen.md", "the kitchen pointer")) writes.push({ path: "docs/agents/kitchen.md", text: pointer });
+    if (existsSync(at(extrasFile))) kept.push(extrasFile);
+    else if (piece(extrasFile, extrasFile, "the project's kitchen extras")) {
+      const land = settings.branches.land, release = settings.branches.release || land;
+      const text = readFileSync(join(home, "docs/kitchen-extras-template.md"), "utf8")
+        .replaceAll("<project>", () => settings.project).replaceAll("<land>", () => land).replaceAll("<release>", () => release);
+      writes.push({ path: extrasFile, text });
+    }
+    const readme = `# Wayfinder maps
 
 One folder per map, \`${mapsDir}/<map>/\`: its tickets in \`tickets/\` and its build's in
 \`build/tickets/\` (\`maps\` in \`scripts/agents/kit.json\`). Run \`scripts/agents/kit rulebook\` for how a
 map goes from idea to tickets, and \`scripts/agents/kit brief <ticket>\` to start a helper on one.
 `;
-  if (existsSync(at(`${mapsDir}/README.md`))) kept.push(`${mapsDir}/README.md`);
-  else if (piece(`${mapsDir}/README.md`, `${mapsDir}/README.md`, "the maps README")) writes.push({ path: `${mapsDir}/README.md`, text: readme });
-}
-
-// The keys an existing settings file lacks are named only when this run writes their stubs, not on every rerun.
-const stubsWritten = unnamed.filter(([, , stub]) => writes.some(({ path }) => path === stub));
-if (stubsWritten.length) notes.push(`add to ${kitSettingsFile} (kit init never edits it): ${stubsWritten.map(([key, value]) => `"${key}": "${value}"`).join(", ")}`);
-
-// AGENTS.md: the two lines and the "Messages to Lex" section, added to the end when missing. The section holds the
-// shared rulebook's rule between markers; a section with the markers is the kit's own and is brought up to date
-// only when the rulebook's rule has a higher version, a heading without markers is the project's own words and stays.
-const agentLines = [
-  ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (the road, who decides, builder and reviewer pins).", "the rulebook line"],
-  ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one.", "the commands line"],
-  // The review loop's rule stays in the shared rulebook (one source); the project's file points to it.
-  ["section \"Review loop\"", "Review loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).", "the review loop line"],
-];
-const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
-const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));
-const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`));
-// A heading of the project's own: any case, a closing "#"s or a colon (a heading only shown inside a code fence counts too: a known limit).
-const lexHeading = /^#{1,6}[ \t]+messages to lex[ \t]*:?[ \t]*(?:#+[ \t]*)?$/im;
-// A match never crosses a second start marker (a leftover one cannot swallow the project's text), and takes CRLF files.
-const lexMarked = /<!-- messages-to-lex:start(?: v(\d+))? -->(?:\r?\n(?:(?!<!-- messages-to-lex:start)[\s\S])*?)?\r?\n<!-- messages-to-lex:end -->/;
-const lexRule = () => {
-  try { return kitMessagesToLexRule(home); } catch (error) { return fail(`cannot read the Messages to Lex rule: ${error.message}`); }
-};
-const lexSection = ({ rule, version }) => `<!-- messages-to-lex:start v${version} -->\n${rule}\n<!-- messages-to-lex:end -->`;
-let lexAdd = false, lexUpdate = false;
-const lexHere = agents && (lexMarked.test(agents) || lexHeading.test(agents));
-if (!lexHere) lexAdd = piece("AGENTS.md Messages to Lex", "AGENTS.md", "the Messages to Lex section");
-else if (lexMarked.test(agents) && Number(agents.match(lexMarked)[1] ?? 0) < lexRule().version)
-  lexUpdate = piece("AGENTS.md Messages to Lex", "AGENTS.md", "older than the rulebook's", outdated);
-if (!absentLines.length && !lexAdd && !lexUpdate && !off.some((name) => name.startsWith("AGENTS.md"))) kept.push("AGENTS.md");
-else if (missingLines.length || lexAdd || lexUpdate) {
-  const rule = lexAdd || lexUpdate ? lexRule() : null;
-  // New text follows the file's own line endings.
-  const eol = agents?.includes("\r\n") ? "\r\n" : "\n", own = (text) => text.replace(/\n/g, eol);
-  let text = agents ?? "# Agents";
-  if (lexUpdate) text = text.replace(lexMarked, () => own(lexSection(rule)));
-  const tail = [missingLines.map(([, line]) => line).join("\n"), lexAdd ? `## Messages to Lex\n${lexSection(rule)}` : ""].filter(Boolean).join("\n\n");
-  if (tail) text = `${text.replace(/(\r?\n)*$/, `${eol}${eol}`)}${own(tail)}`;
-  const said = [[...missingLines.map(([, , what]) => what), ...(lexAdd ? ["the Messages to Lex section"] : [])], lexUpdate ? ["the Messages to Lex section"] : []]
-    .map((list, index) => list.length ? `${index ? "updated" : "added"} ${list.join(" and ")}` : "").filter(Boolean).join("; ");
-  writes.push(agents === null ? { path: "AGENTS.md", text: `${text}\n` } : { path: "AGENTS.md", text: `${text.replace(/(\r?\n)*$/, "")}${eol}`, before: agents, said: `(${said})` });
-}
-
-// CLAUDE.md: Claude Code reads CLAUDE.md, not AGENTS.md, so a project without one does not show AGENTS.md (the Messages to
-// Lex rule among it) in a direct Claude session. The one line imports it. A CLAUDE.md the project has stays as it is.
-if (existsSync(at("CLAUDE.md"))) kept.push("CLAUDE.md");
-else if (piece("CLAUDE.md", "CLAUDE.md", "the one-line file that loads AGENTS.md")) writes.push({ path: "CLAUDE.md", text: "@AGENTS.md\n" });
-
-// .gitattributes: LF endings in every checkout, so a Windows clone cannot break tests that read files. The line goes
-// at the top, so the project's own lines after it (*.png binary) still win for their files.
-const lineEndings = "* text=auto eol=lf";
-const attributes = existsSync(at(".gitattributes")) ? readText(".gitattributes") : null;
-// A line for every file setting the same two attributes, in any order or spacing, counts as there.
-const sameLine = (line) => { const [pattern, ...set] = line.trim().split(/\s+/); return pattern === "*" && set.sort().join(" ") === "eol=lf text=auto"; };
-if (attributes?.split(/\r?\n/).some(sameLine)) kept.push(".gitattributes");
-else if (piece(".gitattributes", ".gitattributes", `the line "${lineEndings}"`)) {
-  const newline = attributes?.includes("\r\n") ? "\r\n" : "\n";
-  writes.push(attributes === null ? { path: ".gitattributes", text: `${lineEndings}\n` }
-    : { path: ".gitattributes", text: `${lineEndings}${newline}${attributes}`, before: attributes, said: "(added the line-endings line at the top)" });
-}
-
-if (options.check) {
-  for (const note of visibilityNotes) console.log(`note: ${note}`);
-  for (const line of missing) console.log(`missing: ${line}`);
-  for (const line of outdated) console.log(`outdated: ${line}`);
-  kitResult("ok", `init check: ${missing.length || outdated.length ? [missing.length && `${missing.length} missing`, outdated.length && `${outdated.length} out of date`].filter(Boolean).join(", ") : "nothing missing"}${off.length ? `; ${off.length} turned off in init.skip` : ""}`);
-  process.exit(0);
-}
-
-// The files are written under the project list's lock, once the name is checked: a name another root holds
-// stops the run before anything is written, and two runs cannot both take one name. A new file is created only
-// if it is still missing, and a merged one written only if it still holds what was read, so nothing is overwritten.
-const projectRoot = settings.mainRoot || gitMain;
-const done = [];
-const writeAll = () => {
-  for (const { path, text, mode, said, before = null } of writes) {
-    try {
-      mkdirSync(dirname(at(path)), { recursive: true });
-      if (before === null) {
-        writeFileSync(at(path), text, { flag: "wx" });
-        if (mode) chmodSync(at(path), mode);
-      } else {
-        if (readFileSync(at(path), "utf8") !== before) throw new Error("it changed while kit init ran; run kit init again");
-        // A merged file is replaced in one rename, keeping its mode, so a failed write never leaves it cut short.
-        const temporary = `${at(path)}.${process.pid}.tmp`;
-        try {
-          writeFileSync(temporary, text, { flag: "wx", mode: statSync(at(path)).mode & 0o7777 });
-          renameSync(temporary, at(path));
-        } catch (error) { rmSync(temporary, { force: true }); throw error; }
-      }
-    } catch (error) {
-      throw new Error(`writing ${path} failed: ${error.message}; wrote ${done.length ? done.join(", ") : "nothing"}`);
-    }
-    done.push(path);
-    console.log(`wrote ${path}${said ? ` ${said}` : ""}`);
+    if (existsSync(at(`${mapsDir}/README.md`))) kept.push(`${mapsDir}/README.md`);
+    else if (piece(`${mapsDir}/README.md`, `${mapsDir}/README.md`, "the maps README")) writes.push({ path: `${mapsDir}/README.md`, text: readme });
   }
-};
-let registered;
-try {
-  // --pieces (kit init --all's step, in a temporary worktree) adds the pieces only: the project is listed already.
-  if (options.pieces) writeAll();
-  else registered = kitRegisterProject(settings.project, projectRoot, process.env, writeAll);
-} catch (error) { fail(String(error.message).replace(/\n/g, " ")); }
-if (kept.length) console.log(`kept (already there): ${kept.join(", ")}`);
-if (off.length) console.log(`left out (init.skip in ${kitSettingsFile}): ${off.join(", ")}`);
-if (registered === "added") console.log(`listed ${settings.project} at ${projectRoot} in ${join(kitStateDir(), "projects.json")}`);
-// Files committed with CRLF keep it until renormalized; kit init --all makes that commit itself.
-if (done.includes(".gitattributes") && !options.pieces) {
-  const crlf = (git("ls-files", "--eol") ?? "").split("\n").filter((line) => /^i\/(?:crlf|mixed)\s/.test(line)).length;
-  if (crlf) notes.push(`line endings: ${crlf} tracked file${crlf === 1 ? " holds" : "s hold"} CRLF; commit .gitattributes, then run git add --renormalize . and commit that`);
-}
-for (const note of notes) console.log(`note: ${note}`);
-const changed = writes.length || registered === "added";
-const summary = changed ? `wrote ${writes.length} file${writes.length === 1 ? "" : "s"}${registered === "added" ? ", listed the project" : ""}` : "nothing to write (already set up)";
-if (options.pieces) { kitResult("ok", `init ${summary}`); process.exit(0); }
 
-// kit doctor's result for the new setup ends the run. In the main checkout, where a new project is set up, its
-// place check fails until work moves to a worktree: that is a note here, naming how, since the project has no
-// worktree.sh of its own.
-// Doctor bounds its own steps; this bounds a checks.doctor line that hangs anyway.
-const doctorTimeout = 600_000;
-const doctor = spawnSync(join(home, "kit.d/doctor"), [], { cwd: root, env: { ...process.env, KIT_ROOT: root }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], timeout: doctorTimeout });
-const doctorLines = (doctor.stdout ?? "").split("\n").filter(Boolean);
-const real = (path) => { try { return realpathSync(path); } catch { return path; } };
-const inMain = [gitMain, projectRoot].some((main) => real(main) === real(root));
-const land = settings.branches.land;
-// Doctor's own fix names origin/<land>; without that remote branch the local one is the start.
-const originLand = git("rev-parse", "--verify", "--quiet", `refs/remotes/origin/${land}`) !== null;
-const placeNote = `note: place: this is the main checkout, where kit doctor stops builds; build in a worktree ` +
-  `(git worktree add -b <branch> ../${basename(real(root))}-<branch> ${originLand ? `origin/${land}` : land}), or add "allowMainCheckout": true to ${kitSettingsFile} to build here`;
-let placeFailed = false;
-for (const line of doctorLines) {
-  if (line.startsWith("RESULT: ")) continue;
-  if (inMain && line.startsWith("✗ place: ")) { placeFailed = true; console.log(placeNote); }
-  else console.log(line);
+  // The keys an existing settings file lacks are named only when this run writes their stubs, not on every rerun.
+  const stubsWritten = unnamed.filter(([, , stub]) => writes.some(({ path }) => path === stub));
+  if (stubsWritten.length) notes.push(`add to ${kitSettingsFile} (kit init never edits it): ${stubsWritten.map(([key, value]) => `"${key}": "${value}"`).join(", ")}`);
+
+  // AGENTS.md: the two lines and the "Messages to Lex" section, added to the end when missing. The section holds the
+  // shared rulebook's rule between markers; a section with the markers is the kit's own and is brought up to date
+  // only when the rulebook's rule has a higher version, a heading without markers is the project's own words and stays.
+  const agentLines = [
+    ["scripts/agents/kit rulebook", "Kitchen rulebook: `scripts/agents/kit rulebook` (the road, who decides, builder and reviewer pins).", "the rulebook line"],
+    ["scripts/agents/kit --help", "Agent commands: `scripts/agents/kit --help`; `scripts/agents/kit <command> --help` for one.", "the commands line"],
+    // The review loop's rule stays in the shared rulebook (one source); the project's file points to it.
+    ["section \"Review loop\"", "Review loop: `scripts/agents/kit rulebook`, section \"Review loop\" (3 fix rounds, 5 only for risk; stop when only nits are left; one reviewer; a findings ledger in the PR).", "the review loop line"],
+  ];
+  const agents = existsSync(at("AGENTS.md")) ? readText("AGENTS.md") : null;
+  const absentLines = agentLines.filter(([marker]) => !agents?.includes(marker));
+  const missingLines = absentLines.filter(([marker]) => piece(`AGENTS.md ${marker.replace("scripts/agents/", "")}`, "AGENTS.md", `the line naming ${marker}`));
+  // A heading of the project's own: any case, a closing "#"s or a colon (a heading only shown inside a code fence counts too: a known limit).
+  const lexHeading = /^#{1,6}[ \t]+messages to lex[ \t]*:?[ \t]*(?:#+[ \t]*)?$/im;
+  // A match never crosses a second start marker (a leftover one cannot swallow the project's text), and takes CRLF files.
+  const lexMarked = /<!-- messages-to-lex:start(?: v(\d+))? -->(?:\r?\n(?:(?!<!-- messages-to-lex:start)[\s\S])*?)?\r?\n<!-- messages-to-lex:end -->/;
+  const lexRule = () => {
+    try { return kitMessagesToLexRule(home); } catch (error) { return fail(`cannot read the Messages to Lex rule: ${error.message}`); }
+  };
+  const lexSection = ({ rule, version }) => `<!-- messages-to-lex:start v${version} -->\n${rule}\n<!-- messages-to-lex:end -->`;
+  let lexAdd = false, lexUpdate = false;
+  const lexHere = agents && (lexMarked.test(agents) || lexHeading.test(agents));
+  if (!lexHere) lexAdd = piece("AGENTS.md Messages to Lex", "AGENTS.md", "the Messages to Lex section");
+  else if (lexMarked.test(agents) && Number(agents.match(lexMarked)[1] ?? 0) < lexRule().version)
+    lexUpdate = piece("AGENTS.md Messages to Lex", "AGENTS.md", "older than the rulebook's", outdated);
+  if (!absentLines.length && !lexAdd && !lexUpdate && !off.some((name) => name.startsWith("AGENTS.md"))) kept.push("AGENTS.md");
+  else if (missingLines.length || lexAdd || lexUpdate) {
+    const rule = lexAdd || lexUpdate ? lexRule() : null;
+    // New text follows the file's own line endings.
+    const eol = agents?.includes("\r\n") ? "\r\n" : "\n", own = (text) => text.replace(/\n/g, eol);
+    let text = agents ?? "# Agents";
+    if (lexUpdate) text = text.replace(lexMarked, () => own(lexSection(rule)));
+    const tail = [missingLines.map(([, line]) => line).join("\n"), lexAdd ? `## Messages to Lex\n${lexSection(rule)}` : ""].filter(Boolean).join("\n\n");
+    if (tail) text = `${text.replace(/(\r?\n)*$/, `${eol}${eol}`)}${own(tail)}`;
+    const said = [[...missingLines.map(([, , what]) => what), ...(lexAdd ? ["the Messages to Lex section"] : [])], lexUpdate ? ["the Messages to Lex section"] : []]
+      .map((list, index) => list.length ? `${index ? "updated" : "added"} ${list.join(" and ")}` : "").filter(Boolean).join("; ");
+    writes.push(agents === null ? { path: "AGENTS.md", text: `${text}\n` } : { path: "AGENTS.md", text: `${text.replace(/(\r?\n)*$/, "")}${eol}`, before: agents, said: `(${said})` });
+  }
+
+  // CLAUDE.md: Claude Code reads CLAUDE.md, not AGENTS.md, so a project without one does not show AGENTS.md (the Messages to
+  // Lex rule among it) in a direct Claude session. The one line imports it. A CLAUDE.md the project has stays as it is.
+  if (existsSync(at("CLAUDE.md"))) kept.push("CLAUDE.md");
+  else if (piece("CLAUDE.md", "CLAUDE.md", "the one-line file that loads AGENTS.md")) writes.push({ path: "CLAUDE.md", text: "@AGENTS.md\n" });
+
+  // .gitattributes: LF endings in every checkout, so a Windows clone cannot break tests that read files. The line goes
+  // at the top, so the project's own lines after it (*.png binary) still win for their files.
+  const lineEndings = "* text=auto eol=lf";
+  const attributes = existsSync(at(".gitattributes")) ? readText(".gitattributes") : null;
+  // A line for every file setting the same two attributes, in any order or spacing, counts as there.
+  const sameLine = (line) => { const [pattern, ...set] = line.trim().split(/\s+/); return pattern === "*" && set.sort().join(" ") === "eol=lf text=auto"; };
+  if (attributes?.split(/\r?\n/).some(sameLine)) kept.push(".gitattributes");
+  else if (piece(".gitattributes", ".gitattributes", `the line "${lineEndings}"`)) {
+    const newline = attributes?.includes("\r\n") ? "\r\n" : "\n";
+    writes.push(attributes === null ? { path: ".gitattributes", text: `${lineEndings}\n` }
+      : { path: ".gitattributes", text: `${lineEndings}${newline}${attributes}`, before: attributes, said: "(added the line-endings line at the top)" });
+  }
+
+  if (options.check) {
+    for (const note of visibilityNotes) console.log(`note: ${note}`);
+    for (const line of missing) console.log(`missing: ${line}`);
+    for (const line of outdated) console.log(`outdated: ${line}`);
+    kitResult("ok", `init check: ${missing.length || outdated.length ? [missing.length && `${missing.length} missing`, outdated.length && `${outdated.length} out of date`].filter(Boolean).join(", ") : "nothing missing"}${off.length ? `; ${off.length} turned off in init.skip` : ""}`);
+    return;
+  }
+
+  // The files are written under the project list's lock, once the name is checked: a name another root holds
+  // stops the run before anything is written, and two runs cannot both take one name. A new file is created only
+  // if it is still missing, and a merged one written only if it still holds what was read, so nothing is overwritten.
+  const projectRoot = settings.mainRoot || gitMain;
+  const done = [];
+  const writeAll = () => {
+    for (const { path, text, mode, said, before = null } of writes) {
+      try {
+        mkdirSync(dirname(at(path)), { recursive: true });
+        if (before === null) {
+          writeFileSync(at(path), text, { flag: "wx" });
+          if (mode) chmodSync(at(path), mode);
+        } else {
+          if (readFileSync(at(path), "utf8") !== before) throw new Error("it changed while kit init ran; run kit init again");
+          // A merged file is replaced in one rename, keeping its mode, so a failed write never leaves it cut short.
+          const temporary = `${at(path)}.${process.pid}.tmp`;
+          try {
+            writeFileSync(temporary, text, { flag: "wx", mode: statSync(at(path)).mode & 0o7777 });
+            renameSync(temporary, at(path));
+          } catch (error) { rmSync(temporary, { force: true }); throw error; }
+        }
+      } catch (error) {
+        throw new Error(`writing ${path} failed: ${error.message}; wrote ${done.length ? done.join(", ") : "nothing"}`);
+      }
+      done.push(path);
+      console.log(`wrote ${path}${said ? ` ${said}` : ""}`);
+    }
+  };
+  let registered;
+  try {
+    // --pieces (kit init --all's step, in a temporary worktree) adds the pieces only: the project is listed already.
+    if (options.pieces) writeAll();
+    else registered = kitRegisterProject(settings.project, projectRoot, process.env, writeAll);
+  } catch (error) { fail(String(error.message).replace(/\n/g, " ")); }
+  if (kept.length) console.log(`kept (already there): ${kept.join(", ")}`);
+  if (off.length) console.log(`left out (init.skip in ${kitSettingsFile}): ${off.join(", ")}`);
+  if (registered === "added") console.log(`listed ${settings.project} at ${projectRoot} in ${join(kitStateDir(), "projects.json")}`);
+  // Files committed with CRLF keep it until renormalized; kit init --all makes that commit itself.
+  if (done.includes(".gitattributes") && !options.pieces) {
+    const crlf = (git("ls-files", "--eol") ?? "").split("\n").filter((line) => /^i\/(?:crlf|mixed)\s/.test(line)).length;
+    if (crlf) notes.push(`line endings: ${crlf} tracked file${crlf === 1 ? " holds" : "s hold"} CRLF; commit .gitattributes, then run git add --renormalize . and commit that`);
+  }
+  for (const note of notes) console.log(`note: ${note}`);
+  const changed = writes.length || registered === "added";
+  const summary = changed ? `wrote ${writes.length} file${writes.length === 1 ? "" : "s"}${registered === "added" ? ", listed the project" : ""}` : "nothing to write (already set up)";
+  if (options.pieces) { kitResult("ok", `init ${summary}`); return; }
+
+  // kit doctor's result for the new setup ends the run. In the main checkout, where a new project is set up, its
+  // place check fails until work moves to a worktree: that is a note here, naming how, since the project has no
+  // worktree.sh of its own.
+  // Doctor bounds its own steps; this bounds a checks.doctor line that hangs anyway.
+  const doctorTimeout = 600_000;
+  const doctor = spawnSync(join(home, "kit.d/doctor"), [], { cwd: root, env: { ...process.env, KIT_ROOT: root }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], timeout: doctorTimeout });
+  const doctorLines = (doctor.stdout ?? "").split("\n").filter(Boolean);
+  const real = (path) => { try { return realpathSync(path); } catch { return path; } };
+  const inMain = [gitMain, projectRoot].some((main) => real(main) === real(root));
+  const land = settings.branches.land;
+  // Doctor's own fix names origin/<land>; without that remote branch the local one is the start.
+  const originLand = git("rev-parse", "--verify", "--quiet", `refs/remotes/origin/${land}`) !== null;
+  const placeNote = `note: place: this is the main checkout, where kit doctor stops builds; build in a worktree ` +
+    `(git worktree add -b <branch> ../${basename(real(root))}-<branch> ${originLand ? `origin/${land}` : land}), or add "allowMainCheckout": true to ${kitSettingsFile} to build here`;
+  let placeFailed = false;
+  for (const line of doctorLines) {
+    if (line.startsWith("RESULT: ")) continue;
+    if (inMain && line.startsWith("✗ place: ")) { placeFailed = true; console.log(placeNote); }
+    else console.log(line);
+  }
+  let doctorResult = doctorLines.findLast((line) => line.startsWith("RESULT: "))?.replace(/^RESULT: (ok|fail) /, "") ?? (doctor.error?.code === "ETIMEDOUT" || doctor.signal ? `doctor timed out after ${doctorTimeout / 1000}s` : `doctor exited ${doctor.status} without a RESULT line`);
+  let doctorOk = doctor.status === 0;
+  const failedChecks = /^doctor (\d+) failed: (.*)$/.exec(doctorResult);
+  if (placeFailed && failedChecks) {
+    const rest = failedChecks[2].split(",").filter((name) => name !== "place");
+    if (!rest.length) { doctorOk = true; doctorResult = "doctor ok but for place (the main checkout; see the note)"; }
+    else doctorResult = `doctor ${rest.length} failed: ${rest.join(",")}; place: the main checkout (see the note)`;
+  }
+  if (!doctorOk) fail(`${summary}; ${doctorResult}`);
+  kitResult("ok", `init ${summary}; ${doctorResult}`);
 }
-let doctorResult = doctorLines.findLast((line) => line.startsWith("RESULT: "))?.replace(/^RESULT: (ok|fail) /, "") ?? (doctor.error?.code === "ETIMEDOUT" || doctor.signal ? `doctor timed out after ${doctorTimeout / 1000}s` : `doctor exited ${doctor.status} without a RESULT line`);
-let doctorOk = doctor.status === 0;
-const failedChecks = /^doctor (\d+) failed: (.*)$/.exec(doctorResult);
-if (placeFailed && failedChecks) {
-  const rest = failedChecks[2].split(",").filter((name) => name !== "place");
-  if (!rest.length) { doctorOk = true; doctorResult = "doctor ok but for place (the main checkout; see the note)"; }
-  else doctorResult = `doctor ${rest.length} failed: ${rest.join(",")}; place: the main checkout (see the note)`;
-}
-if (!doctorOk) fail(`${summary}; ${doctorResult}`);
-kitResult("ok", `init ${summary}; ${doctorResult}`);
 
 // --issues: the project's open GitHub Issues become needs-triage tickets in the backlog map, once; with --close,
-// each open Issue whose file is on origin's landing branch is closed with a link to it. Never returns.
-async function issues() {
+// each open Issue whose file is on origin's landing branch is closed with a link to it. Never returns: it ends the run.
+// It works in the project kit init found (root, at, git) and closes with close.
+async function issues({ close, root, at, git }) {
   let settings = null;
   if (existsSync(at(kitSettingsFile))) {
     try { settings = JSON.parse(readFileSync(at(kitSettingsFile), "utf8")); }
@@ -574,7 +587,11 @@ async function issues() {
   const limit = 1000;
   let open;
   try { open = JSON.parse(gh("issue", "list", "--repo", ghRepo(oursHost, oursName.join("/")), "--state", "open", "--limit", String(limit), "--json", "number,title,body,labels,url,author,createdAt,comments")); }
-  catch (error) { fail(`gh issue list gave no JSON list (${String(error.message).replace(/\n/g, " ")})`); }
+  catch (error) {
+    // gh() ends the run itself when gh fails; that end goes on as it is.
+    if (error instanceof Exit) throw error;
+    fail(`gh issue list gave no JSON list (${String(error.message).replace(/\n/g, " ")})`);
+  }
   if (!Array.isArray(open)) fail("gh issue list gave no JSON list");
   if (open.length >= limit) fail(`${limit} or more open Issues; kit init --issues reads at most ${limit - 1}`);
   open.sort((a, b) => a.number - b.number);
@@ -598,9 +615,9 @@ async function issues() {
 
   // On Orbit the Issues become cards, made and closed in one run below.
   const orbit = onOrbit(settings);
-  if (options.close && !orbit) {
+  if (close && !orbit) {
     if (!land) fail(`--close needs ${kitSettingsFile} with "branches": { "land": "<branch>" }; run kit init first`);
-    if (!open.length) { kitResult("ok", "init issues no open Issues to close"); process.exit(0); }
+    if (!open.length) { kitResult("ok", "init issues no open Issues to close"); exit(0); }
     const fetched = bounded("git", ["-C", root, "fetch", "--quiet", "origin", `+refs/heads/${land}:refs/remotes/origin/${land}`]);
     if (fetched.problem) fail(`cannot fetch origin/${land} (${fetched.problem}); --close reads the ticket files there`);
     const ref = `refs/remotes/origin/${land}`;
@@ -638,7 +655,7 @@ async function issues() {
     const closed = plan.length - failed.length;
     if (failed.length) fail(`closed ${closed} of ${plan.length} Issues; failed: ${failed.join(", ")}; rerun to retry them`);
     kitResult("ok", `init issues closed ${closed} Issue${closed === 1 ? "" : "s"} with a link to each file on ${land}`);
-    process.exit(0);
+    exit(0);
   }
 
   const existing = existsSync(at(ticketsDir)) ? readdirSync(at(ticketsDir)).filter((name) => name.endsWith(".md")).sort() : [];
@@ -732,7 +749,11 @@ ${comments.length ? comments.join("\n\n") : "None."}
           made.push(task.identifier);
           console.log(`made ${task.identifier} (#${issue.number} ${issue.title})`);
         }
-      } catch (error) { fail(`issues stopped at #${issue.number}: ${orbitProblem(error, redact)}; ${summary()}; rerun to go on`); }
+      } catch (error) {
+        // The too-many-cards stop above ends the run itself; that end goes on as it is.
+        if (error instanceof Exit) throw error;
+        fail(`issues stopped at #${issue.number}: ${orbitProblem(error, redact)}; ${summary()}; rerun to go on`);
+      }
       const { problem } = bounded("gh", ["issue", "close", String(issue.number), "--repo", ghRepo(host, repo),
         "--comment", `Moved to Orbit card ${task.identifier}${task.url ? `: ${task.url}` : ""}\nWork on it goes on there.`]);
       if (problem) {
@@ -745,7 +766,7 @@ ${comments.length ? comments.join("\n\n") : "None."}
     }
     if (failed.length) fail(`issues ${summary()}; failed: ${failed.join(", ")}; rerun to retry them`);
     kitResult("ok", open.length ? `init issues ${summary()}${left.length ? `; left open: ${left.join(", ")}` : ""}` : "init issues no open Issues");
-    process.exit(0);
+    exit(0);
   }
 
   const writes = [], skipped = [];
@@ -788,16 +809,16 @@ Work carried over from the project's GitHub Issues, one \`needs-triage\` ticket 
   const tickets = writes.filter(({ path }) => path.startsWith(`${ticketsDir}/`)).length;
   if (!tickets) {
     kitResult("ok", open.length ? `init issues nothing new (${open.length} open Issue${open.length === 1 ? " has" : "s have"} a file)` : "init issues no open Issues");
-    process.exit(0);
+    exit(0);
   }
   console.log(`next: land ${folder} on ${land ?? "the landing branch"}, then run kit init --issues --close to close ${open.length === 1 ? "the Issue" : `the ${open.length} Issues`} with a link to each file`);
   kitResult("ok", `init issues wrote ${tickets} ticket${tickets === 1 ? "" : "s"}${writes.length > tickets ? " and the map" : ""}${skipped.length ? `, skipped ${skipped.length} with a file` : ""}; nothing closed`);
-  process.exit(0);
+  exit(0);
 }
 
 // --all: every project in the machine's projects.json gets the pieces kit init writes today, each through its own
 // kit pr from a temporary worktree of origin's landing branch, so the main checkout and its work stay as they are.
-// One RESULT line per project, then one for the run; it fails when any project failed. Never returns.
+// One RESULT line per project, then one for the run; it fails when any project failed. Never returns: it ends the run.
 function all() {
   const home = kitHome();
   let projects;
@@ -991,5 +1012,9 @@ function all() {
   kitResult(groups.failed.length ? "fail" : "ok", names.length
     ? `init --all: ${count("updated", "updated")}, ${groups.waiting.length ? `${count("waiting", "waiting")}, ` : ""}${count("current", "up to date")}, ${count("skipped", "skipped")}, ${count("failed", "failed")}`
     : `init --all: no projects in ${join(kitStateDir(), "projects.json")}`);
-  process.exit(groups.failed.length ? 1 : 0);
+  exit(groups.failed.length ? 1 : 0);
 }
+
+// Run as a script (not imported, as a test does): one run with the command line's arguments, then its exit code.
+const realPath = (path) => { try { return realpathSync(path); } catch { return path; } };
+if (process.argv[1] && realPath(resolve(process.argv[1])) === realPath(fileURLToPath(import.meta.url))) process.exit(await init(process.argv.slice(2)));
