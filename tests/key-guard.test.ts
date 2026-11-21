@@ -2031,7 +2031,11 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   writeFileSync(byName, "#!/usr/bin/env mysh\n"); chmodSync(byName, 0o755);
   assert.throws(() => startCommand(byName, [], viaCwd, { worktree: root, kind: "test" }), /mysh on PATH is .*, which leads into \/proc/);
   assert.match(sshCommand({ ...viaCwd, GIT_SSH_COMMAND: "mysh host" }, { worktree: root }).problem ?? "", /mysh on PATH is .*, which leads into \/proc|it starts a shell \(mysh\)/);
-  assert.match(sshCommand({ ...viaCwd, GIT_SSH_COMMAND: "timeout 30 mysh host" }, { worktree: root }).problem ?? "", /it starts a shell \(mysh\)/);
+  // A program that starts it by its bare name in turn gets PATH without the folder that holds the link into /proc
+  // (TOOLS-390 R1-1), so timeout finds no mysh there to start.
+  const timed = sshCommand({ ...viaCwd, GIT_SSH_COMMAND: "timeout 30 mysh host" }, { worktree: root });
+  assert.equal(timed.problem, null);
+  assert.ok(String(timed.command).startsWith(`PATH=${bin}:/usr/bin:/bin `) && !String(timed.command).includes(cwdLinks), String(timed.command));
   // A worktree folder that is a link leading out still counts as the worktree, as the path is written: a build can
   // point it elsewhere after the check (landing review R1-3).
   symlinkSync(bin, join(root, "tools-link"));
@@ -2039,11 +2043,16 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /inside the worktree or its Git folder/, command);
   }
   assert.throws(() => start(wrapper("tools-link-env", "X=1", join(root, "tools-link", "ssh"))), /inside the worktree or its Git folder/);
-  // A bare name PATH finds as such a link counts too (round 27).
+  // A bare name PATH finds as such a link counts too (round 27); one a program starts in turn finds no such folder on
+  // the command's PATH (TOOLS-390 R1-1).
   const procLinks = join(dir, "proc links");
   mkdirSync(procLinks);
   symlinkSync("/proc/self/exe", join(procLinks, "mysh"));
-  assert.match(sshCommand({ ...base, PATH: `${procLinks}:${bin}:/usr/bin:/bin`, GIT_SSH_COMMAND: "timeout 30 mysh -c true" }, { worktree: root }).problem ?? "", /it starts a shell/);
+  const viaExe = { ...base, PATH: `${procLinks}:${bin}:/usr/bin:/bin` };
+  assert.match(sshCommand({ ...viaExe, GIT_SSH_COMMAND: "mysh -c true" }, { worktree: root }).problem ?? "", /mysh on PATH is .*, which leads into \/proc|it starts a shell/);
+  const timedExe = sshCommand({ ...viaExe, GIT_SSH_COMMAND: "timeout 30 mysh -c true" }, { worktree: root });
+  assert.equal(timedExe.problem, null);
+  assert.ok(String(timedExe.command).startsWith(`PATH=${bin}:/usr/bin:/bin `) && !String(timedExe.command).includes(procLinks), String(timedExe.command));
   for (const words of ["ssh -i ~/.ssh/id_ed25519 -o IdentityFile=/etc/ssh/key -o UserKnownHostsFile=/etc/ssh/known", "ssh -i/etc/ssh/key -F/etc/ssh/ssh_config"]) {
     const keys = wrapper(`ssh-keys-${words.length}`, "X=1", words);
     assert.deepEqual(start(keys), ["/usr/bin/env", ["X=1", join(bin, "ssh"), ...words.split(" ").slice(1), keys]], words);
