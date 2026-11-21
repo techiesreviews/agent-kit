@@ -30,7 +30,7 @@
 // one does: it installs with one command.
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, lstatSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, lstatSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -523,9 +523,24 @@ const fromRoots = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map
 // Whether a path, relative ones from there too, leads into the worktree or the Git folder, or sits in a folder there:
 // a build can point a link it placed there elsewhere after the check (Claude review, round 14).
 const shutIn = (path, shut) => fromRoots(path, shut).some(place => shut.some(root => inside(real(place), root) || inside(real(dirname(resolve(place))), root)));
+// /proc/self/exe and the like are whatever program opens them: the shell git starts, when it is that shell that runs
+// them, while the kit sees its own node there (GPT second look, round 27). So a path that leads into /proc or /dev, by
+// a link or a folder link too, counts as a shell when it is a program file (/dev/null, an -F value, is none).
+const systemFolder = /^\/(?:proc|dev)(?:\/|$)/;
+const magic = path => {
+  let place = resolve(path);
+  for (let step = 0; step < 40; step++) {
+    if (systemFolder.test(place)) return true;
+    try { if (systemFolder.test(realpathSync(dirname(place)))) return true; } catch { return false; }
+    let target;
+    try { target = readlinkSync(place); } catch { return false; }
+    place = resolve(dirname(place), target);
+  }
+  return true;
+};
 const namesShell = (word, env, shut) => {
   const files = word.includes("/") ? fromRoots(word, shut).filter(executable) : [programFor(word, env, shut)].filter(Boolean);
-  return shellNamed(word) || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es|nu)$/.test(basename(name))));
+  return shellNamed(word) || (word.includes("/") && files.some(magic)) || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es|nu)$/.test(basename(name))));
 };
 // ssh splits an option from its value at any blank, a line break and carriage return too, or an =.
 const viaShell = /(?<!permit)(proxy|local)command(?:\s*=\s*|\s+|$)(.*)$/is;
@@ -599,6 +614,50 @@ const runsString = (option, kind) => {
     || (kind === "nu" && /^(?:-[A-Za-z]*e|--(?:commands|execute)(?:=|$))/.test(option));
 };
 
+// The file that starts reads the options, so its name counts first: a link named pwsh that leads to bash reads bash's
+// (Claude review, round 25).
+const shRules = word => shellNamed(word, "zsh") ? "zsh" : shellNamed(word, "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|yash|posh") ? "sh" : null;
+const kindOf = word => ["fish", "pwsh", "nu"].find(kindName => shellNamed(word, kindName));
+const shellKind = (found, name) => shRules(real(found)) ? undefined : kindOf(real(found)) ?? kindOf(name);
+// A shell runs its first word that is not an option, or what it reads with -s, in place of this script (bash
+// <worktree>/payload; GPT second look, round 21), and every word after -- or a lone - is one (bash -- -e runs a file
+// called -e; round 22). So a shell takes options only: with a value after -o or -O, and for pwsh after the options
+// that take one (any of its switches, -NoProfile and the like, takes none; Claude review, round 21). An option is
+// read by each shell's own rules: only pwsh takes the long dashes, and it runs any word it does not know as a script
+// (-payload.ps1), as bash does a word with a long dash (—payload; GPT second look, round 23). So pwsh gets only the
+// names and short forms it documents, written out (a second dash only when it is the first one again, as pwsh reads
+// it), and the other shells only the options listed here. An option that takes a value takes the next word whatever
+// it is, so the words are read in order, a value is skipped, and an option is known only if it takes no value or
+// its value is harmless: bash's --rcfile, pwsh's -ConfigurationFile and -SettingsFile and the like load code from a
+// file, and bash --rcfile -o payload runs payload (Claude review, round 23; GPT second look, round 24).
+// Shells read the same letters differently: zsh's -O takes no value and its -b ends the options (so does tcsh's), and
+// rc's -o takes none, so only the sh family and zsh get short options, and any other shell gets none (Claude review,
+// round 24; GPT second look, round 25). An option that takes a value and ends the line would take the script itself.
+// The name after -o or -O can switch a reading on as well as a letter can (zsh -o shinstdin is -s, and zsh reads
+// names in any case, without _, and +o no_… as on), so only these names count there (round 26).
+const pwshValued = ["executionpolicy", "ex", "ep", "workingdirectory", "wd", "outputformat", "o", "of", "inputformat", "inp", "if", "configurationname", "config", "custompipename", "windowstyle", "w"];
+const pwshSwitches = ["interactive", "i", "login", "l", "mta", "sta", "noexit", "noe", "nologo", "nol", "noninteractive", "noni", "noprofile", "nop", "noprofileloadtime", "sshservermode", "sshs", "version", "v"];
+const pwshName = word => /^([-–—―])\1?([A-Za-z]+)$/.exec(word)?.[2]?.toLowerCase();
+const setNames = ["errexit", "nounset", "xtrace", "pipefail", "noclobber", "noglob", "allexport", "errtrace", "functrace", "posix", "verbose", "noexec", "braceexpand", "hashall", "monitor", "notify",
+  "extglob", "globstar", "nullglob", "failglob", "dotglob", "nocaseglob", "inheriterrexit", "lastpipe", "expandaliases", "extendedglob", "shwordsplit", "ksharrays", "warncreateglobal"];
+const setName = word => setNames.includes(word.toLowerCase().replace(/_/g, ""));
+const handsScript = (found, name, options) => {
+  const family = shellKind(found, name) ?? shRules(real(found)) ?? shRules(name);
+  const longKnown = { fish: ["no-config", "private", "login", "interactive", "no-execute"], nu: ["no-config-file", "no-std-lib", "no-history", "login", "interactive"],
+    sh: ["norc", "noprofile", "posix", "login", "noediting", "restricted", "verbose"], zsh: ["no-rcs", "no-globalrcs", "login", "verbose"] }[family] ?? [];
+  const shortKnown = { fish: /^-[ilnNPvh]+$/, nu: /^-[ilnvh]+$/, sh: /^[-+](?=[A-Za-z])[aefhiklmnpruvxBCEHP]*[oO]?$/, zsh: /^[-+](?=[A-Za-z])[aefhiklmnpruvxBCEHP]*o?$/ }[family];
+  const valued = option => family === "pwsh" ? pwshValued.includes(pwshName(option)) : (family === "sh" || family === "zsh") && /[oO]$/.test(option) && shortKnown.test(option);
+  const known = option => family === "pwsh"
+    ? valued(option) || pwshSwitches.includes(pwshName(option))
+    : Boolean(shortKnown?.test(option)) || (option.startsWith("--") && longKnown.includes(option.slice(2)));
+  for (let i = 0; i < options.length; i++) {
+    if (family && family !== "pwsh" && (options[i] === "--" || options[i] === "-")) return i + 1 < options.length;
+    if (!known(options[i])) return true;
+    if (valued(options[i])) { i++; if (i >= options.length || (family !== "pwsh" && !setName(options[i]))) return true; }
+  }
+  return false;
+};
+
 // A script's first line names its interpreter, and `#!/usr/bin/env node` has env look node up by its bare name on PATH,
 // where a link a person made into the worktree or the Git folder stays (only the names the kit starts are looked up past
 // it). So the kit reads that line itself and starts the interpreter by the full path it finds the way it finds its own
@@ -624,6 +683,9 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   if (!interpreter) return [file, args];
   if (basename(interpreter) !== "env") {
     if (shutIn(interpreter, shut)) refuse(`${file} starts with ${interpreter}, inside the worktree or its Git folder, where a build can change it`);
+    // The same holds for a shell the line names itself, which gets what follows it as one word (#!/bin/bash
+    // <worktree>/payload, #!/bin/bash -s; GPT second look, round 27).
+    if (rest && namesShell(interpreter, names, shut) && handsScript(interpreter, interpreter, [rest])) refuse(`${file} starts with ${line}, which hands the shell (${basename(interpreter)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
     // A binary interpreter the kernel starts itself; one that is a script again is followed (the kernel passes what
     // follows the interpreter as one argument, before the script).
     const next = interpreted(interpreter, [...(rest ? [rest] : []), file, ...args], env, shut, refuse, depth + 1, names);
@@ -665,50 +727,11 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   // told to run env (busybox env, coreutils env) or a wrapper that starts it (timeout 30 env, TOOLS-329).
   if (namesEnv(found) || options.some(namesEnv)) refuse(`${file} starts with env ${rest}, which starts env again, and that env would look its program up by name; start the program from that line directly, or set ASE_KEY_GUARD=off to run without the lock`);
   // A shell the program starts, or the program as a shell told to run a string, could build PATH= from pieces.
-  // The file that starts reads the options, so its name counts first: a link named pwsh that leads to bash reads bash's
-  // (Claude review, round 25).
-  const shRules = word => shellNamed(word, "zsh") ? "zsh" : shellNamed(word, "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|yash|posh") ? "sh" : null;
-  const kindOf = word => ["fish", "pwsh", "nu"].find(kindName => shellNamed(word, kindName));
-  const kind = shRules(real(found)) ? undefined : kindOf(real(found)) ?? kindOf(name);
+  const kind = shellKind(found, name);
   const shell = startedShell(options, names, shut) ?? (namesShell(found, names, shut) && options.some(option => runsString(option, kind)) ? basename(name) : null);
   if (shell) refuse(`${file} starts with env ${rest}, which starts a shell (${shell}), and a shell can build PATH= or BASH_ENV= out of pieces; ${shellAdvice(shell, " from that line") ?? "start the program from that line directly"}, or set ASE_KEY_GUARD=off to run without the lock`);
-  // A shell runs its first word that is not an option, or what it reads with -s, in place of this script (bash
-  // <worktree>/payload; GPT second look, round 21), and every word after -- or a lone - is one (bash -- -e runs a file
-  // called -e; round 22). So a shell takes options only: with a value after -o or -O, and for pwsh after the options
-  // that take one (any of its switches, -NoProfile and the like, takes none; Claude review, round 21). An option is
-  // read by each shell's own rules: only pwsh takes the long dashes, and it runs any word it does not know as a script
-  // (-payload.ps1), as bash does a word with a long dash (—payload; GPT second look, round 23). So pwsh gets only the
-  // names and short forms it documents, written out (a second dash only when it is the first one again, as pwsh reads
-  // it), and the other shells only the options listed here. An option that takes a value takes the next word whatever
-  // it is, so the words are read in order, a value is skipped, and an option is known only if it takes no value or
-  // its value is harmless: bash's --rcfile, pwsh's -ConfigurationFile and -SettingsFile and the like load code from a
-  // file, and bash --rcfile -o payload runs payload (Claude review, round 23; GPT second look, round 24).
-  const pwshValued = ["executionpolicy", "ex", "ep", "workingdirectory", "wd", "outputformat", "o", "of", "inputformat", "inp", "if", "configurationname", "config", "custompipename", "windowstyle", "w"];
-  const pwshSwitches = ["interactive", "i", "login", "l", "mta", "sta", "noexit", "noe", "nologo", "nol", "noninteractive", "noni", "noprofile", "nop", "noprofileloadtime", "sshservermode", "sshs", "version", "v"];
-  const pwshName = word => /^([-–—―])\1?([A-Za-z]+)$/.exec(word)?.[2]?.toLowerCase();
-  // Shells read the same letters differently: zsh's -O takes no value and its -b ends the options (so does tcsh's), and
-  // rc's -o takes none, so only the sh family and zsh get short options, and any other shell gets none (Claude review,
-  // round 24; GPT second look, round 25). An option that takes a value and ends the line would take the script itself.
-  // The name after -o or -O can switch a reading on as well as a letter can (zsh -o shinstdin is -s, and zsh reads
-  // names in any case, without _, and +o no_… as on), so only these names count there (round 26).
-  const family = kind ?? shRules(real(found)) ?? shRules(name);
-  const setNames = ["errexit", "nounset", "xtrace", "pipefail", "noclobber", "noglob", "allexport", "errtrace", "functrace", "posix", "verbose", "noexec", "braceexpand", "hashall", "monitor", "notify",
-    "extglob", "globstar", "nullglob", "failglob", "dotglob", "nocaseglob", "inheriterrexit", "lastpipe", "expandaliases", "extendedglob", "shwordsplit", "ksharrays", "warncreateglobal"];
-  const setName = word => setNames.includes(word.toLowerCase().replace(/_/g, ""));
-  const longKnown = { fish: ["no-config", "private", "login", "interactive", "no-execute"], nu: ["no-config-file", "no-std-lib", "no-history", "login", "interactive"],
-    sh: ["norc", "noprofile", "posix", "login", "noediting", "restricted", "verbose"], zsh: ["no-rcs", "no-globalrcs", "login", "verbose"] }[family] ?? [];
-  const shortKnown = { fish: /^-[ilnNPvh]+$/, nu: /^-[ilnvh]+$/, sh: /^[-+](?=[A-Za-z])[aefhiklmnpruvxBCEHP]*[oO]?$/, zsh: /^[-+](?=[A-Za-z])[aefhiklmnpruvxBCEHP]*o?$/ }[family];
-  const valued = option => family === "pwsh" ? pwshValued.includes(pwshName(option)) : (family === "sh" || family === "zsh") && /[oO]$/.test(option) && shortKnown.test(option);
-  const known = option => family === "pwsh"
-    ? valued(option) || pwshSwitches.includes(pwshName(option))
-    : Boolean(shortKnown?.test(option)) || (option.startsWith("--") && longKnown.includes(option.slice(2)));
-  let handed = false;
-  for (let i = 0; i < options.length && !handed; i++) {
-    if (family && family !== "pwsh" && (options[i] === "--" || options[i] === "-")) { handed = i + 1 < options.length; break; }
-    if (!known(options[i])) handed = true;
-    else if (valued(options[i])) { i++; handed = i >= options.length || (family !== "pwsh" && !setName(options[i])); }
-  }
-  if (namesShell(found, names, shut) && handed) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
+  // A shell given anything but options would run something else in place of this script (handsScript).
+  if (namesShell(found, names, shut) && handsScript(found, name, options)) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1, names);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).
