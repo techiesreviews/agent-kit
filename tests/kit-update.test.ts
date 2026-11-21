@@ -694,6 +694,14 @@ test("kit update --install-timer fails plainly without a machine copy, without s
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
     assert.equal(refused.stdout, `RESULT: fail update cannot write the timer's service, because ${repo.replace("\n", " ")} holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@, @KIT_REPO@ or @PATH@\n`);
   }
+  // So is a Node folder it cannot hold, and run on its own without Node it writes nothing.
+  const quoted = k.run(["--install-timer"], { PATH: systemctl.PATH, KIT_NODE: '/tmp/a"b/node' });
+  assert.equal(quoted.status, 1, quoted.stdout + quoted.stderr);
+  assert.equal(quoted.stdout, `RESULT: fail update cannot write the timer's service, because /tmp/a"b:/usr/local/bin:/usr/bin:/bin holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@, @KIT_REPO@ or @PATH@\n`);
+  const noNode = k.run(["--install-timer"], { PATH: `${join(k.directory, "systemctl-bin")}:${pathWithout(k, "node")}`, KIT_NODE: undefined, CLAUDE_NODE_SEARCH_ROOT: join(k.directory, "empty") });
+  assert.equal(noNode.status, 2, noNode.stdout + noNode.stderr);
+  assert.equal(noNode.stdout, "RESULT: fail no Node >=24 found (system, npx cache or nvm)\n");
+  rmSync(join(k.directory, "without-node"), { recursive: true });
   assert.equal(existsSync(units(k)), false);
   // A kit without its unit files fails before writing the one it lacks.
   const partial = join(k.directory, "partial");

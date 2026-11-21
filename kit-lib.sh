@@ -153,15 +153,21 @@ kit_hide_user_info() {
 
 # The RESULT line, as kitResult in kit-lib.mjs writes it: the status, then the other words joined by spaces, on one
 # line, with URL user-info hidden; returns 2 for a status other than ok or fail. Status and words go to Node on stdin,
-# split by a NUL (which no shell word holds). Without Node it prints the front door's fixed line and returns 1.
+# split by a NUL (which no shell word holds). Without Node (kit update runs without it) the line keeps an ok or fail
+# status, and its words when they hold no URL; it holds back words it cannot hide, and returns 1 for any other status.
 kit_result() {
-  local status=${1-} text
+  local status=${1-} text code
   local IFS=' '
   if (( $# )); then shift; fi
   text="$*"
   printf '%s\0%s' "$status" "$text" | kit_lib_node 'const [status, text] = (await import("node:fs")).readFileSync(0, "utf8").split("\0"); lib.kitResult(status, text);' && return
-  status=$?
-  if (( status == 2 )); then return 2; fi
-  if kit_node_find > /dev/null; then printf '%s\n' 'RESULT: fail kit-lib.mjs did not run (its error is above)'; else kit_node_missing; fi
-  return 1
+  code=$?
+  if (( code == 2 )); then return 2; fi
+  if kit_node_find > /dev/null; then
+    printf '%s\n' 'RESULT: fail kit-lib.mjs did not run (its error is above)'
+    return 1
+  fi
+  if [[ $status != ok && $status != fail ]]; then kit_node_missing; return 1; fi
+  [[ $text != *://* ]] || text='(held back: without Node 24 the kit cannot hide a URL'\''s user info)'
+  printf 'RESULT: %s %s\n' "$status" "${text//[$'\n\r']/ }"
 }
