@@ -306,16 +306,39 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     config (its credential helper) and is refused while the repository's own config holds `http.*` or `credential.*`
     settings. Every call allows only the transports git has itself (file, git, http, https, ssh), and a fetch or push
     also refuses a remote helper the repository's config names (`remote.<name>.vcs`, a `<helper>::` URL or rewrite), so
-    no `git-remote-<name>` from PATH starts. A fetch or push starts git's ssh by its full path (TOOLS-320), found as the
-    programs below are: the lead's `GIT_SSH_COMMAND`, else `core.sshCommand` from the lead's own config (the
-    repository's is set empty), else `GIT_SSH`, else `ssh`, with the command's other words kept, and where a PATH folder
-    holds a link into the worktree or the Git folder, or into `/proc` (`ssh -> /proc/self/cwd/ssh`, the worktree for
-    the program git starts there, or `/dev/fd/../cwd/ssh`, the same through `/dev/fd`; TOOLS-390), or itself leads
-    there (Programs by name, below), the command's PATH leaves that folder out, for a program it starts by name
-    in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot be told (shell syntax beyond
-    words and quotes, an expansion, `env` by any name or started in turn, a shell started from it, or anywhere in it a
-    `PATH=` or a shell variable that runs code from elsewhere, below; TOOLS-329), or an ssh PATH holds only as such a link, is swapped for
-    one that says so and fails, so only a call to an ssh remote stops. `kit pr` pushes to a folder remote (whose hooks
+    no `git-remote-<name>` from PATH starts. Git's ssh for a fetch or push is the lead's `GIT_SSH_COMMAND`, else
+    `core.sshCommand` from the lead's own config (the repository's is set empty), else `GIT_SSH`, else `ssh`.
+    - **On Linux it runs in a clean room (TOOLS-390).** The key lock cannot hold it: ssh needs the keys that lock
+      hides. So it runs in the mirror image, a bubblewrap room (started by its full path) where the worktree, every
+      other worktree of the repository and the Git folder are empty folders, while the rest of the machine is as it is,
+      so ssh still reads its keys, its agent and `known_hosts`. The room has a process list of its own and starts in
+      `/`. A path that leads into the build's folders ends in "not found" there, however it is written: a
+      `/proc/self/cwd/ssh` link on PATH, a link folder such as `<worktree>/tools-link`, another process's
+      `/proc/<pid>/cwd`, or a link a build changes after the kit looked. So the lead's own ssh command runs as written
+      (a wrapper script, `env`, `sh -c`, a `$` word), with none of the line rules below, and git keeps telling its kind
+      of ssh from the lead's first word (`GIT_SSH_VARIANT`, unless the lead set one). Where the room cannot start
+      (bubblewrap missing or blocked), or would hide the home folder or ssh's agent (a repository that holds them), a
+      call to an ssh remote stops with a line that says why (`ASE_KEY_GUARD=off` runs it without). Inside `kit pr`'s
+      lock for its checks no second sandbox starts (see `kit pr`'s checks, below), so git's ssh there keeps the path
+      filter; the key files are hidden there anyway. `kit doctor` says which: `keyed steps: clean room on`, or not on
+      this machine.
+    - **What the room does not close.** Git itself still reads the Git folder before it starts ssh; its settings stay
+      guarded as above (no hooks, program settings set empty). Files a build wrote outside its own folders still run
+      with the keys: `~/.gitconfig` (a fetch or push reads the global config), `~/.bashrc`, a PATH folder under HOME
+      such as `~/.local/bin`, `~/.ssh/config`. And a remote over https never starts ssh at all: it signs in through the
+      credential helper the global config names, a file a build can write. Only a fence on where a build may write
+      closes those (TOOLS-397).
+    - **On macOS and Windows (no bubblewrap) it is as before:** git's ssh starts by its full path (TOOLS-320), found as
+      the programs below are, with the command's other words kept, and where a PATH folder holds a link into the
+      worktree or the Git folder, or into `/proc` (`ssh -> /proc/self/cwd/ssh`, or `/dev/fd/../cwd/ssh`, the same through
+      `/dev/fd`; TOOLS-390), or itself leads there (Programs by name, below), the command's PATH leaves that folder
+      out, for a program it starts by name in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot
+      be told (shell syntax beyond words and quotes, an expansion, `env` by any name or started in turn, a shell
+      started from it, or anywhere in it a `PATH=` or a shell variable that runs code from elsewhere, below;
+      TOOLS-329), or an ssh PATH holds only as such a link, is swapped for one that says so and fails, so only a call
+      to an ssh remote stops. A link a build changes after that check is not caught there.
+
+    `kit pr` pushes to a folder remote (whose hooks
     git runs without these settings) inside the key lock. It weighs every push address the remote lists, rewrites
     applied, the global and system config's too, as the push reads them (TOOLS-320, TOOLS-329): a folder beside other
     addresses (which need the credentials the lock hides), or an address on this machine itself
@@ -357,7 +380,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     that env could fill in as `PATH=`, is refused; so is a word, or a piece of a `sh -c '…'` string, with only name
     characters before a `$` and an `=` after it (`"PA${EMPTY}TH=…"`), or with a `$(…)` or backtick in it, while
     `ssh -i $HOME/…` still runs. A backtick counts even inside single quotes, where sh leaves it alone, so
-    ``ssh -o 'SetEnv=X=`…`'`` is refused too. No shell starts from git's ssh command or from an env -S first line (Lex's
+    ``ssh -o 'SetEnv=X=`…`'`` is refused too. (Git's ssh command meets these line rules only where it has no clean
+    room, Git calls above.) No shell starts from git's ssh command or from an env -S first line (Lex's
     decision, TOOLS-329), since a shell can build `PATH=` out of pieces no word holds (`"$1$2"`, `"${1}${2}"`, `IFS=`
     with `"$*"`): a line that names `sh`, `bash`, `dash`, `zsh`, `ksh` or another shell (by name, by a path or a link
     that leads to one, a relative one counted from the worktree too, from a variable sh fills in such as `$SHELL`, or
@@ -416,13 +440,13 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   which a build or a check can change and `kit pr` then runs, the machine's kit copy where builds and checks run
   unlocked (no bubblewrap, or `ASE_KEY_GUARD=off`; Codex's own sandbox keeps it read-only), a `kit pr` started through
   `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), what a program an env -S first line or
-  git's ssh command starts does with its own words (only the line's words are read, not the files they name, so
-  `node payload.js` there runs a file a build may have written in the worktree; a program other than a shell can
+  git's ssh command without a clean room starts does with its own words (only the line's words are read, not the files
+  they name, so `node payload.js` there runs a file a build may have written in the worktree; a program other than a shell can
   set PATH in its own way, and `timeout 30 node` looks node up by name on the run's PATH, where a link elsewhere into the worktree
   stays), variables there that have a loader or a runtime load code (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `NODE_OPTIONS`,
   `PYTHONPATH` and the like) or move another shell's start-up folder (`HOME` for zsh, `XDG_CONFIG_HOME` for fish), a
-  fetch or push reading a global Git
-  config a build wrote, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
+  fetch or push reading a global Git config a build wrote (its credential helper among it, for an https remote),
+  what git's ssh in the clean room reads from HOME, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
   `ProxyCommand`, `Match exec`, or a host name it maps to this machine) or that `ssh -F` names, the host git adds from
   a push address a build wrote, which an ssh older than 9.6 (unpatched for CVE-2023-51385) with a `ProxyJump` writes
   into a command its shell runs, which shell that is (ssh starts the run's `SHELL` for a `ProxyJump`), and a push host whose address changes between
