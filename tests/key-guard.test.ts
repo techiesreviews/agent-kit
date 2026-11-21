@@ -1669,10 +1669,12 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // ssh still takes -1 and -2 in a bundle of flags (GPT second look, round 19).
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -2J %k -oHostKeyAlias='a|x' host" }, { worktree: root }).problem ?? "", /ProxyJump with more than host names/);
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -J jump.example.invalid -12F './cfg;x' host" }, { worktree: root }).problem ?? "", /ProxyJump beside a ' or an -F path/);
+  assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -2J jump.example.invalid host" }, { worktree: root }).problem, null);
   // sh sets $BASH, $_ and the like itself, whatever the run holds, and bash sets $SHELL where the run has none (round 19).
   for (const [name, env] of [["BASH", { BASH: undefined }], ["_", { _: "/usr/bin/true" }], ["PWD", {}], ["SHELL", { SHELL: undefined }]] as const) {
-    const command = `timeout 2 "\${${name}}" -c 'ssh "$@"' ssh`;
-    assert.match(sshCommand({ ...base, ...env, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", new RegExp(`sh sets \\$${name} itself`), command);
+    for (const command of [`timeout 2 "\${${name}}" -c 'ssh "$@"' ssh`, `timeout 2 "$${name}" -c 'ssh "$@"' ssh`]) {
+      assert.match(sshCommand({ ...base, ...env, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", new RegExp(`sh sets \\$${name} itself`), command);
+    }
   }
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -o ProxyCommand\\_none' host" }, { worktree: root }).problem ?? "", /ProxyCommand, which ssh runs/);
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "timeout 30 gnuenv -S 'ssh -o ProxyCommand=none' host" }, { worktree: root }).problem, null);
@@ -1706,8 +1708,11 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // nu, like rc, counts only where PATH leads to it.
   assert.equal(sshCommand({ ...base, PATH: bin, GIT_SSH_COMMAND: "ssh -l nu -o SetEnv=LANG=nu host" }, { worktree: root }).problem, null);
   for (const [name, words] of [["fish-C", "fish -C 'ssh'"], ["fish-command", "fish --command=ssh"], ["fish-init", "fish --init-command=ssh"],
-    ["ysh-c", "ysh -c ssh"], ["nu-e", "nu -e ssh"], ["nu-commands", "nu --commands ssh"], ["nu-execute", "nu --execute=ssh"]]) {
+    ["ysh-c", "ysh -c ssh"], ["nu-e", "nu -e ssh"], ["nu-commands", "nu --commands ssh"], ["nu-execute", "nu --execute=ssh"],
+    // fish takes any start of a long option's name that tells it apart (GPT second look, round 20).
+    ["fish-com", "fish --com ssh"], ["fish-com-eq", "fish --com=ssh"], ["fish-init-com", "fish --init-com ssh"], ["fish-init-com-eq", "fish --init-com=ssh"]]) {
     assert.throws(() => startCommand(wrapper(name, words, ""), [], withOthers, { worktree: root, kind: "test" }), new RegExp(`, which starts a shell \\(${words.split(" ")[0]}\\)`), words);
+    assert.match(sshCommand({ ...withOthers, GIT_SSH_COMMAND: join(wrappers, name) }, { worktree: root }).problem ?? "", new RegExp(`starts a shell \\(${words.split(" ")[0]}\\)`), words);
   }
   // A wrapper whose interpreter PATH holds only as a link into the worktree gets the plain refusal for it (Claude
   // review, round 12): the interpreter is looked up on the run's own PATH, not the cleaned one.
