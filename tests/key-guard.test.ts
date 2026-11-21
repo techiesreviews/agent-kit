@@ -1678,10 +1678,16 @@ test("TOOLS-390 room: a folder the Git folder names is hidden only as git would 
     ["/usr/bin", [root, linked]], ["/usr/share", [root, linked]], ["/usr/lib", [root, linked]], ["/dev", [root, linked]], ["/usr/local", [root, linked]]];
   for (const folder of ["/etc/ssh", "/usr/local/etc", "/usr/local/lib", "/usr/local/src", "/usr/src"]) if (existsSync(folder)) values.push([folder, [root, linked]]);
   const checkout = existsSync("/usr/src") && readdirSync("/usr/src", { withFileTypes: true }).find(item => item.isDirectory());
-  if (checkout) values.push([realpathSync(join("/usr/src", checkout.name)), [root, linked, realpathSync(join("/usr/src", checkout.name))]]);
+  const checkoutPath = checkout ? realpathSync(join("/usr/src", checkout.name)) : null;
+  if (checkoutPath) values.push([checkoutPath, [root, linked, checkoutPath]]);
   for (const [value, expected] of values) {
     assert.equal(spawnSync("git", ["-C", root, "config", "core.worktree", value]).status, 0);
     assert.deepEqual(hidden(), [...expected].sort(), value);
+  }
+  // A checkout there is hidden even when it is a PATH folder (its bin/ssh is not found), as any worktree is.
+  if (checkoutPath) {
+    assert.equal(spawnSync("git", ["-C", root, "config", "core.worktree", checkoutPath]).status, 0);
+    assert.deepEqual(hidden({ ...base, PATH: `${checkoutPath}:${base.PATH}` }), [root, linked, checkoutPath].sort(), "a checkout on PATH");
   }
   // A PATH folder below /usr/local is not hidden either.
   if (existsSync("/usr/local/bin")) {
@@ -1726,8 +1732,19 @@ test("TOOLS-390 room: a folder the Git folder names is hidden only as git would 
   mkdirSync(join(main, "sub"));
   symlinkSync(join(main, "sub"), join(root, ".git/link"));
   writeFileSync(join(root, ".git/config"), `${plain}[core]\n\tworktree = link/..\n`);
+  const top = spawnSync("git", ["--git-dir", join(root, ".git"), "rev-parse", "--show-toplevel"], { encoding: "utf8", env: { ...base, GIT_DIR: undefined, GIT_WORK_TREE: undefined } }).stdout.trim();
+  assert.equal(realpathSync(top), realpathSync(main), "git itself takes link/.. as the main worktree");
   assert.deepEqual(hidden(), [root, linked, main].sort(), "link/..");
   inRoom(fetch(base), "link/..");
+  // The same for a linked worktree's entry: link/../.git with link -> <deep>/sub is <deep>'s .git file.
+  writeFileSync(join(root, ".git/config"), plain);
+  const deep = join(dir, "deep");
+  mkdirSync(join(deep, "sub"), { recursive: true });
+  entry("hop", "link/../.git");
+  symlinkSync(join(deep, "sub"), join(root, ".git/worktrees/hop/link"));
+  writeFileSync(join(deep, ".git"), `gitdir: ${join(root, ".git/worktrees/hop")}\n`);
+  assert.deepEqual(hidden(), [root, linked, deep].sort(), "a linked worktree's link/../.git");
+  rmSync(join(root, ".git/worktrees/hop"), { recursive: true });
   // A core.worktree from outside the repository's own config (here the environment) is not the main worktree.
   writeFileSync(join(root, ".git/config"), plain);
   assert.deepEqual(hidden({ ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.worktree", GIT_CONFIG_VALUE_0: elsewhere }), [root, linked].sort(), "core.worktree from the environment");
@@ -1791,7 +1808,7 @@ test("TOOLS-390 room: a plink command with a redirection keeps plink's kind, so 
   // A ; inside quotes does not end the first word.
   const quoted = join(lead, "a;b");
   mkdirSync(quoted); copyFileSync(plink, join(quoted, "plink")); chmodSync(join(quoted, "plink"), 0o755);
-  for (const command of [`${plink} -batch 2>/dev/null`, `${plink} -batch "$@" | cat; :`, `X=1 ${plink} -batch 2>&1`, `'${quoted}/plink' -batch 2>/dev/null`]) {
+  for (const command of [`${plink} -batch 2>/dev/null`, `${plink} -batch "$@" | cat; :`, `X=1 ${plink} -batch 2>&1`, `'${quoted}/plink' -batch 2>/dev/null`, `${plink} -pw "$(printf dummy)" -batch`]) {
     rmSync(noted, { force: true });
     const env = { ...base, GIT_SSH_COMMAND: command };
     const safe = gitSafety({ worktree: root, env, network: true, git: gitProgram() });
@@ -1868,11 +1885,11 @@ test("TOOLS-390 room: kit doctor's keyed-steps note says whether git's ssh runs 
   for (const platform of ["darwin", "win32"] as const) assert.deepEqual(fresh(() => asPlatform(platform, () => cleanRoomReport({ PATH: empty }))), elsewhere);
   assert.deepEqual(fresh(() => asPlatform("linux", () => cleanRoomReport({ PATH: empty }))),
     { state: "problem", text: "clean room cannot start: bubblewrap (bwrap) is not installed; install it (apt install bubblewrap)" });
-  if (bwrapUsable) assert.deepEqual(fresh(() => cleanRoomReport({ PATH: process.env.PATH, HOME: empty })),
+  if (!noRoom) assert.deepEqual(fresh(() => cleanRoomReport({ PATH: process.env.PATH, HOME: empty })),
     { state: "on", text: "clean room on (git's ssh starts where the worktrees and the Git folder are empty)" });
   // A home folder or an agent socket inside the repository: a fetch or push would stop (sshRoom), so the note does not
   // say "on" (GPT second look, round 1).
-  if (bwrapUsable) {
+  if (!noRoom) {
     const worktree = realpathSync(empty), inRepo = join(worktree, "home");
     mkdirSync(inRepo, { recursive: true });
     const outside = mkdtempSync(join(tmpdir(), "kit-room-report-home-"));
