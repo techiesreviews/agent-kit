@@ -288,6 +288,19 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   that is installed but cannot start (the system blocks it, the `/proc` check fails). `kit doctor`'s `key lock:` line
   searches the key folders as a run in that worktree would, so it says "on" only where a run would really start: a
   key folder that cannot be listed, is too large or links to a folder the lock cannot hide shows there first.
+- **Write fence (TOOLS-397).** A locked build and `kit pr`'s locked checks see the disk read-only, with writes only to
+  their worktree, Git common folder and private temporary state. Home setup files, including `.gitconfig`, `.bashrc`,
+  `.profile`, `.local/bin`, `.config/systemd/user` and `.ssh`, stay read-only or hidden. CLI state and caches use private
+  folders rather than writable home folders. This uses the same bubblewrap mount boundary as the clean room in
+  `git-safety.mjs`, facing the other way: the build keeps its work and loses write access to the rest of the machine;
+  git's ssh keeps the keys and loses access to the build. No string filter decides where a write may go. The kernel
+  also refuses writes through a worktree link into HOME. Codex keeps its own profile, with only the run's private temp
+  folder writable rather than all of `/tmp`. Other CLIs' build state starts with copies of their own login and settings;
+  skills and other resources are read-only links. A build's artifact folder holds a `cli-state` link to its private
+  temporary folder, so a resume keeps its session. That folder may contain the CLI's refreshed login; remove it with
+  the artifacts when the run is no longer needed. Checks' private folders are removed when `kit pr` exits. Tools that
+  insist on writing to a fixed home path fail; use their cache or state setting to put those writes in the worktree or
+  `$TMPDIR`. There is no fence where the lock is off or runs unwrapped (macOS and Windows).
 - **What the key lock does not do.** It keeps an agent the kit starts from reading the key files while it runs; it does
   not confine what the agent writes. A build writes wherever the user can (the worktree, the repository's Git folder and
   settings, files under HOME), and what it leaves runs later with whoever starts it. The kit's own later steps are
@@ -451,9 +464,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   - **Start-up files.** `BASH_ENV` and `ENV` (the file every non-interactive bash or sh reads first) are dropped for a
     run and for everything `kit pr` starts (not with `ASE_KEY_GUARD=off`), and the file they name is locked like any
     start-up file when it sets a token.
-  What is still not covered: the lead's own commands outside the kit (a git or a shell the lead runs by hand reads what
-  a build wrote under HOME: `~/.gitconfig`, `~/.bashrc`, a PATH folder there), a Node kept under HOME (an nvm Node),
-  which a build or a check can change and `kit pr` then runs, the machine's kit copy where builds and checks run
+  What is still not covered: the lead's own commands outside the kit, files left by an earlier unlocked run (home setup,
+  a Node kept under HOME, or a global Git or ssh config), the machine's kit copy where builds and checks run
   unlocked (no bubblewrap, or `ASE_KEY_GUARD=off`; Codex's own sandbox keeps it read-only), a `kit pr` started through
   `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), what a program an env -S first line or
   git's ssh command without a clean room starts does with its own words (only the line's words are read, not the files
@@ -461,8 +473,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   set PATH in its own way, and `timeout 30 node` looks node up by name on the run's PATH, where a link elsewhere into the worktree
   stays), variables there that have a loader or a runtime load code (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `NODE_OPTIONS`,
   `PYTHONPATH` and the like) or move another shell's start-up folder (`HOME` for zsh, `XDG_CONFIG_HOME` for fish), a
-  fetch or push reading a global Git config a build wrote (its credential helper among it, for an https remote),
-  what git's ssh in the clean room reads from HOME, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
+  fetch or push reading an existing global Git config (its credential helper among it, for an https remote),
+  what git's ssh in the clean room reads from HOME, and what ssh itself starts from an existing config under HOME (`~/.ssh/config`'s
   `ProxyCommand`, `Match exec`, or a host name it maps to this machine) or that `ssh -F` names, the host git adds from
   a push address a build wrote, which an ssh older than 9.6 (unpatched for CVE-2023-51385) with a `ProxyJump` writes
   into a command its shell runs, which shell that is (ssh starts the run's `SHELL` for a `ProxyJump`), and a push host whose address changes between
