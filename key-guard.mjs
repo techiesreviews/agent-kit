@@ -513,11 +513,14 @@ const namesEnv = word => basename(word) === "env" || (word.includes("/") && base
 // es, too short to tell from other words, count only where PATH or a path leads to such a program, and take no version.
 // A copy of a shell under a name of its own is not recognised. startedShell gives what starts the shell, in words, or
 // null; shellAdvice what to do about it.
-const shells = "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|zsh|yash|posh|hush|sash|csh|tcsh|fish|osh|ysh|nu|pwsh|xonsh|elvish";
+const shells = "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|zsh|yash|posh|hush|sash|csh|tcsh|fish|osh|ysh|pwsh|xonsh|elvish";
 const shellNamed = (word, names = shells) => new RegExp(`^(?:${names})(?:-static)?(?:[-.]?\\d[\\d.]*)?$`).test(basename(word));
+// sh and env take a relative path from the folder git runs in, which is not the kit's own folder: such a path counts
+// from there too, the worktree or the Git folder (GPT second look, round 14).
+const fromRoots = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map(root => join(root, path))];
 const namesShell = (word, env, shut) => {
-  const file = word.includes("/") ? (executable(word) ? word : null) : programFor(word, env, shut);
-  return shellNamed(word) || Boolean(file && (shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es)$/.test(basename(name)))));
+  const files = word.includes("/") ? fromRoots(word, shut).filter(executable) : [programFor(word, env, shut)].filter(Boolean);
+  return shellNamed(word) || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es)$/.test(basename(name))));
 };
 // ssh splits an option from its value at any blank, a line break and carriage return too, or an =.
 const viaShell = /(?<!permit)(proxy|local)command(?:\s*=\s*|\s+|$)(.*)$/is;
@@ -543,9 +546,10 @@ const startedShell = (words, env, shut) => {
     // Braces and commas split too: where /bin/sh is bash, {s,h} would be a shell's name by brace expansion.
     // The whole word first, so a quoted path with a blank or a ; in it still reaches the link it names; then its pieces,
     // also with quotes and \ taken out, as an env -S (gnuenv) or a shell joins them: ba's'h is bash; and with env -S's
-    // \_ and blank escapes as blanks, where it splits: \_bash is bash.
+    // \_ and blank escapes as blanks, where it splits: \_bash is bash; and its \c, where it stops: sh\c is sh (GPT
+    // second look, round 14).
     const cut = text => text.split(/[\s;&|()<>=`'"{},]+/);
-    const piece = [word, ...cut(word), ...cut(word.replace(/["'\\]/g, "")), ...cut(word.replace(/\\[_tnvfr]/g, " ").replace(/["'\\]/g, ""))]
+    const piece = [word, ...cut(word), ...cut(word.replace(/["'\\]/g, "")), ...cut(word.replace(/\\[_tnvfrc]/g, " ").replace(/["'\\]/g, ""))]
       .find(part => part && namesShell(part, env, shut));
     if (piece) return basename(piece);
   }
@@ -849,7 +853,7 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
   try {
     let file;
     if (program.includes("/")) {
-      if (shut.some(root => inside(real(program), root))) return refused(`git's ssh (${program}) is inside the worktree or its Git folder, where a build can change it; set GIT_SSH_COMMAND to one outside them, or set ASE_KEY_GUARD=off to run without the lock`);
+      if (fromRoots(program, shut).some(path => shut.some(root => inside(real(path), root)))) return refused(`git's ssh (${program}) is inside the worktree or its Git folder, where a build can change it; set GIT_SSH_COMMAND to one outside them, or set ASE_KEY_GUARD=off to run without the lock`);
       file = resolve(program);
     } else {
       const found = lookup(program, env, shut);
@@ -860,7 +864,7 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     // env would look its program up by name again, by a link of another name too (R1-1).
     if (namesEnv(file)) return unknown("env looks its program up on PATH");
     // GIT_SSH (or a link of another name) can name a shell too.
-    if (namesShell(file, ran, shut)) return unknown(`it starts a shell (${basename(program)}), and a shell can build PATH= or BASH_ENV= out of pieces`);
+    if (namesShell(file, ran, shut) || namesShell(program, ran, shut)) return unknown(`it starts a shell (${basename(program)}), and a shell can build PATH= or BASH_ENV= out of pieces`);
     const start = interpreted(file, [], env, shut, problem => { throw new Error(problem); }, 0, ran).flat();
     const path = folders === String(env.PATH ?? systemPath) ? "" : `PATH=${shellQuote(folders)} `;
     const command = `${before}${path}${start.map(shellQuote).join(" ")}${after}`;
