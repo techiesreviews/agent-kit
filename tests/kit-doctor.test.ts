@@ -1427,6 +1427,14 @@ test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT w
   // The clean room for git's ssh cannot start either: its own ✗ line, but one warning on the RESULT line for both.
   assert.match(blocked.stdout, /^✗ keyed steps: clean room cannot start: the system blocks the sandboxes bubblewrap makes .*\(a fetch or push from an ssh remote stops until it works\); fix: the step named above, or set ASE_KEY_GUARD=off to run without the lock$/m);
   assert.match(blocked.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: key lock cannot start \(see the ✗ key lock line\)$/);
+  // A bwrap that runs, but not with the room's own process list and /proc (a container that blocks them): the key lock
+  // is on, and the clean room says why it cannot start, with its own RESULT warning.
+  executable(join(bin, "bwrap"), `case "$*" in *--unshare-pid*) echo "bwrap: Can't mount proc on /newroot/proc: Operation not permitted" >&2; exit 1 ;; *" -e "*) echo inside; echo done ;; esac; exit 0`);
+  const noRoom = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
+  assert.equal(noRoom.status, 0, noRoom.stdout + noRoom.stderr);
+  assert.match(noRoom.stdout, /^key lock: on /m);
+  assert.match(noRoom.stdout, /^✗ keyed steps: clean room cannot start: bubblewrap cannot start it here \(bwrap: Can't mount proc on \/newroot\/proc: Operation not permitted\); run bwrap .* -- true to see why \(a fetch or push from an ssh remote stops until it works\)/m);
+  assert.match(noRoom.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: keyed steps cannot start their clean room \(see the ✗ keyed steps line\)$/);
   // A bwrap that starts but whose probe never reports back: the lock cannot be checked, so it is not on.
   executable(join(bin, "bwrap"), "exit 0");
   const unchecked = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });

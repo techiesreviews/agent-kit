@@ -5595,8 +5595,8 @@ test("kit pr's push to an ssh remote never starts an ssh PATH holds only as a li
     return readFileSync(join(/^logs: (.+)$/m.exec(result.stdout)![1], "push.log"), "utf8");
   };
   const roomed = pushLog(f.run([], { PATH: `${f.bin}:${links}:${pathWithout(f.dir, ["ssh"], "no-ssh-bin")}` }));
-  // In the room the worktree is empty, so the link finds no ssh.
-  if (!noBwrap) assert.match(roomed, /ssh: not found/);
+  // In the room the worktree is empty, so the link finds no ssh, and the kit says where it looked in plain words.
+  if (!noBwrap) assert.match(roomed, /ssh: not found\nkit: git's ssh, or a program it starts, could not be started in the clean room, where these folders are empty: /);
   // Without bubblewrap (macOS) the path filter refuses that ssh and says why.
   const filtered = pushLog(f.run([], { PATH: `${f.bin}:${links}:${join(f.dir, "no-ssh-bin")}`, ...onMacos }));
   assert.match(filtered, /kit: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/);
