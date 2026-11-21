@@ -520,7 +520,7 @@ const shellNamed = (word, names = shells) => new RegExp(`^(?:${names})(?:-static
 // from there too, the worktree or the Git folder (GPT second look, round 14).
 const fromRoots = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map(root => join(root, path))];
 // Whether a path, relative ones from there too, leads into the worktree or the Git folder, or sits in a folder there:
-// a link a build placed there it can point elsewhere after the check (Claude review, round 14).
+// a build can point a link it placed there elsewhere after the check (Claude review, round 14).
 const shutIn = (path, shut) => fromRoots(path, shut).some(place => shut.some(root => inside(real(place), root) || inside(real(dirname(resolve(place))), root)));
 const namesShell = (word, env, shut) => {
   const files = word.includes("/") ? fromRoots(word, shut).filter(executable) : [programFor(word, env, shut)].filter(Boolean);
@@ -539,14 +539,18 @@ const flagValue = (words, i, letter) => {
 const unquoted = word => word.replace(/["'\\]/g, "");
 const unescaped = word => unquoted(word.replace(/\\[_tnvfrc]/g, " "));
 const jumpOf = (words, i) => (jumpOption.exec(unquoted(words[i])) ?? jumpOption.exec(unescaped(words[i])))?.[1] ?? flagValue(words, i, "J");
-const startedShell = (words, env, shut) => {
+const startedShell = (given, env, shut) => {
+  // A word an env -S string (gnuenv) splits counts as the words it splits into too, so an -J or -F there is checked
+  // beside the line's own (GPT second look, round 16).
+  const words = [...given, ...given.flatMap(word => /[\s\\]/.test(word) ? unescaped(word).split(/\s+/).filter(Boolean) : [])];
   // A ProxyJump's command holds the -F path as it is and the host (%h, from HostName too) in single quotes: a host
   // written in these words is checked here, one git adds from the push address is not (the README says so).
   // ssh keeps quotes and \ in an option's value, so only a plain none turns the option off: "none" and n\one are
   // values like any other (GPT second look, round 9).
   const jumping = words.some((word, i) => { const jump = jumpOf(words, i)?.trim(); return jump !== undefined && (!/^(?:none)?$/i.test(jump) || /["'\\]/.test(word)); });
   for (const [i, word] of words.entries()) {
-    const option = viaShell.exec(unquoted(word)) ?? viaShell.exec(unescaped(word));
+    // ProxyCommand and LocalCommand are read in the line's own words, which hold the value beside the name.
+    const option = i < given.length ? viaShell.exec(unquoted(word)) ?? viaShell.exec(unescaped(word)) : null;
     if (option && !(option[2].trim().toLowerCase() === "none" && /command["']*(?:\s*=\s*|\s+)none\s*$/i.test(word))) return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
     const jump = jumpOf(words, i);
     if (jump !== null && !jump.trim().split(",").every(name => /^[\w.@:[\]][\w.@:[\]-]*$/.test(name))) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
@@ -631,7 +635,7 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   const [name, ...options] = words;
   let found;
   if (name.includes("/")) {
-    if (shut.some(root => inside(real(name), root))) refuse(`${file} starts with env ${name}, inside the worktree or its Git folder, where a build can change it`);
+    if (shutIn(name, shut)) refuse(`${file} starts with env ${name}, inside the worktree or its Git folder, where a build can change it`);
     found = resolve(name);
   } else {
     const { file: program, refused } = lookup(name, env, shut);
@@ -872,7 +876,8 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     }
     // env would look its program up by name again, by a link of another name too (R1-1).
     if (namesEnv(file)) return unknown("env looks its program up on PATH");
-    // GIT_SSH (or a link of another name) can name a shell too.
+    // GIT_SSH (or a link of another name) can name a shell too; by its own name as well, for a relative path out of the
+    // worktree (../x), which git takes from there and the kit resolved from its own folder.
     if (namesShell(file, ran, shut) || namesShell(program, ran, shut)) return unknown(`it starts a shell (${basename(program)}), and a shell can build PATH= or BASH_ENV= out of pieces`);
     const start = interpreted(file, [], env, shut, problem => { throw new Error(problem); }, 0, ran).flat();
     const path = folders === String(env.PATH ?? systemPath) ? "" : `PATH=${shellQuote(folders)} `;
