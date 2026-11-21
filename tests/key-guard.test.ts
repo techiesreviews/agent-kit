@@ -1564,6 +1564,17 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     "ssh -o SetEnv=LANG=es -l rc host", "ssh -o 'SetEnv=TARGET=es2020' -l rc1 host"]) {
     assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
   }
+  // sh splits and expands what an unquoted $NAME holds as a pattern after it fills it in, so a value with a pattern or
+  // a blank (or one of IFS's characters) in it could name a shell too; quoted, it is taken as it is (GPT second look).
+  const marker = join(dir, "pattern-shell.txt");
+  for (const [command, env] of [[`timeout 30 $X -c 'echo ran > ${marker}'`, { X: `${dirname(shell)}/[s]h` }], [`timeout 30 \${X} -c 'echo ran > ${marker}'`, { X: `${dirname(shell)}/s?` }],
+    [`timeout 30 $X -c 'echo ran > ${marker}'`, { X: `x ${shell}` }], [`timeout 30 $X -c 'echo ran > ${marker}'`, { X: `xQ${shell}`, IFS: "Q" }]] as const) {
+    const result = sshCommand({ ...base, ...env, GIT_SSH_COMMAND: command }, { worktree: root });
+    assert.match(result.problem ?? "", /cannot be told: sh splits or expands what a \$ fills in, which could name a shell/, command);
+    spawnSync("/bin/sh", ["-c", result.command!], { env: { ...base, ...env }, encoding: "utf8" });
+    assert.ok(!existsSync(marker), command);
+  }
+  assert.equal(sshCommand({ ...base, X: "/tmp/[s]h key", GIT_SSH_COMMAND: `ssh -i "$X" host` }, { worktree: root }).problem, null);
   // A pattern sh expands after the program could name a shell too.
   assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `timeout 30 ${dirname(shell)}/s? -c 'ssh "$@"' ssh` }, { worktree: root }).problem ?? "", /cannot be told: sh expands a pattern in it, which could name a shell/);
   // GIT_SSH naming a shell starts one as well.

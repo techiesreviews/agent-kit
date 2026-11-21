@@ -732,12 +732,13 @@ function shellWords(line) {
         if (at + 1 >= line.length || line[at + 1] === "\n") return null;
         value += `\x04${line[at + 1]}`; at += 2;
       } else if (";&|<>()`\n".includes(char) || (char === "$" && line[at + 1] === "(")) return null;
-      else { value += char === "$" ? "\x01" : /[*?[]/.test(char) ? "\x02" : char === "~" && at === start ? "\x03" : char === "#" && at === start ? "\0" : char; at++; }
+      else { value += char === "$" ? "\x05\x01" : /[*?[]/.test(char) ? "\x02" : char === "~" && at === start ? "\x03" : char === "#" && at === start ? "\0" : char; at++; }
     }
     // marked keeps \x01 where sh fills in a $, \x02 where it expands a pattern, \x03 for a ~ at the start (HOME) and \0
     // for a # there (the rest of the line is a comment); bounded keeps \x04 too, where a quote or a \ ends a $NAME
-    // before sh takes them out ("$E"sh is sh with E empty).
-    words.push({ value: value.replace(/[\0-\x04]/g, ""), marked: value.replace(/\x04/g, ""), bounded: value, start, end: at, plain: !/[\0-\x03]/.test(value) });
+    // before sh takes them out ("$E"sh is sh with E empty), and \x05 before a $ outside quotes, whose value sh splits
+    // and expands as a pattern.
+    words.push({ value: value.replace(/[\0-\x05]/g, ""), marked: value.replace(/[\x04\x05]/g, ""), bounded: value, start, end: at, plain: !/[\0-\x03]/.test(value) });
   }
   return words;
 }
@@ -801,11 +802,19 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     // env started in turn would look its program up by name and read settings of its own (a quoted -S string).
     if (words.some(other => other.start > word.start && namesEnv(other.value))) return unknown("env looks its program up on PATH");
     // A shell started from the line (startedShell), with the words as sh fills them in: a $NAME or ${NAME} from the
-    // environment (a name ends at a quote or a \, bounded), a ~ at the start as HOME. A pattern, or a $ in another form
-    // ($1, ${X:-sh}), could name one unseen.
+    // environment (a name ends at a quote or a \, bounded), a ~ at the start as HOME. A pattern, a $ in another form
+    // ($1, ${X:-sh}), or a value outside quotes that sh would split or expand as a pattern (a blank, one of IFS's
+    // characters, * ? [) could name one unseen.
     const later = words.filter(other => other.start >= word.start);
     if (later.some(other => other.marked.includes("\x02"))) return unknown("sh expands a pattern in it, which could name a shell");
-    const filled = later.map(other => other.bounded.replace(/\x01(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g, (_, braced, bare) => env[braced ?? bare] ?? "").replace(/^\x03/, home(env)).replace(/[\0\x04]/g, ""));
+    const splitters = [...String(env.IFS ?? " \t\n"), "*", "?", "["];
+    let reshaped = false;
+    const filled = later.map(other => other.bounded.replace(/(\x05?)\x01(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g, (_, outside, braced, bare) => {
+      const value = env[braced ?? bare] ?? "";
+      if (outside && splitters.some(char => value.includes(char))) reshaped = true;
+      return value;
+    }).replace(/^\x03/, home(env)).replace(/[\0\x04\x05]/g, ""));
+    if (reshaped) return unknown("sh splits or expands what a $ fills in, which could name a shell");
     if (filled.some(other => other.includes("\x01"))) return unknown("sh fills in a $ in it, which could name a shell");
     const started = startedShell(filled, env, shut);
     if (started) return unknown(`it starts a shell (${started}), and a shell can build PATH= or BASH_ENV= out of pieces${shellAdvice(started, "") ? `; ${shellAdvice(started, "")}` : ""}`);
