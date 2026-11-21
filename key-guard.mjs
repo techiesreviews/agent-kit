@@ -469,7 +469,10 @@ const inFolder = (folder, name) => folder.split("/").includes("..") ? `${folder}
 const toStart = path => { const full = isAbsolute(path) ? path : `${process.cwd()}/${path}`; return full.split("/").includes("..") ? full : resolve(full); };
 // The two folders a build is meant to write, for the comparison: the worktree and the Git folder, links followed.
 const buildFolders = (worktree, common) => [worktree, common].filter(Boolean).map(real);
-const trustedFolders = (env, shut) => pathFolders(env).filter(folder => isAbsolute(folder) && !shut.some(root => inside(real(folder), root)));
+// A folder counts as inside where its path leads there or passes through an entry there (shutIn), so a worktree link
+// that leads out (<worktree>/tools-link -> /usr/bin), which a build can point elsewhere after the check, is not trusted
+// (TOOLS-390 R1-2).
+const trustedFolders = (env, shut) => pathFolders(env).filter(folder => isAbsolute(folder) && !shutIn(folder, shut));
 // The folders of the run's own PATH (runPath): the trusted ones, or the system's own when none is left.
 const runFolders = (env, shut) => { const folders = trustedFolders(env, shut); return folders.length ? folders : systemPath.split(delimiter); };
 // What a bare name stands for in those folders: `file`, the first executable there that does not lead into the
@@ -486,7 +489,7 @@ function lookup(name, env, shut) {
     const file = inFolder(folder, name);
     if (leadsToProc(file)) { refused ??= file; continue; }
     if (!executable(file)) continue;
-    if (!shut.some(root => inside(real(file), root))) return { file, refused };
+    if (!shutIn(file, shut)) return { file, refused };
     refused ??= file;
   }
   return { file: null, refused };
@@ -941,14 +944,18 @@ function shellWords(line) {
 }
 const shellQuote = word => /^[A-Za-z0-9_/.,:+@%=-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
 
-// The run's PATH folders (runFolders) without any that holds a link into the worktree or the Git folder, by any name:
-// git's ssh command gets these, so a program that starts another by its bare name (timeout, sshpass, a wrapper script)
-// finds none there either. The system's own folders stand in where none is left.
+// The run's PATH folders (runFolders) without any that holds a link into the worktree or the Git folder, or one that
+// passes through an entry there (shutIn), by any name: git's ssh command gets these, so a program that starts another
+// by its bare name (timeout, sshpass, a wrapper script) finds none there either. A folder that leads into /proc, or
+// holds a link that does, goes too: /proc/self/cwd is the folder of the process that opens it, which for git's ssh is
+// the worktree, whatever the kit sees there (ssh -> /proc/self/cwd/ssh, TOOLS-390 R1-1). The system's own folders
+// stand in where none is left.
 function cleanFolders(env, shut) {
   const folders = runFolders(env, shut).filter(folder => {
+    if (leadsToProc(folder)) return false;
     let entries = [];
     try { entries = readdirSync(folder, { withFileTypes: true }); } catch { return true; }
-    return !entries.some(entry => entry.isSymbolicLink() && shut.some(root => inside(real(inFolder(folder, entry.name)), root)));
+    return !entries.some(entry => entry.isSymbolicLink() && (leadsToProc(inFolder(folder, entry.name)) || shutIn(inFolder(folder, entry.name), shut)));
   });
   return folders.length ? folders : systemPath.split(delimiter);
 }

@@ -5,7 +5,7 @@ import { hostname, networkInterfaces, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapArgs, bwrapWorks, checkLock, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runProgram, scrubbedEnv, sshCommand, startCommand } from "../key-guard.mjs";
+import { bwrapArgs, bwrapWorks, checkLock, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runPath, runProgram, scrubbedEnv, sshCommand, startCommand } from "../key-guard.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, loopbackRemote, remoteHost } from "../git-safety.mjs";
 import { kitEnv, testHomeFolder } from "./support/kit-env.ts";
@@ -1300,6 +1300,72 @@ test("TOOLS-320: a fetch or push starts git's ssh by its full path, from GIT_SSH
   // A call without the network starts no ssh: nothing changes.
   assert.equal(gitSafety({ worktree: root, env: base }).env.GIT_SSH_COMMAND, undefined);
   assert.ok(!(existsSync(noted) && readFileSync(noted, "utf8").includes("planted")), "the planted ssh never started");
+});
+
+test("TOOLS-390 R1-5: a PATH folder that holds a link into /proc, or leads there itself, leaves git's ssh command's PATH, so a wrapper's exec ssh never starts the worktree's ssh", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-git-ssh-proc-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const root = join(dir, "work"), home = join(dir, "home"), procLinks = join(dir, "proc-links"), wrappers = join(dir, "wrappers"), lead = join(dir, "lead"), noted = join(dir, "noted.txt");
+  for (const folder of [root, home, procLinks, wrappers, lead]) mkdirSync(folder);
+  assert.equal(spawnSync("git", ["-C", root, "init", "-q", "-b", "test"], { env: { ...process.env, HOME: home } }).status, 0);
+  // The lead's ssh outside the worktree notes that it ran; a build left an ssh in the worktree, git's folder.
+  const fakeSsh = (file: string, who: string) => { writeFileSync(file, `#!/bin/sh\necho "${who} $*" >> ${JSON.stringify(noted)}\nexit 1\n`); chmodSync(file, 0o755); };
+  fakeSsh(join(lead, "ssh"), "lead's ssh");
+  fakeSsh(join(root, "ssh"), "planted ssh");
+  // /proc/self/cwd is the folder of the process that opens it: for the wrapper git starts, the worktree.
+  symlinkSync("/proc/self/cwd/ssh", join(procLinks, "ssh"));
+  const cwdFolder = join(dir, "cwd-folder");
+  symlinkSync("/proc/self/cwd", cwdFolder);
+  // The lead's own wrapper, outside the worktree, starts ssh by its bare name.
+  const wrapper = join(wrappers, "git-ssh");
+  writeFileSync(wrapper, "#!/bin/sh\nexec ssh \"$@\"\n"); chmodSync(wrapper, 0o755);
+  const realGit = String(process.env.PATH).split(":").filter(folder => folder.startsWith("/")).map(folder => join(folder, "git")).find(file => existsSync(file))!;
+  for (const first of [procLinks, cwdFolder]) {
+    const env = { ...process.env, HOME: home, PATH: `${first}:${wrappers}:${lead}:/usr/bin:/bin`, GIT_SSH_COMMAND: wrapper,
+      GIT_CONFIG_GLOBAL: undefined, GIT_CONFIG_NOSYSTEM: undefined, GIT_SSH: undefined, GIT_CONFIG_COUNT: undefined } as NodeJS.ProcessEnv;
+    const safe = gitSafety({ worktree: root, env, network: true, git: realGit });
+    assert.equal(safe.problem, null);
+    rmSync(noted, { force: true });
+    spawnSync(realGit, ["-C", root, "ls-remote", "ssh://example.invalid/repo.git"], { env: { ...env, ...safe.env }, encoding: "utf8" });
+    const ran = existsSync(noted) ? readFileSync(noted, "utf8") : "";
+    assert.doesNotMatch(ran, /planted ssh/, first);
+    assert.match(ran, /^lead's ssh .*example\.invalid/, first);
+    assert.equal(safe.env.GIT_SSH_COMMAND, `PATH=${wrappers}:${lead}:/usr/bin:/bin ${wrapper}`, first);
+  }
+});
+
+test("TOOLS-390 R1-6: a PATH folder or entry that passes through a worktree link leading out (tools-link -> a bin folder) is not trusted by the run's PATH, the kit's starts or git's ssh", t => {
+  const dir = mkdtempSync(join(tmpdir(), "kit-tools-link-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const root = join(dir, "work"), home = join(dir, "home"), bin = join(dir, "bin"), homeBin = join(home, "bin");
+  for (const folder of [root, home, bin, homeBin]) mkdirSync(folder);
+  for (const name of ["ssh", "kit-r16-tool"]) { writeFileSync(join(bin, name), "#!/bin/sh\nexit 1\n"); chmodSync(join(bin, name), 0o755); }
+  // A worktree folder that is a link leading out counts as the worktree, as the path is written: a build can point it
+  // elsewhere after the check.
+  const toolsLink = join(root, "tools-link");
+  symlinkSync(bin, toolsLink);
+  const base = { ...process.env, HOME: home, GIT_SSH_COMMAND: undefined, GIT_SSH: undefined } as NodeJS.ProcessEnv;
+  const throughFolder = { ...base, PATH: `${toolsLink}:/usr/bin:/bin` };
+  assert.equal(runPath(throughFolder, { worktree: root }), "/usr/bin:/bin");
+  assert.equal(runProgram("kit-r16-tool", throughFolder, { worktree: root }), "kit-r16-tool", "found in no trusted folder, so started by its bare name with the run's PATH");
+  assert.deepEqual(startCommand("kit-r16-tool", [], throughFolder, { worktree: root, kind: "test" }), ["kit-r16-tool", []]);
+  for (const command of [undefined, "timeout 30 ssh"]) {
+    const ssh = sshCommand({ ...throughFolder, GIT_SSH_COMMAND: command }, { worktree: root });
+    assert.ok(!String(ssh.command).includes(toolsLink), `${command}: ${ssh.command}`);
+  }
+  // An entry of a folder outside that leads through such a link: ~/bin/x -> <worktree>/bin/x, <worktree>/bin -> a bin folder.
+  symlinkSync(bin, join(root, "bin"));
+  for (const name of ["ssh", "kit-r16-tool"]) symlinkSync(join(root, "bin", name), join(homeBin, name));
+  const throughEntry = { ...base, PATH: `${homeBin}:/usr/bin:/bin` };
+  assert.throws(() => runProgram("kit-r16-tool", throughEntry, { worktree: root, kind: "test" }), /kit-r16-tool on PATH is \S+, a link into the worktree or its Git folder/);
+  assert.throws(() => startCommand("kit-r16-tool", [], throughEntry, { worktree: root, kind: "test" }), /kit-r16-tool on PATH is \S+, a link into the worktree or its Git folder/);
+  const direct = sshCommand(throughEntry, { worktree: root });
+  if (direct.problem === null) assert.ok(!String(direct.command).includes(homeBin), String(direct.command));
+  else assert.match(direct.problem, /ssh on PATH is \S+, a link into the worktree or its Git folder/);
+  // A program that starts ssh by its bare name in turn gets PATH without the folder that holds the link.
+  const wrapped = sshCommand({ ...throughEntry, GIT_SSH_COMMAND: "timeout 30 ssh" }, { worktree: root });
+  assert.equal(wrapped.problem, null);
+  assert.match(String(wrapped.command), /^PATH=\/usr\/bin:\/bin \S+\/timeout 30 ssh$/);
 });
 
 test("TOOLS-326: a percent-coded host is read as the bytes git passes on, decoded as UTF-8", () => {
