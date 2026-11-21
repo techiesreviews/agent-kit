@@ -1350,6 +1350,13 @@ test("TOOLS-390 R1-5: a PATH folder that holds a link into /proc, or leads there
   assert.deepEqual(startCommand("kit-r15-tool", [], viaDevLead, { worktree: root, kind: "test" }), [join(lead, "kit-r15-tool"), []]);
   assert.equal(runProgram("kit-r15-off", viaDev, { worktree: root, kind: "test" }), "kit-r15-off");
   assert.deepEqual(startCommand("kit-r15-off", [], viaDev, { worktree: root, kind: "test" }), ["kit-r15-off", []]);
+  // A folder that leads into /dev itself stays on PATH, but its entries that lead on into /proc are refused: /dev/stdin
+  // is /proc/self/fd/0 (review R6-5).
+  const devFolder = join(dir, "dev-folder");
+  symlinkSync("/dev", devFolder);
+  const viaDevFolder = { ...process.env, PATH: `${devFolder}:/usr/bin:/bin` };
+  assert.equal(runPath(viaDevFolder, { worktree: root }), undefined);
+  assert.throws(() => runProgram("stdin", viaDevFolder, { worktree: root, kind: "test" }), /stdin on PATH is \S+, which leads into \/proc\//);
   // A wrapper script, and a program that starts ssh by its bare name (timeout), both run git's ssh for real.
   for (const first of [procLinks, cwdFolder, devCwd, devLinks]) for (const command of [wrapper, "timeout 30 ssh"]) {
     const env = { ...process.env, HOME: home, PATH: `${first}:${wrappers}:${lead}:/usr/bin:/bin`, GIT_SSH_COMMAND: command,
@@ -1414,8 +1421,8 @@ test("TOOLS-390 R1-6: a PATH folder or entry that passes through a worktree link
 });
 
 // The Windows bug itself (a walk that splits C:\ paths on / only) cannot be shown on Linux, whose path functions read no
-// \ or drive letter, and CI has no Windows runner; so this test passes on the code before the fix too. It runs the
-// Windows branch with the platform faked and pins what it must still catch there.
+// \ or drive letter, and CI has no Windows runner; so the junction case passes on the code before the fix too. The test
+// runs the Windows branch with the platform faked, pins what it must still catch there, and shows the branch is taken.
 test("TOOLS-390 SL-1: on Windows a PATH folder is judged by the system's own link reading, so a junction into the worktree, or a folder written inside it, is not trusted", t => {
   const dir = mkdtempSync(join(tmpdir(), "kit-sl1-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -1425,12 +1432,27 @@ test("TOOLS-390 SL-1: on Windows a PATH folder is judged by the system's own lin
   // A link stands in for a junction: an outside folder that leads to <worktree>\tools.
   symlinkSync(tools, junction);
   symlinkSync(bin, join(root, "tools-link"));
+  const viaLink = join(dir, "via-link");
+  symlinkSync(join(root, "tools-link"), viaLink);
+  const dangling = join(dir, "dangling");
+  symlinkSync(join(root, "not-yet"), dangling);
+  const dropped = (folder: string) => assert.equal(runPath({ ...process.env, PATH: `${folder}:/usr/bin:/bin` }, { worktree: root }), "/usr/bin:/bin", folder);
   asPlatform("win32", () => {
     const viaJunction = { ...process.env, PATH: `${junction}:/usr/bin:/bin` };
-    assert.equal(runPath(viaJunction, { worktree: root }), "/usr/bin:/bin");
+    dropped(junction);
     assert.equal(runProgram("kit-sl1-tool", viaJunction, { worktree: root, kind: "test" }), "kit-sl1-tool", "not taken from the junction, so started by its bare name with the run's PATH");
-    assert.equal(runPath({ ...process.env, PATH: `${join(root, "tools-link")}:/usr/bin:/bin` }, { worktree: root }), "/usr/bin:/bin");
+    dropped(join(root, "tools-link"));
+    // A part that is not there yet is read through the junction above it (review R6-4), and a junction to a folder
+    // a build can make later counts where it leads (review R6-1).
+    dropped(join(junction, "later", "sub"));
+    dropped(dangling);
+    // Windows paths ignore case: the worktree written in other letters is still the worktree (review R6-2).
+    dropped(join(dir, "WORK", "bin"));
+    // The Windows branch is taken: it judges by where a folder leads, so one that only passes through a worktree link
+    // on the way is kept there (as the README says), while the walk elsewhere drops it (review R6-3).
+    assert.equal(runPath({ ...process.env, PATH: `${viaLink}:/usr/bin:/bin` }, { worktree: root }), undefined);
   });
+  dropped(viaLink);
 });
 
 test("TOOLS-326: a percent-coded host is read as the bytes git passes on, decoded as UTF-8", () => {
