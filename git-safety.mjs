@@ -205,7 +205,7 @@ export function gitSafety({ worktree, env = process.env, network = false, git = 
   if (network) {
     const lead = name => settings.filter(entry => !ownScope(entry.scope) && entry.key.toLowerCase() === name).at(-1)?.value;
     const configured = lead("core.sshcommand");
-    const ssh = sshRoom(env, { worktree, common, configured }) ?? sshCommand(env, { worktree, common, configured });
+    const ssh = sshRoom(env, { worktree, common, configured, git }) ?? sshCommand(env, { worktree, common, configured });
     if (ssh.command) extra.GIT_SSH_COMMAND = ssh.command;
     // The lead's own choice of ssh kind (the variable, or ssh.variant in their config) stays.
     if (ssh.variant && !env.GIT_SSH_VARIANT && lead("ssh.variant") === undefined) extra.GIT_SSH_VARIANT = ssh.variant;
