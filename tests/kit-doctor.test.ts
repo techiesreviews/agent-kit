@@ -518,6 +518,16 @@ test("doctor reports Node below 24 without searching the user's installations", 
   assert.ok(missing.stdout.includes('✗ settings: no scripts/agents/kit.json; fix: add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }\n'), missing.stdout);
 });
 
+test("doctor shows the Node version without the carriage return Node on Windows ends it with", (t) => {
+  const f = fixture(t);
+  const bin = join(f.directory, "bin");
+  mkdirSync(bin);
+  executable(join(bin, "node"), `if [ "$1" = --version ]; then printf '${process.version}\\r\\n'; exit; fi\nexec '${process.execPath}' "$@"`);
+  const result = f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, KIT_NODE: undefined }, true);
+  assert.ok(result.stdout.includes(`✓ node: ${process.version}\n`), result.stdout);
+  assert.equal(result.stdout.includes("\r"), false);
+});
+
 test("doctor says the kit needs repair, not the settings, when Node runs but kit-lib.mjs does not load", (t) => {
   const f = fixture(t);
   // A kit library without review-findings.mjs, which kit-lib.mjs imports.

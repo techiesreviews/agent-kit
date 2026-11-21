@@ -21,26 +21,16 @@ source "$KIT_HOME/kit-lib.sh"
 if [[ ${1-} == --home && $# == 1 ]]; then printf '%s\n' "$KIT_HOME"; exit 0; fi
 # The project root, the RESULT line and URL hiding are kit-lib.mjs's (one copy each, TOOLS-395), so everything after
 # this needs Node >=24: without it, or with an older one, the front door says so and runs nothing but kit update.
+node_found=true
 if ! kit_node; then
   # kit update is how a machine gets the next kit, and it needs no project: a timer whose service was installed
-  # before it carried a PATH may not reach Node 24. Its RESULT line holds back each URL it could not hide, and the
-  # front door still ends a run that stops without one.
-  if [[ ${1-} == update ]]; then
-    last='' status=0
-    exec {update_fd}< <(KIT_LIB=$KIT_HOME/kit-lib.sh "$KIT_HOME/kit.d/update" "${@:2}")
-    update_pid=$!
-    while IFS= read -r -u "$update_fd" line || [[ -n $line ]]; do printf '%s\n' "$line"; last=$line; done
-    wait "$update_pid" || status=$?
-    if [[ $last != 'RESULT: '* ]]; then
-      if (( status == 0 )); then kit_result ok 'update finished'; else kit_result fail "update exited $status without a RESULT line"; fi
-    fi
-    exit "$status"
-  fi
-  kit_node_missing
-  exit 2
+  # before it carried a PATH may not reach Node 24. It runs below like any command, without the project's root,
+  # commands and settings, and its RESULT line holds back each URL it could not hide.
+  if [[ ${1-} != update ]]; then kit_node_missing; exit 2; fi
+  node_found=false
 fi
 # Outside git the project is the one around this front door, not around KIT_HOME (kitRoot names the rule).
-if ! KIT_ROOT=$(kit_root "$kit_dir"); then
+if [[ $node_found == true ]] && ! KIT_ROOT=$(kit_root "$kit_dir"); then
   printf '%s\n' 'RESULT: fail kit-lib.mjs did not run (its error is above)'
   exit 2
 fi
@@ -51,7 +41,8 @@ if [[ -n ${KIT_COMMANDS_DIR:-} ]]; then
 else
   folders=("$KIT_HOME/kit.d") headings=('Shared commands')
   # Without jq, kit_setting names it on stderr and the shared commands still run, so kit doctor can report it.
-  own=$(kit_setting .commands) || own=''
+  own=''
+  if [[ $node_found == true ]]; then own=$(kit_setting .commands) || own=''; fi
   if [[ -n $own ]]; then
     [[ $own == /* ]] || own=$KIT_ROOT/$own
     # A "commands" naming the shared folder adds nothing; kit doctor says so.
@@ -201,7 +192,7 @@ case $command in
   *) [[ $enforce_result == false ]] || kit_quiet_wait ;;
 esac
 
-KIT_MAIN_ROOT=$(kit_main_root)
+if [[ $node_found == true ]]; then KIT_MAIN_ROOT=$(kit_main_root); fi
 export KIT_ROOT KIT_MAIN_ROOT
 # The playwright setting reaches commands as KIT_PLAYWRIGHT_MODULE, against the real top folder as kit doctor reads it;
 # a person's value wins (a relative one read the same way), and KIT_PLAYWRIGHT_MODULE_DEFAULT marks the front door's
@@ -209,7 +200,8 @@ export KIT_ROOT KIT_MAIN_ROOT
 if [[ -n ${KIT_PLAYWRIGHT_MODULE:-} && $KIT_PLAYWRIGHT_MODULE != "${KIT_PLAYWRIGHT_MODULE_DEFAULT:-}" ]]; then
   playwright=$KIT_PLAYWRIGHT_MODULE own=false
 else
-  playwright=$(kit_setting .playwright 2>/dev/null) || playwright=''
+  playwright=''
+  if [[ $node_found == true ]]; then playwright=$(kit_setting .playwright 2>/dev/null) || playwright=''; fi
   own=true
 fi
 unset KIT_PLAYWRIGHT_MODULE KIT_PLAYWRIGHT_MODULE_DEFAULT

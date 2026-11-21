@@ -766,3 +766,22 @@ test("without Node 24 the front door still runs kit update, and ends with one RE
   assert.equal(stopped.stdout.trimEnd().split("\n").filter(line => line.startsWith("RESULT: ")).length, 1);
   assert.match(stopped.stdout, new RegExp(`RESULT: fail update exited ${stopped.status} without a RESULT line\\n$`));
 });
+
+test("without Node 24 a kit update stopped by SIGTERM ends with the front door's interrupted line", async (t) => {
+  // systemd stops the timer's service with SIGTERM: the run still ends with one RESULT line, as it does with Node.
+  const k = kitRepo(t);
+  k.publish("one");
+  const bin = join(k.directory, "slow-git"), mark = join(k.directory, "git-started");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git"), `#!/bin/sh\ntouch '${mark}'\nexec sleep 10 > /dev/null 2>&1\n`, { mode: 0o755 });
+  const env = { ...k.env, PATH: `${bin}:${pathWithout(k, "node")}`, KIT_NODE: undefined, CLAUDE_NODE_SEARCH_ROOT: join(k.directory, "empty") };
+  const update = spawn(resolve("kit"), ["update"], { cwd: k.directory, env });
+  let stdout = "";
+  update.stdout.setEncoding("utf8").on("data", (text) => { stdout += text; });
+  const closed = new Promise((accept) => update.once("close", (status) => accept(status)));
+  for (let i = 0; i < 250 && !existsSync(mark); i++) await new Promise((accept) => setTimeout(accept, 20));
+  assert.ok(existsSync(mark), "update reached git");
+  update.kill("SIGTERM");
+  assert.equal(await closed, 143);
+  assert.equal(stdout, "RESULT: fail update interrupted\n");
+});
