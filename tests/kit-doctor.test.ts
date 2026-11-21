@@ -502,6 +502,10 @@ test("doctor reports Node below 24 without searching the user's installations", 
   mkdirSync(bin); mkdirSync(empty);
   executable(join(bin, "node"), "printf 'v22.0.0\\n'");
   failure(f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true), "node", true);
+  // Run on its own with no root given, doctor needs Node to find the project, and says so in one RESULT line.
+  const rootless = f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty, KIT_ROOT: undefined, KIT_MAIN_ROOT: undefined }, true);
+  assert.equal(rootless.status, 1, rootless.stderr);
+  assert.equal(rootless.stdout, "RESULT: fail doctor cannot find the project without Node >=24 (system, npx cache or nvm); install Node 24 (nvm) or fix PATH\n");
   // Without Node the skill guard cannot run: a project's skills check says it skipped.
   const settings = JSON.parse(readFileSync(join(f.build, "scripts/agents/kit.json"), "utf8"));
   writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ ...settings, skillGuard: { allow: [".claude/skills/heron"] } }));

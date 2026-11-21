@@ -154,9 +154,10 @@ kit_hide_user_info() {
 # The RESULT line, as kitResult in kit-lib.mjs writes it: the status, then the other words joined by spaces, on one
 # line, with URL user-info hidden; returns 2 for a status other than ok or fail. Status and words go to Node on stdin,
 # split by a NUL (which no shell word holds). Without Node (kit update runs without it) the line keeps an ok or fail
-# status, and its words when they hold no URL; it holds back words it cannot hide, and returns 1 for any other status.
+# status and its words, holding back each word with a URL in it, as it cannot hide the URL's user info (a URL holds
+# no whitespace); it returns 1 for any other status.
 kit_result() {
-  local status=${1-} text code
+  local status=${1-} text code url shown=''
   local IFS=' '
   if (( $# )); then shift; fi
   text="$*"
@@ -168,6 +169,12 @@ kit_result() {
     return 1
   fi
   if [[ $status != ok && $status != fail ]]; then kit_node_missing; return 1; fi
-  [[ $text != *://* ]] || text='(held back: without Node 24 the kit cannot hide a URL'\''s user info)'
-  printf 'RESULT: %s %s\n' "$status" "${text//[$'\n\r']/ }"
+  text=${text//[$'\n\r']/ }
+  # The leftmost match starts its word: a match holds no whitespace and needs ://.
+  while [[ $text =~ [^[:space:]]*://[^[:space:]]* ]]; do
+    url=${BASH_REMATCH[0]}
+    shown+="${text%%"$url"*}(URL held back: no Node 24)"
+    text=${text#*"$url"}
+  done
+  printf 'RESULT: %s %s\n' "$status" "$shown$text"
 }
