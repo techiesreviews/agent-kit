@@ -969,12 +969,12 @@ function all() {
     const modules = join(path, "node_modules");
     if (shared && existsSync(shared) && !existsSync(modules)) {
       try {
-        const real = realpathSync(shared);
-        symlinkSync(real, modules);
+        const sharedPath = realpathSync(shared);
+        symlinkSync(sharedPath, modules);
         if (git(path, "check-ignore", "-q", "node_modules").status !== 0) {
           rmSync(modules);
           mkdirSync(modules);
-          for (const entry of readdirSync(real)) symlinkSync(join(real, entry), join(modules, entry));
+          for (const entry of readdirSync(sharedPath)) symlinkSync(join(sharedPath, entry), join(modules, entry));
           if (git(path, "check-ignore", "-q", "node_modules/").status !== 0) {
             rmSync(modules, { recursive: true, force: true });
             console.log(`${name}: nothing in git ignores node_modules, so the worktree has none; kit pr's checks run without ${shared}`);
