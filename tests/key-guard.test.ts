@@ -1323,6 +1323,11 @@ test("TOOLS-390 R1-5: a PATH folder that holds a link into /proc, or leads there
   // The run's own PATH leaves out a folder that leads into /proc as well, though from this process's folder (outside
   // the worktree) it leads elsewhere: a program the run starts in the worktree finds the worktree there.
   assert.equal(runPath({ ...process.env, PATH: `${cwdFolder}:/usr/bin:/bin` }, { worktree: root }), "/usr/bin:/bin");
+  // The kit's own starts skip that folder too and start the next copy on PATH by its full path (review R2-1).
+  writeFileSync(join(lead, "kit-r15-tool"), "#!/bin/sh\nexit 0\n"); chmodSync(join(lead, "kit-r15-tool"), 0o755);
+  const throughCwd = { ...process.env, PATH: `${cwdFolder}:${lead}:/usr/bin:/bin` };
+  assert.equal(runProgram("kit-r15-tool", throughCwd, { worktree: root, kind: "test" }), join(lead, "kit-r15-tool"));
+  assert.deepEqual(startCommand("kit-r15-tool", [], throughCwd, { worktree: root, kind: "test" }), [join(lead, "kit-r15-tool"), []]);
   for (const first of [procLinks, cwdFolder]) {
     const env = { ...process.env, HOME: home, PATH: `${first}:${wrappers}:${lead}:/usr/bin:/bin`, GIT_SSH_COMMAND: wrapper,
       GIT_CONFIG_GLOBAL: undefined, GIT_CONFIG_NOSYSTEM: undefined, GIT_SSH: undefined, GIT_CONFIG_COUNT: undefined } as NodeJS.ProcessEnv;
@@ -1373,7 +1378,8 @@ test("TOOLS-390 R1-6: a PATH folder or entry that passes through a worktree link
   // A program that starts ssh by its bare name in turn gets PATH without the folder that holds the link.
   const wrapped = sshCommand({ ...withLead, GIT_SSH_COMMAND: "timeout 30 ssh" }, { worktree: root });
   assert.equal(wrapped.problem, null);
-  assert.match(String(wrapped.command), new RegExp(`^PATH=${lead}:/usr/bin:/bin \\S+/timeout 30 ssh$`));
+  assert.ok(String(wrapped.command).startsWith(`PATH=${lead}:/usr/bin:/bin /`), String(wrapped.command));
+  assert.ok(String(wrapped.command).endsWith("/timeout 30 ssh"), String(wrapped.command));
 });
 
 test("TOOLS-326: a percent-coded host is read as the bytes git passes on, decoded as UTF-8", () => {
