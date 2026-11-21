@@ -2019,6 +2019,10 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     const line = wrapper(`copied-env${flags}`, `timeout 30 gnuenv ${flags} -c ssh`, "");
     assert.throws(() => startCommand(line, [], viaCopy, { worktree: root, kind: "test" }), new RegExp(`, which starts a shell \\(${name}\\)`), flags);
   }
+  // ssh's own words that hold an S after a dash still start (Claude review R1-7).
+  for (const command of ["ssh -S/tmp/ctl host", "ssh -oStrictHostKeyChecking=accept-new host", "ssh -oServerAliveInterval=30 host"]) {
+    assert.equal(sshCommand({ ...viaCopy, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
+  }
 });
 
 // GPT second look on be0bc9b: the loader's --argv0 hands busybox the name it acts on, so -sh (a login shell's name)
