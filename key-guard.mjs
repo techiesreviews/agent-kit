@@ -30,7 +30,7 @@
 // one does: it installs with one command.
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, globSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, copyFileSync, globSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -379,6 +379,7 @@ export function bwrapArgs(paths, { writable = null, readOnly = [], readOnlyAfter
     else args.push("--ro-bind", "/dev/null", path);
   }
   args.push(...existingPaths(readOnlyAfter).flatMap(path => ["--ro-bind", path, path]));
+  if (writable !== null) args.push(...masked.flatMap(path => ["--remount-ro", path]));
   return args;
 }
 
@@ -418,10 +419,10 @@ const toml = JSON.stringify;
  * the worktree, the temp folders and the Git common folder, with network on (as before); a review writes nothing and
  * has no network.
  */
-export function codexProfile(kind, common, paths) {
+export function codexProfile(kind, common, paths, temporary) {
   const name = kind === "build" ? "kit-build" : "kit-review";
   const entries = [`":root"="read"`];
-  if (kind === "build") entries.push(`":project_roots"={"."="write"}`, `":tmpdir"="write"`, `":slash_tmp"="write"`, `${toml(common)}="write"`);
+  if (kind === "build") entries.push(`":project_roots"={"."="write"}`, ...(temporary ? [`${toml(temporary)}="write"`] : []), `${toml(common)}="write"`);
   for (const path of paths) entries.push(`${toml(path)}="none"`);
   return ["-c", `default_permissions=${toml(name)}`, "-c", `permissions.${name}.filesystem={${entries.join(",")}}`,
     "-c", `permissions.${name}.network={enabled=${kind === "build"}}`];
@@ -1220,6 +1221,61 @@ function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
   return { paths, problem: null };
 }
 
+// Run state is writable, but never in a home setup folder. A runner supplies a folder in its artifacts so resumed
+// builds keep their session. Direct callers get a private temporary folder, removed by close(). CLI resources remain
+// readable through links; settings and the CLI's own login are private copies so an atomic refresh changes no home file.
+function writeFence(cli, env, { worktree, common, state } = {}) {
+  const roots = [worktree, common].filter(Boolean).map(real), base = real(home(env));
+  if (roots.some(root => inside(base, root))) throw new Error("the write fence cannot make HOME or one of its parents writable; use a worktree and Git folder of their own");
+  // A persistent artifact is only a pointer. Its writable mount lives directly in the host's temporary folder:
+  // the locked run can write inside it but cannot rename its root (its parent stays read-only). Mounting a folder
+  // under the worktree instead would let a previous run swap it for a link after this check and before bwrap starts.
+  let dir, fresh = true;
+  if (state) {
+    try {
+      if (!lstatSync(state).isSymbolicLink()) throw new Error("the write fence state pointer is not a link");
+      dir = readlinkSync(state);
+      if (dirname(dir) !== real(tmpdir()) || !/^ase-write-fence-[A-Za-z0-9]{6}$/.test(basename(dir)) || realpathSync(dir) !== dir)
+        throw new Error("the write fence state pointer does not name a private temporary folder");
+      fresh = false;
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  dir ||= mkdtempSync(join(real(tmpdir()), "ase-write-fence-"));
+  const close = () => { if (!state) rmSync(dir, { recursive: true, force: true }); };
+  try {
+    const folderAt = path => {
+      if (fresh) mkdirSync(path, { recursive: true });
+      if (realpathSync(path) !== path) throw new Error(`the write fence state folder is a link: ${path}`);
+      return path;
+    };
+    const folders = Object.fromEntries(["tmp", "cache", "config", "data", "state"].map(name => {
+      return [name, folderAt(join(dir, name))];
+    }));
+    const extra = { TMPDIR: folders.tmp, TMP: folders.tmp, TEMP: folders.tmp, XDG_CACHE_HOME: folders.cache,
+      npm_config_cache: join(folders.cache, "npm") };
+    const sources = cli === "claude" ? [[env.CLAUDE_CONFIG_DIR || join(home(env), ".claude"), join(dir, "claude"), "CLAUDE_CONFIG_DIR"]]
+      : cli === "grok" ? [[env.GROK_HOME || join(home(env), ".grok"), join(dir, "grok"), "GROK_HOME"]]
+      : cli === "opencode" ? [
+        [join(env.XDG_CONFIG_HOME || join(home(env), ".config"), "opencode"), join(folders.config, "opencode")],
+        [join(env.XDG_DATA_HOME || join(home(env), ".local/share"), "opencode"), join(folders.data, "opencode")],
+      ] : [];
+    for (const [source, target, variable] of sources) {
+      folderAt(target);
+      if (fresh && existingPaths([source]).length) for (const name of readdirSync(source)) {
+        const from = join(source, name), to = join(target, name);
+        // Session databases and caches can be huge. Only configuration, logins and the OpenCode database are copied;
+        // resources (skills, plugins and commands) are read-only links, other runtime folders start empty.
+        if (/^(?:settings(?:\.local)?\.json|\.credentials\.json|auth\.json|config\.toml|opencode\.jsonc?|opencode\.db(?:-wal|-shm)?)$/.test(name) && statSync(from).isFile()) copyFileSync(from, to, constants.COPYFILE_EXCL);
+        else if (["skills", "plugins", "commands", "agents", "hooks"].includes(name)) symlinkSync(resolve(from), to);
+      }
+      if (variable) extra[variable] = target;
+    }
+    if (cli === "opencode") Object.assign(extra, { XDG_CONFIG_HOME: folders.config, XDG_DATA_HOME: folders.data, XDG_STATE_HOME: folders.state });
+    if (state && fresh) symlinkSync(dir, state);
+    return { env: extra, writable: [...roots, dir], close };
+  } catch (error) { if (fresh) rmSync(dir, { recursive: true, force: true }); throw error; }
+}
+
 /**
  * The lock for one agent run, or {off: true} with ASE_KEY_GUARD=off and (with `missing`, the dropped variables and the
  * `warning` for the run's log) for Claude, Grok and OpenCode on a system without bubblewrap. Throws in plain words when
@@ -1235,7 +1291,7 @@ function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
  *  - claudeGuard: for the API route, a script the wrapper runs claude through once it has read its key;
  *  - bwrap: true when bubblewrap stands between the runner and the CLI (it reports a killed CLI as exit 128 + signal).
  */
-export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRoute = false, model = "" }) {
+export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRoute = false, model = "", state }) {
   const plain = (command, args) => [command, args];
   const unlocked = { off: true, env: {}, wrap: plain, helper: plain, close() {} };
   const shut = buildFolders(worktree, common);
@@ -1283,7 +1339,10 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
     const gap = !display ? null : unchecked ? `the X display could not be checked (${absent && process.platform !== "linux" ? "this system has no bubblewrap" : unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : displayWarning;
     const warning = [gap, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
     // Codex locks its own commands; the runner's helpers go through bubblewrap where it runs.
-    return { env: scrub, codex: codexProfile(kind, common, codexPaths(paths)), warning, wrap: direct, helper: bwrapWorks(env, shut) === null ? inside(bwrapArgs(paths)) : direct, close() {} };
+    const fence = kind === "build" ? writeFence(cli, env, { worktree, common, state }) : null;
+    return { env: { ...scrub, ...fence?.env }, codex: codexProfile(kind, common, codexPaths(paths), fence?.env.TMPDIR), warning, wrap: direct,
+      helper: bwrapWorks(env, shut) === null ? inside(bwrapArgs(paths, fence ? { writable: fence.writable } : {})) : direct,
+      close() { fence?.close(); } };
   }
   const problem = bwrapWorks(env, shut);
   if (problem) throw new Error(`cannot lock the key files for this ${kind}: ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
@@ -1293,10 +1352,12 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // Grok's own read-only sandbox cannot start inside this one (agent-run turns it off), so a Grok review gets a read-only
   // lock instead: it writes only its own state folder and the temp folders.
   // The machine's kit stays read-only to the run (kitFolders).
-  const outer = bwrapArgs(paths, { readOnly: kitFolders(env, { worktree, common }), ...(cli === "grok" && kind === "review"
+  const fence = kind === "build" ? writeFence(cli, env, { worktree, common, state }) : null;
+  Object.assign(scrub, fence?.env);
+  const outer = bwrapArgs(paths, { readOnly: kitFolders(env, { worktree, common }), ...(fence ? { writable: fence.writable } : cli === "grok" && kind === "review"
     ? { writable: [join(home(env), ".grok"), env.GROK_HOME, tmpdir(), "/tmp", env.XDG_RUNTIME_DIR].filter(Boolean).map(path => resolve(path)) } : {}) });
   const warning = keyGuardWarning(env, shut);
-  if (!apiRoute) return { env: scrub, bwrap: true, warning, wrap: inside(outer), helper: inside(outer), close() {} };
+  if (!apiRoute) return { env: scrub, bwrap: true, warning, wrap: inside(outer), helper: inside(outer), close() { fence?.close(); } };
   // The API route's wrapper reads its key file first, outside the lock, then runs claude through this script: `<script>
   // claude <arguments>`. Inside the lock the bare name would take a link before the real claude on PATH, so the script
   // starts claude by the full path found here (where PATH holds none, the wrapper has stopped before it gets this far).
@@ -1322,7 +1383,9 @@ function outerMark(env, outer) {
   if (!runtime.startsWith("/") || !outer.some((arg, index) => arg === "--tmpfs" && outer[index + 1] === resolve(runtime))) return { env: {}, args: [], close() {} };
   const token = randomUUID(), dir = mkdtempSync(join(tmpdir(), "ase-outer-lock-")), file = join(dir, markName);
   writeFileSync(file, token);
-  return { env: { KIT_OUTER_LOCK: token }, args: ["--ro-bind", file, join(resolve(runtime), markName)], close() { rmSync(dir, { recursive: true, force: true }); } };
+  const remount = outer.findIndex((word, index) => word === "--remount-ro" && outer[index + 1] === resolve(runtime));
+  if (remount >= 0) outer.splice(remount, 2);
+  return { env: { KIT_OUTER_LOCK: token }, args: ["--ro-bind", file, join(resolve(runtime), markName), ...(remount < 0 ? [] : ["--remount-ro", resolve(runtime)])], close() { rmSync(dir, { recursive: true, force: true }); } };
 }
 /**
  * Whether this process runs inside kit pr's lock for its checks: KIT_OUTER_LOCK matches the mark that lock placed in the
@@ -1612,11 +1675,13 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [] }
   if (problem) refuse(`${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   const { paths, problem: refusal, glue } = searchedPaths("", env, { worktree, common });
   if (refusal) refuse(`${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
-  const outer = bwrapArgs(paths, { readOnly: kitFolders(env, { worktree, common }), readOnlyAfter: readOnly });
+  const fence = writeFence("", env, { worktree, common });
+  Object.assign(scrub, fence.env);
+  const outer = bwrapArgs(paths, { writable: fence.writable, readOnly: kitFolders(env, { worktree, common }), readOnlyAfter: readOnly });
   const mark = outerMark(env, outer);
   // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
   return { env: { ...scrub, ...mark.env }, wrap: (command, args) => [bwrap, [...outer, ...mark.args, "--", command, ...args]], note: null, warning: keyGuardWarning(env, shut),
-    close: mark.close };
+    close() { mark.close(); fence.close(); } };
 }
 
 /**

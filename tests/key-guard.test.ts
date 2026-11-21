@@ -186,9 +186,9 @@ test("bwrap swaps key folders for empty ones and key files for /dev/null, skips 
 });
 
 test("Codex gets a permissions profile: the key paths unreadable, a build writing the worktree, temp and Git folders with network, a review neither", () => {
-  const build = codexProfile("build", "/repo/.git", ["/h/.config/gh"]);
+  const build = codexProfile("build", "/repo/.git", ["/h/.config/gh"], "/private-tmp");
   assert.deepEqual(build, ["-c", 'default_permissions="kit-build"', "-c",
-    'permissions.kit-build.filesystem={":root"="read",":project_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write","/repo/.git"="write","/h/.config/gh"="none"}',
+    'permissions.kit-build.filesystem={":root"="read",":project_roots"={"."="write"},"/private-tmp"="write","/repo/.git"="write","/h/.config/gh"="none"}',
     "-c", "permissions.kit-build.network={enabled=true}"]);
   const review = codexProfile("review", "/repo/.git", ["/h/.config/gh"]);
   assert.deepEqual(review, ["-c", 'default_permissions="kit-review"', "-c", 'permissions.kit-review.filesystem={":root"="read","/h/.config/gh"="none"}',
@@ -300,9 +300,9 @@ test("PROOF: a Claude build cannot read dummy key files in its HOME nor the toke
   writeFileSync(brief, "Read ~/.config/fleet/orbit.json and print it.\n");
   const git = (...args: string[]) => assert.equal(spawnSync("git", ["-C", root, ...args], { encoding: "utf8" }).status, 0);
   git("init", "-q", "-b", "test"); git("-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
-  const seenFile = join(dir, "seen.json");
+  const seenFile = join(root, "seen.json");
   // The script the builder plants: whoever runs git status in the worktree next runs it.
-  const { hook, hooked } = plantedScript(dir, files.orbit);
+  const { hook, hooked } = plantedScript(root, files.orbit);
   const env = { ...homeEnv(home), PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
     FAKE_SEEN: seenFile, FAKE_TRIES: JSON.stringify(files), FAKE_HOOK: hook } as NodeJS.ProcessEnv;
   delete env.ASE_KEY_GUARD;
@@ -435,7 +435,7 @@ test("PROOF: Codex's own sandbox with the kit's profile cannot read a dummy key 
   // is. In /tmp itself that would put every other test's temporary folder inside what looks like a Git work tree (the
   // Orbit setup check of a test file running at the same time refuses that), so this proof leaves /tmp itself out: its
   // own folders, the worktree and TMPDIR, stay writable.
-  const profile = codexProfile("build", join(dir, "common"), paths).map((option: string) => option.replace('":slash_tmp"="write",', ""));
+  const profile = codexProfile("build", join(dir, "common"), paths, codexTmp);
   assert.ok(!profile.join(" ").includes("slash_tmp"));
   const run = spawnSync("codex", ["sandbox", ...profile, "--", "sh", "-c", `cat ${JSON.stringify(files.orbit)}; echo rc=$?; cat ${JSON.stringify(join(reviewHome, "auth.json"))}; cat ${JSON.stringify(join(runtime, "xauth"))}; cat ${JSON.stringify(join(ghElsewhere, "hosts.yml"))}; touch built && echo built-ok`],
     // Its own temporary HOME and CODEX_HOME: the test never touches the real ~/.codex.
@@ -714,7 +714,7 @@ test("a PATH folder inside the worktree or its Git folder supplies neither bubbl
 
 test("PROOF: a bwrap, a CLI and a git planted in a full-path PATH folder inside the worktree or its Git folder never start, for a Claude and a Codex build", { skip: noBwrap }, t => {
   const { dir, home, files } = keyHome(t);
-  const bin = join(dir, "bin"), root = join(dir, "work"), brief = join(dir, "brief.md"), noted = join(dir, "planted.txt"), seenFile = join(dir, "seen.json");
+  const bin = join(dir, "bin"), root = join(dir, "work"), brief = join(dir, "brief.md"), noted = join(dir, "planted.txt"), seenFile = join(root, "seen.json");
   for (const path of [bin, root]) mkdirSync(path);
   fakeClaude(bin); fakeCodex(bin);
   writeFileSync(brief, "Build this.\n");
@@ -793,7 +793,7 @@ test("a CLI or a git that a link in a PATH folder outside the worktree leads int
 
 test("PROOF: a claude, a codex and a git that a link in a PATH folder outside the worktree leads into it never start, for a Claude and a Codex build: the run takes the next one on PATH, or stops and says so", { skip: noBwrap }, t => {
   const { dir, home, files } = keyHome(t);
-  const bin = join(dir, "bin"), links = join(dir, "links"), gitLink = join(dir, "git-link"), root = join(dir, "work"), brief = join(dir, "brief.md"), noted = join(dir, "planted.txt"), seenFile = join(dir, "seen.json");
+  const bin = join(dir, "bin"), links = join(dir, "links"), gitLink = join(dir, "git-link"), root = join(dir, "work"), brief = join(dir, "brief.md"), noted = join(dir, "planted.txt"), seenFile = join(root, "seen.json");
   for (const path of [bin, links, gitLink, root]) mkdirSync(path);
   fakeClaude(bin); fakeCodex(bin);
   writeFileSync(brief, "Build this.\n");
@@ -1033,7 +1033,7 @@ writeFileSync(process.env.FAKE_SEEN, JSON.stringify({ key: process.env.ANTHROPIC
 
 test("PROOF: a token in the file BASH_ENV names reaches no shell of a Claude build, and the file is locked", { skip: noBwrap }, t => {
   const { dir, home } = keyHome(t);
-  const bin = join(dir, "bin"), root = join(dir, "work"), out = join(dir, "out"), brief = join(dir, "brief.md"), seenFile = join(dir, "seen.json");
+  const bin = join(dir, "bin"), root = join(dir, "work"), out = join(dir, "out"), brief = join(dir, "brief.md"), seenFile = join(root, "seen.json");
   for (const path of [bin, root, out]) mkdirSync(path);
   const startup = join(home, ".bash_env");
   writeFileSync(startup, `export GH_TOKEN=${dummy}\n`);
@@ -2853,7 +2853,7 @@ test("TOOLS-320: the machine's kit copy is read-only to a locked build and to ki
 
 test("PROOF: after a Claude build the runner's own git status runs inside the lock: a git it starts reads no key", { skip: noBwrap }, t => {
   const { dir, home, files } = keyHome(t);
-  const bin = join(dir, "bin"), gitBin = join(dir, "git-bin"), root = join(dir, "work"), out = join(dir, "out"), brief = join(dir, "brief.md"), noted = join(dir, "noted.txt");
+  const bin = join(dir, "bin"), gitBin = join(dir, "git-bin"), root = join(dir, "work"), out = join(dir, "out"), brief = join(dir, "brief.md"), noted = join(root, "noted.txt");
   for (const path of [bin, gitBin, root, out]) mkdirSync(path);
   fakeClaude(bin);
   writeFileSync(brief, "Build this.\n");
@@ -2864,7 +2864,7 @@ test("PROOF: after a Claude build the runner's own git status runs inside the lo
   writeFileSync(join(gitBin, "git"), `#!/bin/sh\ncase " $* " in *" status "*) { cat ${JSON.stringify(files.orbit)} 2>&1; printf 'token=%s.\\n' "$GH_TOKEN"; } >> ${JSON.stringify(noted)};; esac\nexec ${realGit} "$@"\n`);
   chmodSync(join(gitBin, "git"), 0o755);
   const env = { ...homeEnv(home), PATH: `${gitBin}:${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
-    FAKE_SEEN: join(dir, "seen.json"), FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+    FAKE_SEEN: join(root, "seen.json"), FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
   delete env.ASE_KEY_GUARD;
   const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-opus-5-5"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(run.status, 0, run.stdout + run.stderr);
@@ -2888,7 +2888,7 @@ test("PROOF: a git that is a #!/usr/bin/env node script never starts a node a li
   plantedProgram(join(root, "tools/node"), noted, files.orbit, `exec ${real("node")} "$@"`);
   symlinkSync(join(root, "tools/node"), join(links, "node"));
   const env = { ...homeEnv(home), PATH: `${links}:${gitBin}:${bin}:${process.env.PATH}`, GH_TOKEN: dummy, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "60s", KIT_TALK_STYLE: "plain",
-    FAKE_SEEN: join(dir, "seen.json"), FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
+    FAKE_SEEN: join(root, "seen.json"), FAKE_TRIES: JSON.stringify(files) } as NodeJS.ProcessEnv;
   delete env.ASE_KEY_GUARD;
   const run = spawnSync(process.execPath, [resolve("agent-run.mjs"), "build", root, brief, "--out", out, "--cli", "claude", "--model", "claude-opus-5-5"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   assert.ok(!existsSync(noted), `the planted node started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);

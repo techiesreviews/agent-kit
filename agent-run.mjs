@@ -955,7 +955,8 @@ async function executeRun(options, out, previous, update, brief) {
     // The key lock (TOOLS-285): set up before the CLI starts; a lock that cannot be set up stops the run.
     try {
       guard = keyGuard({ cli: options.cli, kind: options.kind, common, worktree: options.worktree, model: options.model, apiRoute: options.cli === "claude" && apiRoute(process.env).on,
-        env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env });
+        env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env,
+        state: options.kind === "build" ? join(out, "cli-state") : undefined });
     } catch (error) {
       // The run's log says why it stopped, as the terminal does.
       appendFileSync(log, `problem: ${error.message}\n`);
