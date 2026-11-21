@@ -682,18 +682,23 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   const pwshValued = ["executionpolicy", "ex", "ep", "workingdirectory", "wd", "outputformat", "o", "of", "inputformat", "inp", "if", "configurationname", "config", "custompipename", "windowstyle", "w"];
   const pwshSwitches = ["interactive", "i", "login", "l", "mta", "sta", "noexit", "noe", "nologo", "nol", "noninteractive", "noni", "noprofile", "nop", "noprofileloadtime", "sshservermode", "sshs", "version", "v"];
   const pwshName = word => /^([-–—―])\1?([A-Za-z]+)$/.exec(word)?.[2]?.toLowerCase();
-  const longKnown = { fish: ["no-config", "private", "login", "interactive", "no-execute"], nu: ["no-config-file", "no-std-lib", "no-history", "login", "interactive"] }[kind]
-    ?? ["norc", "noprofile", "posix", "login", "noediting", "restricted", "verbose", "no-rcs", "no-globalrcs"];
-  const shortKnown = { fish: /^-[ilnNPvh]+$/, nu: /^-[ilnvh]+$/ }[kind] ?? /^[-+](?=[A-Za-z])[abefhiklmnpruvxBCEHP]*[oO]?$/;
-  const valued = option => kind === "pwsh" ? pwshValued.includes(pwshName(option)) : !kind && /[oO]$/.test(option) && shortKnown.test(option);
-  const known = option => kind === "pwsh"
+  // Shells read the same letters differently: zsh's -O takes no value and its -b ends the options (so does tcsh's), and
+  // rc's -o takes none, so only the sh family and zsh get short options, and any other shell gets none (Claude review,
+  // round 24; GPT second look, round 25). An option that takes a value and ends the line would take the script itself.
+  const shRules = word => shellNamed(word, "zsh") ? "zsh" : shellNamed(word, "sh|ash|bash|rbash|dash|ksh|ksh93|mksh|lksh|pdksh|oksh|loksh|yash|posh") ? "sh" : null;
+  const family = kind ?? shRules(real(found)) ?? shRules(name);
+  const longKnown = { fish: ["no-config", "private", "login", "interactive", "no-execute"], nu: ["no-config-file", "no-std-lib", "no-history", "login", "interactive"],
+    sh: ["norc", "noprofile", "posix", "login", "noediting", "restricted", "verbose"], zsh: ["no-rcs", "no-globalrcs", "login", "verbose"] }[family] ?? [];
+  const shortKnown = { fish: /^-[ilnNPvh]+$/, nu: /^-[ilnvh]+$/, sh: /^[-+](?=[A-Za-z])[aefhiklmnpruvxBCEHP]*[oO]?$/, zsh: /^[-+](?=[A-Za-z])[aefhiklmnpruvxBCEHP]*o?$/ }[family];
+  const valued = option => family === "pwsh" ? pwshValued.includes(pwshName(option)) : (family === "sh" || family === "zsh") && /[oO]$/.test(option) && shortKnown.test(option);
+  const known = option => family === "pwsh"
     ? valued(option) || pwshSwitches.includes(pwshName(option))
-    : shortKnown.test(option) || (option.startsWith("--") && longKnown.includes(option.slice(2)));
+    : Boolean(shortKnown?.test(option)) || (option.startsWith("--") && longKnown.includes(option.slice(2)));
   let handed = false;
   for (let i = 0; i < options.length && !handed; i++) {
-    if (kind !== "pwsh" && (options[i] === "--" || options[i] === "-")) { handed = i + 1 < options.length; break; }
+    if (family && family !== "pwsh" && (options[i] === "--" || options[i] === "-")) { handed = i + 1 < options.length; break; }
     if (!known(options[i])) handed = true;
-    else if (valued(options[i])) i++;
+    else if (valued(options[i])) { i++; handed = i >= options.length; }
   }
   if (namesShell(found, names, shut) && handed) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1, names);

@@ -376,8 +376,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     `-Command` and its short forms) and gets only options: no script of its own, nothing after `--` or a lone `-`, and
     no `-s` (a value after `-o` or `-O`, and after pwsh's options that take one, such as `-ExecutionPolicy`, still
     counts). Options are read in order by that shell's rules, and a word taken as a value is never read as an option:
-    other shells get only a short list of plain options that load no file (`-eu`, `+x`, `--norc`, `--noprofile`; bash
-    runs `—payload` as a script, and `bash --rcfile -o payload` runs `payload`), and pwsh only the option names and
+    the sh family, zsh, fish and nu get only a short list of plain options that load no file (`-eu`, `+x`, `--norc`,
+    `--noprofile`; bash runs `—payload` as a script, `bash --rcfile -o payload` runs `payload`, and zsh's `-b` ends its
+    options), with a value only after the sh family's `-o` and `-O` and zsh's `-o`, and never at the end of the line;
+    other shells (rc, es, csh, tcsh and the like) get no options at all; and pwsh only the option names and
     short forms it documents, written out in full, apart from `-ConfigurationFile` and `-SettingsFile`, which load
     code from a file (it runs `-payload.ps1`, or a `-File:` word, as a script). The run's PATH leaves those folders out, so
     `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
