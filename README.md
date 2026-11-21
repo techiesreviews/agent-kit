@@ -347,8 +347,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     as its program or among its words (`busybox env`, `timeout 30 env`), or that sets anywhere in it (joined to an `-S`
     option or inside one quoted string too) `PATH` or a shell variable that runs code from elsewhere: `BASH_ENV`, `ENV`,
     a `BASH_FUNC_<name>%%` function, `SHELLOPTS`, `BASHOPTS`, `PS4`, `ZDOTDIR`, or `SHELL` (the shell ssh runs a
-    `ProxyJump` through) (TOOLS-326, TOOLS-329). An env under
-    another name (GNU env installed as `gnuenv`) joins a name split by quotes, so `'PA''TH=…'` counts as `PATH=` too, and
+    `ProxyJump` through) (TOOLS-326, TOOLS-329). An env under another name (GNU env installed as `gnuenv`) joins a
+    name split by quotes, so `'PA''TH=…'` counts as `PATH=` too, and
     an `-S` string among the words (`--split` and other short forms of `--split-string` too) that holds `${…}`, which
     that env could fill in as `PATH=`, is refused; so is a word, or a piece of a `sh -c '…'` string, with only name
     characters before a `$` and an `=` after it (`"PA${EMPTY}TH=…"`), or with a `$(…)` or backtick in it, while
@@ -375,8 +375,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     `-C` and any start of `--command` or `--init-command`, nu's `-e`, `--commands` and `--execute`, or pwsh's
     `-Command` and its short forms) and gets only options: no script of its own, nothing after `--` or a lone `-`, and
     no `-s` (a value after `-o` or `-O`, and after pwsh's options that take one, such as `-ExecutionPolicy`, still
-    counts). The run's PATH leaves
-    those folders out, so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
+    counts). Options are read by that shell's rules: other shells get plain `-x`, `+x` and `--name` options only (bash
+    runs `—payload` as a script), and pwsh only the option names and short forms it documents, written out in full
+    (it runs `-payload.ps1`, or a `-File:` word, as a script). The run's PATH leaves those folders out, so
+    `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
     node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is
     its own Node), so the kit's helpers in its process (the review and the second look, and the reviewer they start)
