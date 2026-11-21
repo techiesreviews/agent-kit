@@ -1831,7 +1831,10 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // round 21).
   for (const [name, words] of [["shell-payload", `bash ${join(root, "payload")}`], ["shell-relative", "bash payload"], ["shell-stdin", "bash -s"],
     ["shell-stdin-bundle", "bash -es"], ["shell-dashes", "bash -- -e"], ["shell-dash", "bash - -e"], ["pwsh-file", "pwsh -NoProfile -File payload"],
-    ["pwsh-file-short", "pwsh -f payload"], ["pwsh-switch", "pwsh -NoProfile payload.ps1"], ["pwsh-stdin", "pwsh -NoProfile -"]]) {
+    ["pwsh-file-short", "pwsh -f payload"], ["pwsh-switch", "pwsh -NoProfile payload.ps1"], ["pwsh-stdin", "pwsh -NoProfile -"],
+    // A word with a long dash is a script to bash, and so is any word pwsh does not know (GPT second look, round 23).
+    ["shell-long-dash", "bash —payload"], ["shell-long-dash-option", "bash –e"], ["pwsh-unknown", "pwsh -payload.ps1"],
+    ["pwsh-file-colon", "pwsh -File:payload.ps1"], ["pwsh-short-unknown", "pwsh -set x"], ["pwsh-dashes", "pwsh -NoProfile --"]]) {
     const file = wrapper(name, "X=1", words);
     const why = new RegExp(`hands the shell \\(${words.split(" ")[0]}\\) a script or -s`);
     assert.throws(() => start(file), why, words);
@@ -1839,8 +1842,13 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   }
   // Option values still count, and an ssh line with key files outside the worktree still starts.
   assert.doesNotThrow(() => start(wrapper("pwsh-valued", "X=1", "pwsh -NoProfile -ep Bypass -WorkingDirectory /tmp")));
+  assert.doesNotThrow(() => start(wrapper("pwsh-long-dash", "X=1", "pwsh —NoProfile –nol")));
+  // A -- that ends the line hands bash nothing besides the script (Claude review, round 22).
+  const dashes = wrapper("own-shell-dashes", "X=1", "bash -eu --");
+  assert.deepEqual(start(dashes), ["/usr/bin/env", ["X=1", bash, "-eu", "--", dashes]]);
   for (const words of ["ssh -i ~/.ssh/id_ed25519 -o IdentityFile=/etc/ssh/key -o UserKnownHostsFile=/etc/ssh/known", "ssh -i/etc/ssh/key -F/etc/ssh/ssh_config"]) {
-    assert.doesNotThrow(() => start(wrapper(`ssh-keys-${words.length}`, "X=1", words)), words);
+    const keys = wrapper(`ssh-keys-${words.length}`, "X=1", words);
+    assert.deepEqual(start(keys), ["/usr/bin/env", ["X=1", join(bin, "ssh"), ...words.split(" ").slice(1), keys]], words);
     assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: words }, { worktree: root }).problem, null, words);
   }
   // SHELL is the shell ssh runs a ProxyJump through, so a line does not set it (Claude review, round 21).
