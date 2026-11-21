@@ -1364,19 +1364,25 @@ function roomWorks(env, shut) {
 // does not start, since the main worktree could stay visible.
 function coreWorktree(env, git, common) {
   const [program, ...before] = [git].flat();
-  if (!program) return { problem: "git is not on PATH outside the worktree and the Git folder, so the Git folder's core.worktree cannot be read" };
+  if (!program) return { problem: "git is not on PATH outside the worktree and the Git folder, so the Git folder's core.worktree cannot be read; put git from outside them on PATH" };
   const clean = { ...env, GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_COMMON_DIR: undefined };
   const result = spawnSync(program, [...before, "--git-dir", common, "config", "--includes", "--show-scope", "-z", "--get-all", "core.worktree"],
     { env: clean, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15_000 });
   if (result.status === 1 && !result.stdout) return { path: null };
   if (result.status !== 0) {
     const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
-    return { problem: `git cannot read the Git folder's core.worktree (${said})` };
+    return { problem: `git cannot read the Git folder's core.worktree (${said}); fix the Git folder's config (git config --list shows the line)` };
   }
   const parts = result.stdout.split("\0");
   let value = null;
   for (let at = 0; at + 1 < parts.length; at += 2) if (parts[at] === "local" || parts[at] === "worktree") value = parts[at + 1];
-  return { path: value ? resolve(common, value) : null };
+  return { path: value ? onDisk(common, value) : null };
+}
+
+// A path a build may have written into the Git folder, joined as the file system walks it: `..` is left in place, so
+// that realpathSync.native takes it after the link before it (git's way), not by cutting text as resolve() does.
+function onDisk(base, value) {
+  return isAbsolute(value) ? value : `${base}/${value}`;
 }
 
 // The folders the room swaps for empty ones: the worktree, the Git folder, the main worktree (the folder that holds the
@@ -1384,16 +1390,16 @@ function coreWorktree(env, git, common) {
 // agree as git checks them (worktrees/<name>/gitdir names a .git file whose gitdir line leads back to that entry).
 // A build can write the Git folder, so a folder found there is skipped when it is /, holds the home folder or a system
 // folder, or lies inside a system folder (the loader and libc, /etc/ssh, /proc/<pid>): hiding one would stop every
-// fetch, or send the search for ssh on to the next PATH folder. Only a folder below /usr/local or /usr/src, where
+// fetch, or send the search for ssh on to the next PATH folder. Only a folder below /usr/local/src or /usr/src, where
 // checkouts live (/usr/local/src/project), is hidden there, unless it is or holds a PATH folder. Real paths of folders
 // that exist, so bubblewrap makes no folder on the real file system; one inside another is hidden with it.
 // {folders, problem}: problem when core.worktree cannot be read (coreWorktree).
 function roomFolders(env, worktree, common, git) {
-  const real = path => { try { return realpathSync(path); } catch { return null; } };
+  const real = path => { try { return realpathSync.native(path); } catch { return null; } };
   const system = ["/bin", "/dev", "/etc", "/lib", "/lib64", "/proc", "/sbin", "/sys", "/usr"].map(real).filter(Boolean);
   const kept = [...system, ...[home(env), "/opt"].map(real).filter(Boolean)];
   const onPath = pathFolders(env).filter(folder => isAbsolute(folder)).map(real).filter(Boolean);
-  const checkouts = ["/usr/local", "/usr/src"].map(real).filter(Boolean);
+  const checkouts = ["/usr/local/src", "/usr/src"].map(real).filter(Boolean);
   const found = [];
   const add = (folder, fromGit) => {
     const path = folder && real(folder);
@@ -1415,9 +1421,9 @@ function roomFolders(env, worktree, common, git) {
     try { names = readdirSync(join(common, "worktrees")); } catch { /* No linked worktrees. */ }
     for (const name of names) try {
       const entry = join(common, "worktrees", name);
-      const gitFile = resolve(entry, readFileSync(join(entry, "gitdir"), "utf8").trim());
+      const gitFile = onDisk(entry, readFileSync(join(entry, "gitdir"), "utf8").trim());
       const back = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(gitFile, "utf8"))?.[1];
-      if (back && real(resolve(dirname(gitFile), back)) === real(entry)) add(dirname(gitFile), true);
+      if (back && real(onDisk(dirname(gitFile), back)) === real(entry)) add(dirname(gitFile), true);
     } catch { /* Not a worktree's entry. */ }
   }
   return { folders: found.filter(path => !found.some(other => other !== path && inside(path, other))).sort(), problem };
