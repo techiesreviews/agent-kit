@@ -1371,7 +1371,8 @@ function coreWorktree(env, git, common) {
   if (result.status === 1 && !result.stdout) return { path: null };
   if (result.status !== 0) {
     const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
-    return { problem: `git cannot read the Git folder's core.worktree (${said}); fix the Git folder's config (git config --list shows the line)` };
+    const fix = typeof result.status === "number" ? "; fix the Git folder's config (git config --list shows the line)" : "";
+    return { problem: `git cannot read the Git folder's core.worktree (${said})${fix}` };
   }
   const parts = result.stdout.split("\0");
   let value = null;
@@ -1391,20 +1392,19 @@ function onDisk(base, value) {
 // A build can write the Git folder, so a folder found there is skipped when it is /, holds the home folder or a system
 // folder, or lies inside a system folder (the loader and libc, /etc/ssh, /proc/<pid>): hiding one would stop every
 // fetch, or send the search for ssh on to the next PATH folder. Only a folder below /usr/local/src or /usr/src, where
-// checkouts live (/usr/local/src/project), is hidden there, unless it is or holds a PATH folder. Real paths of folders
+// checkouts live (/usr/local/src/project), is hidden there, as any worktree is, PATH folders in it too. Real paths of folders
 // that exist, so bubblewrap makes no folder on the real file system; one inside another is hidden with it.
 // {folders, problem}: problem when core.worktree cannot be read (coreWorktree).
 function roomFolders(env, worktree, common, git) {
   const real = path => { try { return realpathSync.native(path); } catch { return null; } };
   const system = ["/bin", "/dev", "/etc", "/lib", "/lib64", "/proc", "/sbin", "/sys", "/usr"].map(real).filter(Boolean);
   const kept = [...system, ...[home(env), "/opt"].map(real).filter(Boolean)];
-  const onPath = pathFolders(env).filter(folder => isAbsolute(folder)).map(real).filter(Boolean);
   const checkouts = ["/usr/local/src", "/usr/src"].map(real).filter(Boolean);
   const found = [];
   const add = (folder, fromGit) => {
     const path = folder && real(folder);
     try { if (!path || !statSync(path).isDirectory() || found.includes(path)) return; } catch { return; }
-    const checkout = checkouts.some(other => path !== other && inside(path, other)) && !onPath.some(other => inside(other, path));
+    const checkout = checkouts.some(other => path !== other && inside(path, other));
     const systemOwned = system.some(other => inside(path, other)) && !checkout;
     if (fromGit && (path === "/" || kept.some(other => inside(other, path)) || systemOwned)) return;
     found.push(path);
@@ -1462,12 +1462,16 @@ function roomCheck(env, worktree, common, git) {
 
 // The words of a command line before its first shell operator outside quotes (a redirection, ;, |, &, a subshell), as
 // shellWords reads them: git tells its kind of ssh from the first word, whatever follows it.
+// A $(…), `…` or a \ before a line break inside double quotes ends the words before the word that holds it, so the
+// first word still counts (plink -pw "$(cat file)").
 function leadingWords(line) {
-  let quote = null;
+  let quote = null, wordStart = 0;
   for (let at = 0; at < line.length; at++) {
     const char = line[at];
+    if (quote === '"' && (char === "`" || (char === "$" && line[at + 1] === "(") || (char === "\\" && line[at + 1] === "\n"))) return shellWords(line.slice(0, wordStart));
     if (quote) { if (char === quote) quote = null; else if (quote === '"' && char === "\\") at++; }
     else if (char === "'" || char === '"') quote = char;
+    else if (char === " " || char === "\t") wordStart = at + 1;
     else if (char === "\\") at++;
     else if (";&|<>()`\n".includes(char) || (char === "$" && line[at + 1] === "(")) return shellWords(line.slice(0, at));
   }
