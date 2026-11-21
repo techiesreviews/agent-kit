@@ -531,10 +531,12 @@ const jumpOf = (words, i) => jumpOption.exec(words[i].replace(/["'\\]/g, ""))?.[
 const startedShell = (words, env, shut) => {
   // A ProxyJump's command holds the -F path as it is and the host (%h, from HostName too) in single quotes: a host
   // written in these words is checked here, one git adds from the push address is not (the README says so).
-  const jumping = words.some((_, i) => !/^(?:none)?$/i.test(jumpOf(words, i)?.trim() ?? ""));
+  // ssh keeps quotes and \ in an option's value, so only a plain none turns the option off: "none" and n\one are
+  // values like any other (GPT second look, round 9).
+  const jumping = words.some((word, i) => { const jump = jumpOf(words, i)?.trim(); return jump !== undefined && (!/^(?:none)?$/i.test(jump) || /["'\\]/.test(word)); });
   for (const [i, word] of words.entries()) {
     const option = viaShell.exec(word.replace(/["'\\]/g, ""));
-    if (option && option[2].trim().toLowerCase() !== "none") return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
+    if (option && !(option[2].trim().toLowerCase() === "none" && /(?:^|[\s=])none\s*$/i.test(word))) return `${option[1].toLowerCase() === "proxy" ? "ProxyCommand" : "LocalCommand"}, which ssh runs through the user's shell`;
     const jump = jumpOf(words, i);
     if (jump !== null && !jump.trim().split(",").every(name => /^[\w.@:[\]][\w.@:[\]-]*$/.test(name))) return "ProxyJump with more than host names in it, which ssh runs through the user's shell";
     if (jumping && (word.includes("'") || !/^[\w./@:,+~-]*$/.test(flagValue(words, i, "F") ?? ""))) return "ProxyJump beside a ' or an -F path with more than plain characters in it, which ssh writes into the command it runs through the user's shell";
@@ -818,6 +820,8 @@ export function sshCommand(env = process.env, { worktree, common, configured } =
     // sh may set IFS back to blanks at its start (dash does), so those count whatever IFS the run has.
     const splitters = [" ", "\t", "\n", ...String(env.IFS ?? ""), "*", "?", "["];
     let reshaped = false;
+    // Only a ~ alone or before a / is HOME: ~user is that user's home, ~+ and ~- other folders, and ~"…" stays a ~.
+    if (later.some(other => /^\x03(?!\/|$)/.test(other.bounded))) return unknown("sh fills in a ~ in it from somewhere other than HOME, which could name a shell");
     const filled = later.map(other => other.bounded.replace(/(\x05?)\x01(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g, (_, outside, braced, bare) => {
       const value = env[braced ?? bare] ?? "";
       if (outside && splitters.some(char => value.includes(char))) reshaped = true;

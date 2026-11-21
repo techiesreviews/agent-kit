@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, networkInterfaces, tmpdir, userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapArgs, bwrapWorks, checkLock, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runProgram, scrubbedEnv, sshCommand, startCommand } from "../key-guard.mjs";
@@ -1584,6 +1584,25 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     assert.ok(!existsSync(marker), command);
   }
   assert.equal(sshCommand({ ...base, X: "/tmp/[s]h key", GIT_SSH_COMMAND: `ssh -i "$X" host` }, { worktree: root }).problem, null);
+  // Only a ~ alone or before a / is HOME: ~user is that user's home, wherever HOME points (GPT second look, round 9).
+  const account = userInfo();
+  symlinkSync(bash, join(dir, "tilde-shell"));
+  const viaAccount = `timeout 30 ~${account.username}/${relative(account.homedir, join(dir, "tilde-shell"))} -c 'echo ran > ${marker}'`;
+  for (const command of [viaAccount, `timeout 30 ~+/x -c 'echo ran > ${marker}'`, `timeout 30 ~"/x" -c 'echo ran > ${marker}'`]) {
+    const result = sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root });
+    assert.match(result.problem ?? "", /cannot be told: sh fills in a ~ in it from somewhere other than HOME, which could name a shell/, command);
+    spawnSync("/bin/sh", ["-c", result.command!], { env: base, encoding: "utf8" });
+    assert.ok(!existsSync(marker), command);
+  }
+  assert.match(refusedWith({ ...base, GIT_SSH_COMMAND: viaAccount }), /^kit: git's ssh command \(.*\) cannot be told: sh fills in a ~ in it from somewhere other than HOME/m);
+  // ssh keeps quotes and \ in an option's value, so only a plain none turns ProxyCommand, LocalCommand or ProxyJump off.
+  for (const [command, why] of [[`ssh -o 'ProxyCommand="none"' host`, /it starts a shell \(ProxyCommand/], [`ssh -o 'ProxyCommand=n\\one' host`, /it starts a shell \(ProxyCommand/],
+    [`ssh -o PermitLocalCommand=yes -o 'LocalCommand "none"' host`, /it starts a shell \(LocalCommand/], [`ssh -o 'ProxyJump="none"' -F 'a b' host`, /it starts a shell \(ProxyJump beside a '/]] as const) {
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", why, command);
+  }
+  for (const command of ["ssh -o ProxyCommand=none host", "ssh -o 'LocalCommand none' host", "ssh -o ProxyJump=none -F 'a b' host", "ssh -o 'ProxyCommand = none' host"]) {
+    assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem, null, command);
+  }
   // sh may set IFS back to blanks at its start (dash does), so an empty IFS from the run still splits $X at blanks
   // (GPT second look, round 8).
   const emptyIfs = { ...base, IFS: "", X: "-v -J jump.example.invalid", GIT_SSH_COMMAND: `ssh $X -o "HostName=a'b" host` };
