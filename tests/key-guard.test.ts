@@ -5,7 +5,7 @@ import { hostname, networkInterfaces, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapArgs, bwrapWorks, checkLock, cleanRoomReport, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runPath, runProgram, scrubbedEnv, sshCommand, startCommand } from "../key-guard.mjs";
+import { bwrapArgs, bwrapWorks, checkLock, cleanRoomReport, codexPaths, kitFolders, codexProfile, existingPaths, keyGuard, keyGuardReport, keyPathsWarning, linkTargets, lockedPaths, outerLock, resetBwrapProbe, runPath, runProgram, scrubbedEnv, sshCommand, sshRoom, startCommand } from "../key-guard.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, loopbackRemote, remoteHost } from "../git-safety.mjs";
 import { kitEnv, testHomeFolder } from "./support/kit-env.ts";
@@ -1672,12 +1672,13 @@ test("TOOLS-390 room: a folder the Git folder names is hidden only as git would 
   // core.worktree in the Git folder's config names the main worktree; / or a system folder there is skipped too.
   const main = join(dir, "main");
   mkdirSync(main);
-  // Inside a system folder only a folder below /usr/local or /usr/src that is not and holds no PATH folder is hidden:
-  // a checkout there (/usr/local/src stands in for one). The loader and libc, /etc/ssh and the rest are not.
+  // Inside a system folder only a folder below /usr/local/src or /usr/src that is not a PATH folder and holds none is
+  // hidden: a checkout there. The loader and libc, /etc/ssh, a locally built ssh's /usr/local/etc and the rest are not.
   const values: [string, string[]][] = [[main, [root, linked, main]], ["../../main", [root, linked, main]], ["/", [root, linked]], ["/etc", [root, linked]],
     ["/usr/bin", [root, linked]], ["/usr/share", [root, linked]], ["/usr/lib", [root, linked]], ["/dev", [root, linked]], ["/usr/local", [root, linked]]];
-  if (existsSync("/etc/ssh")) values.push(["/etc/ssh", [root, linked]]);
-  if (existsSync("/usr/local/src")) values.push([realpathSync("/usr/local/src"), [root, linked, realpathSync("/usr/local/src")]]);
+  for (const folder of ["/etc/ssh", "/usr/local/etc", "/usr/local/lib", "/usr/local/src", "/usr/src"]) if (existsSync(folder)) values.push([folder, [root, linked]]);
+  const checkout = existsSync("/usr/src") && readdirSync("/usr/src", { withFileTypes: true }).find(item => item.isDirectory());
+  if (checkout) values.push([realpathSync(join("/usr/src", checkout.name)), [root, linked, realpathSync(join("/usr/src", checkout.name))]]);
   for (const [value, expected] of values) {
     assert.equal(spawnSync("git", ["-C", root, "config", "core.worktree", value]).status, 0);
     assert.deepEqual(hidden(), [...expected].sort(), value);
@@ -1721,10 +1722,23 @@ test("TOOLS-390 room: a folder the Git folder names is hidden only as git would 
   writeFileSync(join(root, ".git/config"), `${plain}[core]\n\tworktree = ${main.slice(0, -2)}\\\n${main.slice(-2)}\n`);
   assert.deepEqual(hidden(), [root, linked, main].sort(), "a continued line");
   inRoom(fetch(base), "a continued line");
+  // `..` after a link, as git walks it: link/.. with link -> <main>/sub is the main worktree, not the Git folder.
+  mkdirSync(join(main, "sub"));
+  symlinkSync(join(main, "sub"), join(root, ".git/link"));
+  writeFileSync(join(root, ".git/config"), `${plain}[core]\n\tworktree = link/..\n`);
+  assert.deepEqual(hidden(), [root, linked, main].sort(), "link/..");
+  inRoom(fetch(base), "link/..");
+  // A core.worktree from outside the repository's own config (here the environment) is not the main worktree.
+  writeFileSync(join(root, ".git/config"), plain);
+  assert.deepEqual(hidden({ ...base, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.worktree", GIT_CONFIG_VALUE_0: elsewhere }), [root, linked].sort(), "core.worktree from the environment");
 });
 
 test("TOOLS-390 room: where git cannot read the Git folder's core.worktree, the room does not start", { skip: noRoom }, t => {
   const { root, base } = roomRepo(t, "unread");
+  // No git outside the worktree and the Git folder (the system folders are searched too, so none is given here): the
+  // build's git never reads the config, so the room does not start.
+  const noGit = String(sshRoom(base, { worktree: root, common: join(root, ".git"), configured: "", git: [] })?.command);
+  assert.match(noGit, /^printf .*the clean room for git.*s ssh cannot start: git is not on PATH outside the worktree/, noGit);
   // A config git refuses to read: the main worktree it names could stay visible, so the room says it cannot start
   // (gitSafety's own read of the config stops a fetch even before that).
   writeFileSync(join(root, ".git/config"), `${readFileSync(join(root, ".git/config"), "utf8")}[core\n`);
