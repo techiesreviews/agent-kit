@@ -314,7 +314,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
       so ssh still reads its keys, its agent and `known_hosts`. The other worktrees are the main one (the folder that
       holds the Git folder as `.git`, or the one its `core.worktree` names) and each linked one whose entry in the Git
       folder and `.git` file point at each other, as git checks them. Since a build can write the Git folder, a folder
-      named there is not hidden when it is `/` or holds the home folder or a system folder (`/usr`, `/etc`, …). The
+      named there is not hidden when it is `/`, holds the home folder or a system folder (`/usr`, `/etc`, …) or lies
+      inside a system folder. The
       room has a process list of its own and starts in `/`. A path that leads into the build's folders ends in "not
       found" there, however it is written: a `/proc/self/cwd/ssh` link on PATH, a link folder such as
       `<worktree>/tools-link`, another process's `/proc/<pid>/cwd`, or a link a build changes after the kit looked and

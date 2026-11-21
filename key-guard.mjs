@@ -1357,35 +1357,43 @@ function roomWorks(env, shut) {
   return roomProbed;
 }
 
-// core.worktree from the Git folder's own config file, or null: the [core] section's worktree key, as written there
-// (relative to the Git folder). Only that file: no includes, no other config.
+// core.worktree from the Git folder's own config files, or null: the [core] section's worktree key, as written there
+// (relative to the Git folder), in config.worktree (extensions.worktreeConfig) over config. Only those files: no
+// includes, no other config; a value with quotes or a comment after it is read as git reads it.
 function coreWorktree(common) {
-  let text;
-  try { text = readFileSync(join(common, "config"), "utf8"); } catch { return null; }
-  let section = "", found = null;
-  for (const line of text.split("\n")) {
-    const header = /^\s*\[\s*([^\]\s"]+)\s*\]/.exec(line);
-    if (header) { section = header[1].toLowerCase(); continue; }
-    const entry = /^\s*worktree\s*=\s*(.*?)\s*$/i.exec(line);
-    if (section === "core" && entry) found = entry[1].replace(/^"(.*)"$/, "$1");
+  let found = null;
+  for (const file of ["config", "config.worktree"]) {
+    let text;
+    try { text = readFileSync(join(common, file), "utf8"); } catch { continue; }
+    let section = "";
+    for (const line of text.split("\n")) {
+      const header = /^\s*\[\s*([^\]\s"]+)(\s+"[^"]*")?\s*\]/.exec(line);
+      if (header) { section = header[2] ? "" : header[1].toLowerCase(); continue; }
+      const entry = /^\s*worktree\s*=\s*(.*)$/i.exec(line);
+      if (section !== "core" || !entry) continue;
+      const value = /^"((?:[^"\\]|\\.)*)"/.exec(entry[1].trim())?.[1] ?? entry[1].replace(/\s[#;].*$/, "").trim();
+      if (value) found = resolve(common, value);
+    }
   }
-  return found ? resolve(common, found) : null;
+  return found;
 }
 
 // The folders the room swaps for empty ones: the worktree, the Git folder, the main worktree (the folder that holds the
 // Git folder as .git, or the one its core.worktree names) and every linked worktree the Git folder lists, where the two
 // agree as git checks them (worktrees/<name>/gitdir names a .git file whose gitdir line leads back to that entry).
-// A build can write the Git folder, so a folder found there is skipped when it is / or holds the home folder or a
-// system folder: hiding one would stop every fetch, or send the search for ssh on to another PATH folder. Real paths of
-// folders that exist, so bubblewrap makes no folder on the real file system; one inside another is hidden with it.
+// A build can write the Git folder, so a folder found there is skipped when it is /, holds the home folder or a system
+// folder, or lies inside a system folder: hiding one would stop every fetch, or send the search for ssh on to another
+// PATH folder. Real paths of folders that exist, so bubblewrap makes no folder on the real file system; one inside
+// another is hidden with it.
 function roomFolders(env, worktree, common) {
   const real = path => { try { return realpathSync(path); } catch { return null; } };
-  const kept = [home(env), "/bin", "/etc", "/lib", "/opt", "/sbin", "/usr"].map(real).filter(Boolean);
+  const system = ["/bin", "/dev", "/etc", "/lib", "/lib64", "/proc", "/sbin", "/sys", "/usr"].map(real).filter(Boolean);
+  const kept = [...system, ...[home(env), "/opt"].map(real).filter(Boolean)];
   const found = [];
   const add = (folder, fromGit) => {
     const path = folder && real(folder);
     try { if (!path || !statSync(path).isDirectory() || found.includes(path)) return; } catch { return; }
-    if (fromGit && (path === "/" || kept.some(other => inside(other, path)))) return;
+    if (fromGit && (path === "/" || kept.some(other => inside(other, path)) || system.some(other => inside(path, other)))) return;
     found.push(path);
   };
   add(worktree, false);
@@ -1413,9 +1421,23 @@ function roomHides(env, folders) {
     .filter(([, path]) => path && isAbsolute(path)).map(([what, path]) => [what, realOr(path)]);
   for (const [what, path] of needed) {
     const folder = folders.find(other => inside(path, other));
-    if (folder) return `would hide ${what} (${path}), which is inside the worktree or the Git folder (${folder}); keep the repository out of it, or set ASE_KEY_GUARD=off to run without the lock`;
+    if (folder) return `would hide ${what} (${path}), which is inside the worktree or the Git folder (${folder}); keep the repository out of it`;
   }
   return null;
+}
+
+// The words of a command line before its first shell operator outside quotes (a redirection, ;, |, &, a subshell), as
+// shellWords reads them: git tells its kind of ssh from the first word, whatever follows it.
+function leadingWords(line) {
+  let quote = null;
+  for (let at = 0; at < line.length; at++) {
+    const char = line[at];
+    if (quote) { if (char === quote) quote = null; else if (quote === '"' && char === "\\") at++; }
+    else if (char === "'" || char === '"') quote = char;
+    else if (char === "\\") at++;
+    else if (";&|<>()`\n".includes(char) || (char === "$" && line[at + 1] === "(")) return shellWords(line.slice(0, at));
+  }
+  return shellWords(line);
 }
 
 // git's kind of ssh for a program name, as git tells it (any letter case, .exe or not).
@@ -1442,14 +1464,14 @@ export function sshRoom(env = process.env, { worktree, common, configured } = {}
   if (problem) return refused(`the clean room for git's ssh cannot start: ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   const folders = roomFolders(env, worktree, common);
   const hidden = roomHides(env, folders);
-  if (hidden) return refused(`the clean room for git's ssh ${hidden}`);
+  if (hidden) return refused(`the clean room for git's ssh ${hidden}; or set ASE_KEY_GUARD=off to run without the lock`);
   const named = env.GIT_SSH_COMMAND || configured || null;
   const inner = named ?? (env.GIT_SSH ? shellQuote(env.GIT_SSH) : "ssh");
   // As sh reads the line: an unquoted NAME=value before the program sets a variable.
-  const first = named === null ? (env.GIT_SSH || "ssh") : shellWords(named)?.find(({ start, end }) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(named.slice(start, end)))?.value;
-  // A program the shell cannot start (exit 127), such as an ssh PATH holds only as a link into a hidden folder, gets one
-  // line in plain words after the shell's own ("not found").
-  const notFound = `kit: git's ssh, or a program it starts, could not be started in the clean room, where these folders are empty: ${folders.join(", ")}; start it from a folder outside them`;
+  const first = named === null ? (env.GIT_SSH || "ssh") : leadingWords(named)?.find(({ start, end }) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(named.slice(start, end)))?.value;
+  // A program not found (exit 127), such as an ssh PATH holds only as a link into a hidden folder, gets one line in plain
+  // words after the shell's own. ssh also ends with the server's exit status, so the line names both causes.
+  const notFound = `kit: a program was not found (exit 127). If it was git's ssh or a program it starts, the clean room keeps these folders empty: ${folders.join(", ")}; start it from a folder outside them. If the line above came from the server, the server lacks that program`;
   const script = `${inner} "$@"\nstatus=$?\n[ "$status" -ne 127 ] || printf '%s\\n' ${shellQuote(notFound)} >&2\nexit "$status"`;
   const command = [bwrap, ...roomArgs, ...folders.flatMap(folder => ["--tmpfs", folder]), "--", "/bin/sh", "-c", script, "sh"].map(shellQuote).join(" ");
   return { command, problem: null, variant: first ? sshKind(first) : null };
