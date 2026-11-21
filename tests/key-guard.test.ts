@@ -1644,7 +1644,7 @@ test("TOOLS-390 room: every worktree of the repository and its Git folder are em
 });
 
 test("TOOLS-390 room: a folder the Git folder names is hidden only as git would take it, and never when it is / or holds the home folder or a system folder", { skip: noRoom }, t => {
-  const { dir, root, home, base } = roomRepo(t, "folders");
+  const { dir, root, home, lead, base, fetch, inRoom, leadSsh } = roomRepo(t, "folders");
   const command = (env = base) => String(gitSafety({ worktree: root, env, network: true, git: gitProgram() }).env.GIT_SSH_COMMAND);
   const hidden = (env = base) => [...command(env).matchAll(/--tmpfs (\S+)/g)].map(match => match[1].replace(/^'(.*)'$/, "$1"));
   const entry = (name: string, gitFile: string) => {
@@ -1672,12 +1672,24 @@ test("TOOLS-390 room: a folder the Git folder names is hidden only as git would 
   // core.worktree in the Git folder's config names the main worktree; / or a system folder there is skipped too.
   const main = join(dir, "main");
   mkdirSync(main);
-  // Inside a system folder only a PATH folder, or one that holds one, is skipped (/usr/bin is on base's PATH); another
-  // folder there, as a checkout under /usr/local/src would be, is hidden (/usr/share stands in for it).
-  for (const [value, expected] of [[main, [root, linked, main]], ["../../main", [root, linked, main]], ["/", [root, linked]], ["/etc", [root, linked]], ["/usr/bin", [root, linked]], ["/usr/share", [root, linked, "/usr/share"]], ["/dev", [root, linked]]] as const) {
+  // Inside a system folder only a folder below /usr/local or /usr/src that is not and holds no PATH folder is hidden:
+  // a checkout there (/usr/local/src stands in for one). The loader and libc, /etc/ssh and the rest are not.
+  const values: [string, string[]][] = [[main, [root, linked, main]], ["../../main", [root, linked, main]], ["/", [root, linked]], ["/etc", [root, linked]],
+    ["/usr/bin", [root, linked]], ["/usr/share", [root, linked]], ["/usr/lib", [root, linked]], ["/dev", [root, linked]], ["/usr/local", [root, linked]]];
+  if (existsSync("/etc/ssh")) values.push(["/etc/ssh", [root, linked]]);
+  if (existsSync("/usr/local/src")) values.push([realpathSync("/usr/local/src"), [root, linked, realpathSync("/usr/local/src")]]);
+  for (const [value, expected] of values) {
     assert.equal(spawnSync("git", ["-C", root, "config", "core.worktree", value]).status, 0);
     assert.deepEqual(hidden(), [...expected].sort(), value);
   }
+  // A PATH folder below /usr/local is not hidden either.
+  if (existsSync("/usr/local/bin")) {
+    assert.equal(spawnSync("git", ["-C", root, "config", "core.worktree", "/usr/local/bin"]).status, 0);
+    assert.deepEqual(hidden({ ...base, PATH: `/usr/local/bin:${base.PATH}` }), [root, linked].sort(), "/usr/local/bin on PATH");
+  }
+  // With the libraries named there, a fetch still reaches the lead's ssh in the room.
+  assert.equal(spawnSync("git", ["-C", root, "config", "core.worktree", "/usr/lib"]).status, 0);
+  inRoom(fetch(base), "/usr/lib named");
   // A main worktree outside the system folders is hidden even when it holds a PATH folder: ssh there is not found.
   mkdirSync(join(main, "bin"));
   assert.equal(spawnSync("git", ["-C", root, "config", "core.worktree", main]).status, 0);
@@ -1695,6 +1707,30 @@ test("TOOLS-390 room: a folder the Git folder names is hidden only as git would 
   // A key on its section header's line, and a later subsection name with a quote in it, which is not core's.
   writeFileSync(join(root, ".git/config.worktree"), `[core] worktree = ${main}\n[remote "a\\"b"]\n\tworktree = ${elsewhere}\n`);
   assert.deepEqual(hidden(), [root, linked, main].sort(), "a key on the header's line");
+  // An include and a continued line, as git reads them: the main worktree they name stays empty for a real fetch.
+  rmSync(join(root, ".git/config.worktree"));
+  assert.equal(spawnSync("git", ["-C", root, "config", "--unset", "extensions.worktreeConfig"]).status, 0);
+  assert.equal(spawnSync("git", ["-C", root, "config", "--unset-all", "core.worktree"]).status, 0);
+  const plain = readFileSync(join(root, ".git/config"), "utf8");
+  writeFileSync(join(main, "marker"), "");
+  leadSsh(join(lead, "ssh"), [join(root, ".git"), join(main, "marker")]);
+  writeFileSync(join(dir, "included"), `[core]\n\tworktree = ${main}\n`);
+  writeFileSync(join(root, ".git/config"), `${plain}[include]\n\tpath = ${join(dir, "included")}\n`);
+  assert.deepEqual(hidden(), [root, linked, main].sort(), "an include");
+  inRoom(fetch(base), "an include");
+  writeFileSync(join(root, ".git/config"), `${plain}[core]\n\tworktree = ${main.slice(0, -2)}\\\n${main.slice(-2)}\n`);
+  assert.deepEqual(hidden(), [root, linked, main].sort(), "a continued line");
+  inRoom(fetch(base), "a continued line");
+});
+
+test("TOOLS-390 room: where git cannot read the Git folder's core.worktree, the room does not start", { skip: noRoom }, t => {
+  const { root, base } = roomRepo(t, "unread");
+  // A config git refuses to read: the main worktree it names could stay visible, so the room says it cannot start
+  // (gitSafety's own read of the config stops a fetch even before that).
+  writeFileSync(join(root, ".git/config"), `${readFileSync(join(root, ".git/config"), "utf8")}[core\n`);
+  const report = cleanRoomReport(base, { worktree: root, common: join(root, ".git") });
+  assert.equal(report.state, "problem");
+  assert.match(report.text, /^clean room cannot start: git cannot read the Git folder's core\.worktree \(.*bad config line/, report.text);
 });
 
 test("TOOLS-390 room: a bwrap left in another worktree never starts, even when an earlier lookup found it", { skip: noRoom }, t => {
@@ -1723,6 +1759,13 @@ test("TOOLS-390 room: a bwrap left in another worktree never starts, even when a
   const refused = String(safety().GIT_SSH_COMMAND);
   assert.match(refused, /^printf .*bubblewrap on PATH \(.*\/bin\/bwrap\) is inside a worktree or the Git folder/, refused);
   assert.equal(existsSync(noted), false, "the planted bwrap started");
+  // A link folder in the main worktree that leads to the real bwrap's folder counts too: a build can point it elsewhere.
+  symlinkSync(dirname(real), join(root, "tools-link"));
+  const linkEnv = { ...base, PATH: `${join(root, "tools-link")}:${base.PATH}` };
+  resetBwrapProbe();
+  bwrapWorks(linkEnv, [linked, join(root, ".git")]);
+  const viaLink = String(gitSafety({ worktree: linked, env: linkEnv, network: true, git: gitProgram() }).env.GIT_SSH_COMMAND);
+  assert.match(viaLink, /^printf .*bubblewrap on PATH \(.*tools-link\/bwrap\) is inside a worktree or the Git folder, or reached through one/, viaLink);
 });
 
 test("TOOLS-390 room: a plink command with a redirection keeps plink's kind, so git passes a custom port as plink takes it", { skip: noRoom }, t => {

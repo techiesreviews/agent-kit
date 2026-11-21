@@ -1357,72 +1357,60 @@ function roomWorks(env, shut) {
   return roomProbed;
 }
 
-// A config value as git reads it from the text after `=`: quotes kept out, \\ \" \n \t \b inside or outside them,
-// a # or ; outside quotes starts a comment, and white space at the end outside quotes is dropped.
-function configValue(raw) {
-  let value = "", keep = 0, quoted = false;
-  for (let at = 0; at < raw.length; at++) {
-    const char = raw[at];
-    if (char === '"') { quoted = !quoted; keep = value.length; continue; }
-    if (!quoted && (char === "#" || char === ";")) break;
-    if (char === "\\") { const next = raw[++at] ?? ""; value += { n: "\n", t: "\t", b: "\b" }[next] ?? next; keep = value.length; continue; }
-    value += char;
-    if (quoted || !/\s/.test(char)) keep = value.length;
+// The main worktree's core.worktree as git takes it: {path} (null when it is not set) or {problem}. git itself reads it
+// (reading starts nothing) from the Git folder's own config, config.worktree too when extensions.worktreeConfig is on,
+// with their includes and every form git allows; the last value wins, relative to the Git folder. A value from
+// elsewhere (the lead's global config, the environment) is not the repository's. Where git cannot read it, the room
+// does not start, since the main worktree could stay visible.
+function coreWorktree(env, git, common) {
+  const [program, ...before] = [git].flat();
+  if (!program) return { problem: "git is not on PATH outside the worktree and the Git folder, so the Git folder's core.worktree cannot be read" };
+  const clean = { ...env, GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_COMMON_DIR: undefined };
+  const result = spawnSync(program, [...before, "--git-dir", common, "config", "--includes", "--show-scope", "-z", "--get-all", "core.worktree"],
+    { env: clean, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15_000 });
+  if (result.status === 1 && !result.stdout) return { path: null };
+  if (result.status !== 0) {
+    const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
+    return { problem: `git cannot read the Git folder's core.worktree (${said})` };
   }
-  return value.slice(0, keep);
-}
-
-// core.worktree from the Git folder's own config files, or null: the [core] section's worktree key, as written there
-// (relative to the Git folder), in config.worktree over config when config turns on extensions.worktreeConfig, as git
-// reads them. Only those files: no includes, no other config.
-function coreWorktree(common) {
-  let found = null, perWorktree = false;
-  for (const file of ["config", "config.worktree"]) {
-    if (file === "config.worktree" && !perWorktree) break;
-    let text;
-    try { text = readFileSync(join(common, file), "utf8"); } catch { continue; }
-    let section = "";
-    for (let line of text.split("\n")) {
-      // A key may follow its section's header on the same line, as git reads it.
-      const header = /^\s*\[\s*([^\]\s"]+)(\s+"(?:[^"\\]|\\.)*")?\s*\]/.exec(line);
-      if (header) { section = header[2] ? "" : header[1].toLowerCase(); line = line.slice(header[0].length); }
-      // A key with no `=` is true, as git takes it.
-      const entry = /^\s*([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/.exec(line);
-      if (!entry) continue;
-      const key = `${section}.${entry[1].toLowerCase()}`, value = entry[2] === undefined ? "true" : configValue(entry[2]);
-      if (key === "core.worktree" && value) found = resolve(common, value);
-      if (key === "extensions.worktreeconfig" && file === "config") perWorktree = /^(true|yes|on|1)$/i.test(value);
-    }
-  }
-  return found;
+  const parts = result.stdout.split("\0");
+  let value = null;
+  for (let at = 0; at + 1 < parts.length; at += 2) if (parts[at] === "local" || parts[at] === "worktree") value = parts[at + 1];
+  return { path: value ? resolve(common, value) : null };
 }
 
 // The folders the room swaps for empty ones: the worktree, the Git folder, the main worktree (the folder that holds the
 // Git folder as .git, or the one its core.worktree names) and every linked worktree the Git folder lists, where the two
 // agree as git checks them (worktrees/<name>/gitdir names a .git file whose gitdir line leads back to that entry).
 // A build can write the Git folder, so a folder found there is skipped when it is /, holds the home folder or a system
-// folder, or lies inside a system folder and is or holds a PATH folder (such as /usr/local): hiding one would stop
-// every fetch, or send the search for ssh on to the next PATH folder. A worktree elsewhere inside a system folder
-// (/usr/local/src/project) is hidden. Real paths of folders that exist, so bubblewrap makes no folder on the real file
-// system; one inside another is hidden with it.
-function roomFolders(env, worktree, common) {
+// folder, or lies inside a system folder (the loader and libc, /etc/ssh, /proc/<pid>): hiding one would stop every
+// fetch, or send the search for ssh on to the next PATH folder. Only a folder below /usr/local or /usr/src, where
+// checkouts live (/usr/local/src/project), is hidden there, unless it is or holds a PATH folder. Real paths of folders
+// that exist, so bubblewrap makes no folder on the real file system; one inside another is hidden with it.
+// {folders, problem}: problem when core.worktree cannot be read (coreWorktree).
+function roomFolders(env, worktree, common, git) {
   const real = path => { try { return realpathSync(path); } catch { return null; } };
   const system = ["/bin", "/dev", "/etc", "/lib", "/lib64", "/proc", "/sbin", "/sys", "/usr"].map(real).filter(Boolean);
   const kept = [...system, ...[home(env), "/opt"].map(real).filter(Boolean)];
   const onPath = pathFolders(env).filter(folder => isAbsolute(folder)).map(real).filter(Boolean);
+  const checkouts = ["/usr/local", "/usr/src"].map(real).filter(Boolean);
   const found = [];
   const add = (folder, fromGit) => {
     const path = folder && real(folder);
     try { if (!path || !statSync(path).isDirectory() || found.includes(path)) return; } catch { return; }
-    const systemPath = system.some(other => inside(path, other)) && onPath.some(other => inside(other, path));
-    if (fromGit && (path === "/" || kept.some(other => inside(other, path)) || systemPath)) return;
+    const checkout = checkouts.some(other => path !== other && inside(path, other)) && !onPath.some(other => inside(other, path));
+    const systemOwned = system.some(other => inside(path, other)) && !checkout;
+    if (fromGit && (path === "/" || kept.some(other => inside(other, path)) || systemOwned)) return;
     found.push(path);
   };
   add(worktree, false);
   add(common, false);
+  let problem = null;
   if (common) {
     if (basename(common) === ".git") add(dirname(common), true);
-    add(coreWorktree(common), true);
+    const main = coreWorktree(env, git, common);
+    problem = main.problem ?? null;
+    add(main.path, true);
     let names = [];
     try { names = readdirSync(join(common, "worktrees")); } catch { /* No linked worktrees. */ }
     for (const name of names) try {
@@ -1432,7 +1420,7 @@ function roomFolders(env, worktree, common) {
       if (back && real(resolve(dirname(gitFile), back)) === real(entry)) add(dirname(gitFile), true);
     } catch { /* Not a worktree's entry. */ }
   }
-  return found.filter(path => !found.some(other => other !== path && inside(path, other))).sort();
+  return { folders: found.filter(path => !found.some(other => other !== path && inside(path, other))).sort(), problem };
 }
 
 // What ssh needs that the room would hide, in words that follow "the clean room for git's ssh", or null: the home folder
@@ -1451,13 +1439,16 @@ function roomHides(env, folders) {
 // The room's folders for a fetch or push from `worktree`, and why the room cannot start there (words that follow "the
 // clean room"), or null. bubblewrap is looked up outside every one of those folders, so a bwrap left in another worktree
 // never starts; it is looked up once per process, so one found earlier (by the key lock, which shuts out only the
-// worktree and the Git folder) is refused when it lies in one.
-function roomCheck(env, worktree, common) {
-  const folders = roomFolders(env, worktree, common);
+// worktree and the Git folder) is refused when it lies in one. `git` reads core.worktree: the caller's, or the one PATH
+// holds outside the worktree and the Git folder, as the kit's own git calls take it.
+function roomCheck(env, worktree, common, git) {
+  const { folders, problem: unread } = roomFolders(env, worktree, common, git ?? programFor("git", env, buildFolders(worktree, common)));
+  if (unread) return { folders, problem: `cannot start: ${unread}` };
   // Before the room's own start-up check, which starts bubblewrap.
   const lock = bwrapWorks(env, folders);
-  const file = bwrap && real(bwrap), folder = file && folders.find(other => inside(file, other));
-  if (folder) return { folders, problem: `cannot start: bubblewrap on PATH (${bwrap}) is inside a worktree or the Git folder (${folder}), where a build can change it; put a bwrap from outside them first on PATH` };
+  // Every folder its path passes through counts, as for the programs the kit starts: a link folder in another worktree
+  // (<main>/tools-link -> /usr/bin) can lead elsewhere once the room has started.
+  if (bwrap && shutIn(bwrap, folders)) return { folders, problem: `cannot start: bubblewrap on PATH (${bwrap}) is inside a worktree or the Git folder, or reached through one, where a build can change it; put a bwrap from outside them first on PATH` };
   const problem = lock ?? roomWorks(env, folders);
   if (problem) return { folders, problem: `cannot start: ${problem}` };
   return { folders, problem: roomHides(env, folders) };
@@ -1492,12 +1483,13 @@ const sshKind = name => /^(ssh|plink|tortoiseplink)(\.exe)?$/i.exec(basename(nam
  * does not close that (README, "What the room does not close"). The rules sshCommand asks of the line
  * are not needed there. Where the room cannot start on Linux, or would hide the home folder or ssh's agent, `command`
  * says why and fails, so only a call that really starts ssh stops. `variant` is the kind of ssh git would have told
- * from the lead's first word, since the command's own first word is bubblewrap now.
+ * from the lead's first word, since the command's own first word is bubblewrap now. `git` (gitSafety's program) reads
+ * the Git folder's core.worktree.
  */
-export function sshRoom(env = process.env, { worktree, common, configured } = {}) {
+export function sshRoom(env = process.env, { worktree, common, configured, git } = {}) {
   if (!keyGuardOn(env) || process.platform !== "linux" || outerLock(env)) return null;
   const refused = problem => ({ command: `printf '%s\\n' ${shellQuote(`kit: ${problem}`)} >&2; false`, problem, variant: "ssh" });
-  const { folders, problem } = roomCheck(env, worktree, common);
+  const { folders, problem } = roomCheck(env, worktree, common, git);
   if (problem) return refused(`the clean room for git's ssh ${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   const named = env.GIT_SSH_COMMAND || configured || null;
   const inner = named ?? (env.GIT_SSH ? shellQuote(env.GIT_SSH) : "ssh");
