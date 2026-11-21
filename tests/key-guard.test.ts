@@ -1844,7 +1844,10 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     // Each shell's own letters: zsh's -O takes no value and its -b, like tcsh's, ends the options; an option that takes
     // a value and ends the line takes the script (Claude review, round 24; GPT second look, round 25).
     ["zsh-correct-all", "zsh -O payload"], ["rc-no-value", "rc -o payload"], ["zsh-break", "zsh -b -e"], ["tcsh-break", "tcsh -b -e"], ["tcsh-bundle", "tcsh -fb"],
-    ["pwsh-value-last", "pwsh -CustomPipeName"], ["shell-value-last", "bash -eu -o"]]) {
+    ["pwsh-value-last", "pwsh -CustomPipeName"], ["shell-value-last", "bash -eu -o"],
+    // A name after -o or -O can switch on -s too, in any case, without _, or as +o no_… (round 26).
+    ["zsh-stdin-option", "zsh -o shinstdin"], ["zsh-stdin-spelled", "zsh -o SHIN_STDIN"], ["zsh-stdin-negated", "zsh +o NO_SHIN_STDIN"],
+    ["shell-unknown-shopt", "bash -O extdebug"]]) {
     const file = wrapper(name, "X=1", words);
     const why = new RegExp(`hands the shell \\(${words.split(" ")[0]}\\) a script or -s`);
     assert.throws(() => startCommand(file, [], withOthers, { worktree: root, kind: "test" }), why, words);
@@ -1859,6 +1862,16 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   // The long options the README names still start bash (Claude review, round 24).
   const norc = wrapper("own-shell-norc", "X=1", "bash --norc --noprofile");
   assert.deepEqual(start(norc), ["/usr/bin/env", ["X=1", bash, "--norc", "--noprofile", norc]]);
+  // zsh's own switches and a listed -o name still start it (round 26).
+  for (const words of ["zsh -f -e", "zsh -o pipefail", "zsh -o ERR_EXIT"]) {
+    const own = wrapper(`own-${words.replace(/\W+/g, "-")}`, "X=1", words);
+    assert.deepEqual(startCommand(own, [], withOthers, { worktree: root, kind: "test" }), ["/usr/bin/env", ["X=1", join(otherShells, "zsh"), ...words.split(" ").slice(1), own]], words);
+  }
+  // A link named pwsh that leads to bash reads bash's options (Claude review, round 25).
+  const renamed = join(dir, "renamed shells");
+  mkdirSync(renamed);
+  symlinkSync(bash, join(renamed, "pwsh"));
+  assert.throws(() => startCommand(wrapper("pwsh-is-bash", "X=1", "pwsh -ep payload"), [], { ...base, PATH: `${renamed}:${bin}:/usr/bin:/bin` }, { worktree: root, kind: "test" }), /hands the shell \(pwsh\) a script or -s/);
   for (const words of ["ssh -i ~/.ssh/id_ed25519 -o IdentityFile=/etc/ssh/key -o UserKnownHostsFile=/etc/ssh/known", "ssh -i/etc/ssh/key -F/etc/ssh/ssh_config"]) {
     const keys = wrapper(`ssh-keys-${words.length}`, "X=1", words);
     assert.deepEqual(start(keys), ["/usr/bin/env", ["X=1", join(bin, "ssh"), ...words.split(" ").slice(1), keys]], words);
