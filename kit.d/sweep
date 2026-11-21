@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { checkOldReviewLedger, checkReviewLedger, familyUse, isoWeek, projectCounts, readReviewLedger, reviewBudgetLimit, withReviewLock } from "../agent-run.mjs";
+import { checkOldReviewLedger, checkReviewLedger, familyUse, isoWeek, projectCounts, readReviewLedger, reviewBudgetLimit, withReviewLock } from "../review-budget.mjs";
 import { parseFeedbackLine } from "../tickets.mjs";
 import { FLAKY_DAYS, flakyFiles } from "../browser-runs.mjs";
 import { composeBundle, cssCounts } from "./ux";

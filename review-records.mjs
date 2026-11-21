@@ -10,7 +10,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { lookFamily } from "./pr-tier.mjs";
+import { lookFamily } from "./model-names.mjs";
 import { openFindings, reviewCoversHead, sameReviewPatch } from "./review-findings.mjs";
 import { earlierReleaseCut, inHistory, isNit, parseMarks } from "./review-loop.mjs";
 

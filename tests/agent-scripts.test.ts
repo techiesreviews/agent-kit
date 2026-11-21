@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,7 +11,11 @@ import { talkStyleLine } from "../brief-lib.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeAdapter, opencodeCommands, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeReviewEnv, opencodeRunHelp, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, plainCode, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, opencodeAdapter, opencodeCommands, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeReviewEnv, opencodeRunHelp, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, plainCode, refusedOutright, sessionObserver, reviewBase, usageLimitProblem } from "../agent-run.mjs";
+// @ts-expect-error The agent helper is plain JavaScript without declarations.
+import { inferCli, reviewFamily } from "../model-names.mjs";
+// @ts-expect-error The agent helper is plain JavaScript without declarations.
+import { isoWeek, releaseReviewBudget, reserveReviewBudget } from "../review-budget.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
@@ -1003,6 +1007,8 @@ process.exit(1);
   const fresh = review({ FAKE_OPENCODE_SILENT: "1" });
   assert.ok(fresh.result.stderr.split("\n").includes(problem), fresh.result.stderr);
   assert.equal(status(fresh.out).silent, true);
+  // The runner names its own outcome: the model never answered, so the review is given back.
+  assert.deepEqual(status(fresh.out).outcome, { kind: "unavailable", why: "opencode unavailable: no session within 0.5s", spent: false, outOfCredit: false });
   // A resumed run's call follows one that opened a session, so it is not marked, though the problem is still printed.
   const opened = review();
   assert.equal(status(opened.out).session, "ses_fake");
@@ -1010,6 +1016,29 @@ process.exit(1);
   assert.equal(resumed.status, 1, resumed.stderr);
   assert.ok(resumed.stderr.split("\n").includes(problem), resumed.stderr);
   assert.equal("silent" in status(opened.out), false);
+});
+
+test("a review whose CLI is missing records the missing command and an unavailable outcome in status.json", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-agent-missing-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const wt = join(dir, "work tree"), nodeBin = join(dir, "node-bin"), brief = join(dir, "brief.md");
+  mkdirSync(wt); mkdirSync(nodeBin);
+  reviewRepository(wt);
+  writeFileSync(brief, "tiny brief\n");
+  // Only node joins the system folders, so no grok is found.
+  symlinkSync(process.execPath, join(nodeBin, "node"));
+  const result = spawnSync("bash", [resolve("agent.sh"), "review", wt, brief, "--base", "origin/dev", "--model", "grok-4.7"], {
+    encoding: "utf8", timeout: 15_000, env: { ...process.env, PATH: `${nodeBin}:/usr/bin:/bin`, ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s" },
+  });
+  assert.equal(result.status, 1, result.stderr);
+  // The runner's own lines are as before: the spawn error, then the CLI's failure last.
+  assert.match(result.stderr, /^problem: spawn grok ENOENT$/m);
+  assert.match(result.stderr.trimEnd().split("\n").at(-1)!, /^problem: grok failed \(1\); see /);
+  const out = /^artifacts: (.+)$/m.exec(result.stdout)?.[1];
+  assert.ok(out, result.stdout);
+  const status = JSON.parse(readFileSync(join(out, "status.json"), "utf8"));
+  assert.equal(status.missing, "grok");
+  assert.deepEqual(status.outcome, { kind: "unavailable", why: "CLI missing: grok not found (ENOENT)", spent: false, outOfCredit: false });
 });
 
 test("both adapters run through the shared shell entry and compatibility wrappers using fake CLIs", (t) => {
