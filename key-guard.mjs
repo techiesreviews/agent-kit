@@ -667,6 +667,14 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   const kind = ["fish", "pwsh", "nu"].find(names => [name, real(found)].some(word => shellNamed(word, names)));
   const shell = startedShell(options, names, shut) ?? (namesShell(found, names, shut) && options.some(option => runsString(option, kind)) ? basename(name) : null);
   if (shell) refuse(`${file} starts with env ${rest}, which starts a shell (${shell}), and a shell can build PATH= or BASH_ENV= out of pieces; ${shellAdvice(shell, " from that line") ?? "start the program from that line directly"}, or set ASE_KEY_GUARD=off to run without the lock`);
+  // A program handed a path inside the worktree or the Git folder runs or reads a file a build wrote (node <worktree>/x),
+  // and a shell runs its first word that is not an option, or what it reads with -s, in place of this script (bash
+  // <worktree>/payload; GPT second look, round 21). So no word on the line leads inside, and a shell takes options only
+  // (with a value after -o or -O, and for pwsh after any option but -File).
+  if (options.some(option => option.includes("/") && shutIn(option.replace(/^-[^=]*=/, ""), shut))) refuse(`${file} starts with env ${rest}, which hands the program a path inside the worktree or its Git folder, where a build can change it; drop that path from the line, or set ASE_KEY_GUARD=off to run without the lock`);
+  const valueAfter = before => kind === "pwsh" ? /^[-–—―]{1,2}([A-Za-z]+)$/.test(before) && !"file".startsWith(before.replace(/^[-–—―]+/, "").toLowerCase()) : /^[-+][A-Za-z]*[oO]$/.test(before);
+  const operand = (option, i) => (kind !== "pwsh" && /^[-+][A-Za-z]*s/.test(option)) || (!/^[-+–—―]/.test(option) && !valueAfter(options[i - 1] ?? ""));
+  if (namesShell(found, names, shut) && options.some(operand)) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1, names);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).

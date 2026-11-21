@@ -1826,6 +1826,20 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   assert.deepEqual(start(pipefail), ["/usr/bin/env", ["X=1", bash, "-eu", "-o", "pipefail", pipefail]]);
   const noclobber = wrapper("own-shell-noclobber", "X=1", "bash -eC");
   assert.deepEqual(start(noclobber), ["/usr/bin/env", ["X=1", bash, "-eC", noclobber]]);
+  // A shell runs its first word that is not an option, or what -s reads, in place of the script, and no program on the
+  // line gets a path inside the worktree (GPT second look, round 21).
+  for (const [name, words, why] of [["shell-payload", `bash ${join(root, "payload")}`, /hands the program a path inside the worktree/],
+    ["shell-relative", "bash payload", /hands the shell \(bash\) a script or -s/], ["shell-stdin", "bash -s", /hands the shell \(bash\) a script or -s/],
+    ["shell-stdin-bundle", "bash -es", /hands the shell \(bash\) a script or -s/], ["pwsh-file", "pwsh -NoProfile -File payload", /hands the shell \(pwsh\) a script or -s/],
+    ["pwsh-file-short", "pwsh -f payload", /hands the shell \(pwsh\) a script or -s/], ["ssh-config", `ssh -F ${join(root, "cfg")}`, /hands the program a path inside the worktree/]] as const) {
+    const file = wrapper(name, "X=1", words);
+    assert.throws(() => start(file), why, words);
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: file }, { worktree: root }).problem ?? "", why, words);
+  }
+  // fish's other long options still start it (Claude review, round 20).
+  for (const words of ["fish --no-config", "fish --private"]) {
+    assert.doesNotThrow(() => startCommand(wrapper(`own-${words.replace(/\W+/g, "-")}`, "X=1", words), [], withOthers, { worktree: root, kind: "test" }), words);
+  }
   // Split names that make other variables still start, and so does a ${…} that ssh fills in itself.
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: `gnuenv -S "X'PA'TH=1 MY_E'N'V=2 ssh"` }, { worktree: root }).problem, null);
   assert.equal(sshCommand({ ...base, GIT_SSH_COMMAND: "ssh -i '${HOME}/.ssh/id_ed25519'" }, { worktree: root }).problem, null);
