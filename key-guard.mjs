@@ -443,7 +443,18 @@ const pathFolders = env => (env.PATH === undefined ? systemPath : String(env.PAT
 // not), for a build can point one inside the worktree elsewhere after the check. A part that is not there yet ends the
 // walk, and the rest counts as written from there, so making it later moves it nowhere else; past 40 links the kernel
 // stops, and so does this.
+// On Windows the walk reads a path's parts by / alone, so C:\ paths and their links and junctions would not be followed
+// at all (TOOLS-390 SL-1): there `end` is every link followed by the system (realpathSync, as far as the path exists,
+// as before the walk), and `passed` is the path as written, so a folder written inside the worktree still counts.
+function walkWindows(path) {
+  const full = resolve(path), rest = [];
+  for (let at = full; ; at = dirname(at)) {
+    try { return { end: join(realpathSync(at), ...rest), passed: [full] }; }
+    catch { if (dirname(at) === at) return { end: full, passed: [full] }; rest.unshift(basename(at)); }
+  }
+}
 function walk(path) {
+  if (process.platform === "win32") return walkWindows(path);
   const passed = [];
   let at = "/", rest = (isAbsolute(path) ? path : `${process.cwd()}/${path}`).split("/"), links = 0;
   while (rest.length) {
