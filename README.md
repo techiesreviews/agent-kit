@@ -379,8 +379,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     no `-s` (a value after `-o` or `-O`, and after pwsh's options that take one, such as `-ExecutionPolicy`, still
     counts). Options are read in order by that shell's rules, and a word taken as a value is never read as an option:
     the sh family, zsh, fish and nu get only a short list of plain options that load no file (`-eu`, `+x`, `--norc`,
-    `--noprofile`; login and interactive options such as `-l`, `-i`, `--login` and `--interactive` are refused, since
-    they read start-up files; bash runs `—payload` as a script, `bash --rcfile -o payload` runs `payload`, and zsh's `-b` ends its
+    `--noprofile`; login and interactive options such as `-l`, `-i`, `--login` and `--interactive`, and pwsh's
+    `-Login` and `-l`, are refused, since they read start-up files; bash runs `—payload` as a script, `bash --rcfile -o payload` runs `payload`, and zsh's `-b` ends its
     options), with a value only after the sh family's `-o` and `-O` and zsh's `-o`, never at the end of the line, and
     only from a short list of names (`pipefail`, `errexit`, `nounset`, `extglob` and the like; `zsh -o shinstdin` is `-s`);
     other shells (rc, es, csh, tcsh and the like) get no options at all; and pwsh only the option names and

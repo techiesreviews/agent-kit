@@ -1849,7 +1849,7 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     ["zsh-stdin-option", "zsh -o shinstdin"], ["zsh-stdin-spelled", "zsh -o SHIN_STDIN"], ["zsh-stdin-negated", "zsh +o NO_SHIN_STDIN"],
     ["shell-unknown-shopt", "bash -O extdebug"]]) {
     const file = wrapper(name, "X=1", words);
-    const why = new RegExp(`hands the shell \\(${words.split(" ")[0]}\\) a script or -s`);
+    const why = new RegExp(`hands the shell \\(${words.split(" ")[0]}\\) `);
     assert.throws(() => startCommand(file, [], withOthers, { worktree: root, kind: "test" }), why, words);
     assert.match(sshCommand({ ...withOthers, GIT_SSH_COMMAND: file }, { worktree: root }).problem ?? "", why, words);
   }
@@ -1871,13 +1871,13 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
   const renamed = join(dir, "renamed shells");
   mkdirSync(renamed);
   symlinkSync(bash, join(renamed, "pwsh"));
-  assert.throws(() => startCommand(wrapper("pwsh-is-bash", "X=1", "pwsh -ep payload"), [], { ...base, PATH: `${renamed}:${bin}:/usr/bin:/bin` }, { worktree: root, kind: "test" }), /hands the shell \(pwsh\) a script or -s/);
+  assert.throws(() => startCommand(wrapper("pwsh-is-bash", "X=1", "pwsh -ep payload"), [], { ...base, PATH: `${renamed}:${bin}:/usr/bin:/bin` }, { worktree: root, kind: "test" }), /hands the shell \(pwsh\) a script of its own \(payload\)/);
   // A shell a plain first line names gets what follows it as one word, read by the same rules (GPT second look, round 27).
   for (const [name, rest] of [["plain-script", join(root, "payload")], ["plain-stdin", "-s"]]) {
     const line = join(wrappers, name);
     writeFileSync(line, `#!${bash} ${rest}\nexec ssh "$@"\n`); chmodSync(line, 0o755);
-    assert.throws(() => start(line), /hands the shell \(bash\) a script or -s/, rest);
-    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: line }, { worktree: root }).problem ?? "", /hands the shell \(bash\) a script or -s/, rest);
+    assert.throws(() => start(line), /hands the shell \(bash\) (?:a script of its own|-s, which has it read commands from its input)/, rest);
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: line }, { worktree: root }).problem ?? "", /hands the shell \(bash\) (?:a script of its own|-s, which has it read commands from its input)/, rest);
   }
   for (const [name, interpreter, rest] of [["plain-options", bash, "-eu"], ["plain-lone-dash", shell, "-"], ["plain-dashes", bash, "--"]]) {
     const line = join(wrappers, name);
@@ -1891,7 +1891,7 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     const macScript = join(wrappers, "mac-script"), macOptions = join(wrappers, "mac-options");
     writeFileSync(macScript, `#!${bash} -e ${join(root, "payload")}\nexec ssh "$@"\n`); chmodSync(macScript, 0o755);
     writeFileSync(macOptions, `#!${bash} -e -u\nexec ssh "$@"\n`); chmodSync(macOptions, 0o755);
-    assert.throws(() => start(macScript), /hands the shell \(bash\) a script or -s/);
+    assert.throws(() => start(macScript), /hands the shell \(bash\) a script of its own/);
     assert.deepEqual(start(macOptions), [macOptions, []]);
   } finally { Object.defineProperty(process, "platform", platform); }
   // /proc/self/exe is whatever program opens it, so a path into /proc or /dev counts as a shell, through a link or a
@@ -1924,11 +1924,55 @@ test("TOOLS-329: env -S lines and git's ssh command that set BASH_ENV or ENV, hi
     writeFileSync(plain, `#!${program}\n`); chmodSync(plain, 0o755);
     assert.throws(() => start(plain), /, a path into \/proc or \/dev/, program);
   }
-  // A login or interactive shell reads start-up files, so those options are refused too (kit pr review).
-  for (const words of ["bash -l", "bash --login", "bash -i", "bash --interactive", "zsh -l", "fish -i", "nu --login"]) {
-    const why = new RegExp(`hands the shell \\(${words.split(" ")[0]}\\) a script or -s`);
+  // A login or interactive shell reads start-up files, so those options are refused too (kit pr review), pwsh's
+  // -Login among them (landing review R1-4).
+  for (const words of ["bash -l", "bash --login", "bash -i", "bash --interactive", "zsh -l", "fish -i", "nu --login", "pwsh -l", "pwsh -Login"]) {
+    const why = new RegExp(`hands the shell \\(${words.split(" ")[0]}\\) ${words.split(" ")[1]}, which makes it a login or interactive shell that reads start-up files`);
     assert.throws(() => startCommand(wrapper(`login-${words.replace(/\W+/g, "-")}`, "X=1", words), [], withOthers, { worktree: root, kind: "test" }), why, words);
   }
+  // The refusal says why: a script of its own, -s, a file of code, an option or setting the kit does not know, a value
+  // missing, or a Linux plain line passed as one word (landing review R1-6).
+  for (const [words, why] of [
+    [`bash ${join(root, "payload")}`, /hands the shell \(bash\) a script of its own \(.*payload\), which it would run in place of this one/],
+    ["bash -- -e", /hands the shell \(bash\) a script of its own after -- \(-e\)/],
+    ["bash -es", /hands the shell \(bash\) -es, which has it read commands from its input in place of this script/],
+    ["bash --rcfile x", /hands the shell \(bash\) --rcfile, which loads code from a file/],
+    ["pwsh -ConfigurationFile x.pssc", /hands the shell \(pwsh\) -ConfigurationFile, which loads code from a file/],
+    ["bash --debugger", /hands the shell \(bash\) --debugger, an option the kit does not know/],
+    ["bash -O extdebug", /hands the shell \(bash\) -O extdebug, a setting the kit does not know/],
+    ["bash -eu -o", /hands the shell \(bash\) -o with nothing after it, so it would take this script as its value/]] as const) {
+    assert.throws(() => start(wrapper(`why-${words.replace(/\W+/g, "-").slice(-40)}`, "X=1", words)), why, words);
+  }
+  const oneWord = join(wrappers, "why-one-word");
+  writeFileSync(oneWord, `#!${bash} -e -u\nexec ssh "$@"\n`); chmodSync(oneWord, 0o755);
+  assert.throws(() => start(oneWord), /hands the shell \(bash\) "-e -u" as one word \(Linux passes all that follows the interpreter as one\), which is no option it knows/);
+  // A folder link into /proc/self/cwd is git's folder, the worktree, when git opens a path through it, so a path
+  // through it counts as one into /proc (landing review R1-1), and so does a program a PATH entry leads to there,
+  // which the kit's folder does not hold (R1-2).
+  symlinkSync("/proc/self/cwd", join(dir, "cwd-folder"));
+  const throughCwd = join(dir, "cwd-folder", "cwd-payload");
+  assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: `${throughCwd} host` }, { worktree: root }).problem ?? "", /is a path into \/proc or \/dev|it starts a shell \(cwd-payload\)/);
+  assert.match(sshCommand({ ...base, GIT_SSH: throughCwd }, { worktree: root }).problem ?? "", /is a path into \/proc or \/dev|it starts a shell \(cwd-payload\)/);
+  assert.throws(() => start(wrapper("cwd-folder-env", "X=1", throughCwd)), /starts with env .*, a path into \/proc or \/dev/);
+  const cwdPlain = join(wrappers, "cwd-folder-plain");
+  writeFileSync(cwdPlain, `#!${throughCwd}\n`); chmodSync(cwdPlain, 0o755);
+  assert.throws(() => start(cwdPlain), /, a path into \/proc or \/dev/);
+  const cwdLinks = join(dir, "cwd links");
+  mkdirSync(cwdLinks);
+  symlinkSync("/proc/self/cwd/cwd-payload", join(cwdLinks, "mysh"));
+  const viaCwd = { ...base, PATH: `${cwdLinks}:${bin}:/usr/bin:/bin` };
+  const byName = join(wrappers, "cwd-path-name");
+  writeFileSync(byName, "#!/usr/bin/env mysh\n"); chmodSync(byName, 0o755);
+  assert.throws(() => startCommand(byName, [], viaCwd, { worktree: root, kind: "test" }), /mysh on PATH is .*, which leads into \/proc/);
+  assert.match(sshCommand({ ...viaCwd, GIT_SSH_COMMAND: "mysh host" }, { worktree: root }).problem ?? "", /mysh on PATH is .*, which leads into \/proc|it starts a shell \(mysh\)/);
+  assert.match(sshCommand({ ...viaCwd, GIT_SSH_COMMAND: "timeout 30 mysh host" }, { worktree: root }).problem ?? "", /it starts a shell \(mysh\)/);
+  // A worktree folder that is a link leading out still counts as the worktree, as the path is written: a build can
+  // point it elsewhere after the check (landing review R1-3).
+  symlinkSync(bin, join(root, "tools-link"));
+  for (const command of ["./tools-link/ssh", join(root, "tools-link", "ssh")]) {
+    assert.match(sshCommand({ ...base, GIT_SSH_COMMAND: command }, { worktree: root }).problem ?? "", /inside the worktree or its Git folder/, command);
+  }
+  assert.throws(() => start(wrapper("tools-link-env", "X=1", join(root, "tools-link", "ssh"))), /inside the worktree or its Git folder/);
   // A bare name PATH finds as such a link counts too (round 27).
   const procLinks = join(dir, "proc links");
   mkdirSync(procLinks);

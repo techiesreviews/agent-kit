@@ -455,11 +455,14 @@ const runFolders = (env, shut) => { const folders = trustedFolders(env, shut); r
 // that stays on the run's PATH (a link someone made from a folder of their own to a program in the worktree, which a
 // build can swap), so the bare name would start it, outside the lock: with no `file` to start in its place, the name
 // is not started at all (linkRefusal). With neither, no folder holds an executable by that name, and starting the
-// bare name with the run's PATH finds none either.
+// bare name with the run's PATH finds none either. An entry that leads into /proc is refused the same way, whether or
+// not the kit's folder holds what it names: /proc/self/cwd/x is x in git's folder, the worktree, when git opens it
+// (landing review R1-2).
 function lookup(name, env, shut) {
   let refused = null;
   for (const folder of runFolders(env, shut)) {
     const file = join(folder, name);
+    if (leadsToProc(file)) { refused ??= file; continue; }
     if (!executable(file)) continue;
     if (!shut.some(root => inside(real(file), root))) return { file, refused };
     refused ??= file;
@@ -469,7 +472,9 @@ function lookup(name, env, shut) {
 // The executable file a bare name stands for, from those folders only, or null.
 const programFor = (name, env, shut) => lookup(name, env, shut).file;
 // Why a program found only through such a link is not started, with the step that fixes it.
-const linkRefusal = (name, file) => `${name} on PATH is ${file}, a link into the worktree or its Git folder (${real(file)}), where a build can change it, so it is not started; put a ${name} from outside them on PATH, or set ASE_KEY_GUARD=off to run without the lock`;
+const linkRefusal = (name, file) => leadsToProc(file)
+  ? `${name} on PATH is ${file}, which leads into ${magic(file)}, another program for each process that opens it, so it is not started; put a ${name} from outside /proc on PATH, or set ASE_KEY_GUARD=off to run without the lock`
+  : `${name} on PATH is ${file}, a link into the worktree or its Git folder (${real(file)}), where a build can change it, so it is not started; put a ${name} from outside them on PATH, or set ASE_KEY_GUARD=off to run without the lock`;
 // The variable a word sets for an env that reads it, or undefined: PATH, or one that has a bash or sh it starts run code
 // from elsewhere (TOOLS-329): BASH_ENV or ENV (a file it reads before anything else), a BASH_FUNC_<name>%% function, or
 // SHELLOPTS, BASHOPTS or PS4 (a trace prompt it expands), or ZDOTDIR (the folder whose .zshenv every zsh reads), or
@@ -520,41 +525,51 @@ const shellNamed = (word, names = shells) => new RegExp(`^(?:${names})(?:-static
 // sh and env take a relative path from the folder git runs in, which is not the kit's own folder: such a path counts
 // from there too, the worktree or the Git folder (GPT second look, round 14).
 const fromRoots = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map(root => join(root, path))];
-// Whether a path, relative ones from there too, leads into the worktree or the Git folder, or sits in a folder there:
-// a build can point a link it placed there elsewhere after the check (Claude review, round 14).
-const shutIn = (path, shut) => fromRoots(path, shut).some(place => shut.some(root => inside(real(place), root) || inside(real(dirname(resolve(place))), root)));
+// Whether a path, relative ones from there too, leads into the worktree or the Git folder, or passes through a folder
+// there on the way as it is written: a build can point a link it placed there elsewhere after the check (Claude review,
+// round 14), a folder link too (<worktree>/tools -> /usr/bin; landing review R1-3). Each folder on the way counts with
+// its links followed, so a worktree reached through a link of its own counts as well.
+const writtenFolders = place => { const folders = []; for (let at = dirname(resolve(place)); ; at = dirname(at)) { folders.push(at); if (dirname(at) === at) return folders; } };
+const shutIn = (path, shut) => fromRoots(path, shut).some(place => [place, ...writtenFolders(place)].some(at => shut.some(root => inside(real(at), root))));
 // /proc/self/exe and the like are whatever program opens them: the shell git starts, when it is that shell that runs
 // them, while the kit sees its own node there (GPT second look, round 27). So a path that leads into /proc or /dev, by
 // a link or a folder link too, counts as a shell: one in /proc whatever the kit sees there (/proc/self/cwd is the
 // folder of the process that opens it, which for git is the worktree), one in /dev when it is a program file
 // (/dev/null, an -F value, is none). A program or interpreter path there is refused outright (intoProc).
 const systemFolder = /^\/(?:proc|dev)(?:\/|$)/;
-// Where a path first leads into /proc or /dev ("/proc/…" or "/dev/…"), or "". The kernel reads a .. after a folder
-// link from where that link leads, so the path as written is checked, then each folder on the way as libc's realpath
-// finds it (/usr/../proc counts), and a link's target is put after the real folder as written, never tidied.
+// Where a path first leads into /proc or /dev ("/proc/…" or "/dev/…"), or "". It is walked one part at a time as the
+// kernel walks it: a link, a folder link too, is swapped for its target as written, which is checked before anything
+// past it is read (cwd-folder -> /proc/self/cwd leads into /proc, though from the kit's folder it is the kit's own
+// folder: landing review R1-1), and a .. climbs from where the walk has got to, after a folder link from where that
+// link leads (/usr/../proc counts). Past 40 links the kernel stops; so does this, counting it as /proc.
 const magic = path => {
-  let place = isAbsolute(path) ? path : `${process.cwd()}/${path}`;
-  for (let step = 0; step < 40; step++) {
-    if (systemFolder.test(place)) return place;
-    const parts = place.split("/");
-    for (let count = 2; count < parts.length; count++) {
-      let folder;
-      try { folder = realpathSync.native(parts.slice(0, count).join("/") || "/"); } catch { return ""; }
-      if (systemFolder.test(folder)) return folder;
-    }
-    let target, folder;
-    try { target = readlinkSync(place); folder = realpathSync.native(dirname(place)); } catch { return ""; }
-    place = isAbsolute(target) ? target : `${folder}/${target}`;
+  let at = "/", rest = (isAbsolute(path) ? path : `${process.cwd()}/${path}`).split("/"), links = 0;
+  while (rest.length) {
+    const part = rest.shift();
+    if (part === "" || part === ".") continue;
+    if (part === "..") { at = dirname(at); continue; }
+    const next = at === "/" ? `/${part}` : `${at}/${part}`;
+    if (systemFolder.test(next)) return [next, ...rest].join("/");
+    let target;
+    try { if (!lstatSync(next).isSymbolicLink()) { at = next; continue; } target = readlinkSync(next); } catch { return ""; }
+    if (++links > 40) return "/proc";
+    if (isAbsolute(target)) at = "/";
+    rest = [...target.split("/"), ...rest];
   }
-  return "/proc";
+  return "";
 };
+// Whether a path leads into /proc, where what it names is another program, or another folder's file, for each process.
+const leadsToProc = path => /^\/proc(?:\/|$)/.test(magic(path));
 // A path as written, from the kit's folder and from each shut folder, never tidied (a .. counts as the kernel reads it).
 const rawPlaces = (path, shut) => isAbsolute(path) ? [path] : [path, ...shut.map(root => `${root}/${path}`)];
 const intoProc = (path, shut) => path.includes("/") && rawPlaces(path, shut).some(place => magic(place));
 const namesShell = (word, env, shut) => {
-  const files = word.includes("/") ? fromRoots(word, shut).filter(executable) : [programFor(word, env, shut)].filter(Boolean);
+  const found = word.includes("/") ? null : lookup(word, env, shut);
+  const files = found ? [found.file].filter(Boolean) : fromRoots(word, shut).filter(executable);
   const leadsIn = place => { const where = magic(place); return where.startsWith("/proc") || (where !== "" && executable(place)); };
-  return shellNamed(word) || (word.includes("/") ? rawPlaces(word, shut) : files).some(leadsIn) || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es|nu)$/.test(basename(name))));
+  // A bare name a PATH entry before it leads into /proc for counts too: the program that looks it up opens that one.
+  return shellNamed(word) || Boolean(found?.refused && leadsToProc(found.refused)) || (found ? files : rawPlaces(word, shut)).some(leadsIn)
+    || files.some(file => shellNamed(real(file)) || [word, real(file)].some(name => /^(?:rc|es|nu)$/.test(basename(name))));
 };
 // ssh splits an option from its value at any blank, a line break and carriage return too, or an =.
 const viaShell = /(?<!permit)(proxy|local)command(?:\s*=\s*|\s+|$)(.*)$/is;
@@ -650,7 +665,8 @@ const shellKind = (found, name) => shRules(real(found)) ? undefined : kindOf(rea
 // The name after -o or -O can switch a reading on as well as a letter can (zsh -o shinstdin is -s, and zsh reads
 // names in any case, without _, and +o no_… as on), so only these names count there (round 26).
 const pwshValued = ["executionpolicy", "ex", "ep", "workingdirectory", "wd", "outputformat", "o", "of", "inputformat", "inp", "if", "configurationname", "config", "custompipename", "windowstyle", "w"];
-const pwshSwitches = ["interactive", "i", "login", "l", "mta", "sta", "noexit", "noe", "nologo", "nol", "noninteractive", "noni", "noprofile", "nop", "noprofileloadtime", "sshservermode", "sshs", "version", "v"];
+// pwsh -Login runs /etc/profile and ~/.profile through /bin/sh, as bash -l does, so it is none of them (landing review R1-4).
+const pwshSwitches = ["interactive", "i", "mta", "sta", "noexit", "noe", "nologo", "nol", "noninteractive", "noni", "noprofile", "nop", "noprofileloadtime", "sshservermode", "sshs", "version", "v"];
 const pwshName = word => /^([-–—―])\1?([A-Za-z]+)$/.exec(word)?.[2]?.toLowerCase();
 const setNames = ["errexit", "nounset", "xtrace", "pipefail", "noclobber", "noglob", "allexport", "errtrace", "functrace", "posix", "verbose", "noexec", "braceexpand", "hashall", "monitor", "notify",
   "extglob", "globstar", "nullglob", "failglob", "dotglob", "nocaseglob", "inheriterrexit", "lastpipe", "expandaliases", "extendedglob", "shwordsplit", "ksharrays", "warncreateglobal"];
@@ -666,12 +682,29 @@ const handsScript = (found, name, options) => {
   const known = option => family === "pwsh"
     ? valued(option) || pwshSwitches.includes(pwshName(option))
     : Boolean(shortKnown?.test(option)) || (option.startsWith("--") && longKnown.includes(option.slice(2)));
+  // What the shell gets from a word it does not take as a known option, in words a person can act on (landing review
+  // R1-6): a Linux line's options passed as one word, -s, a login or interactive option, a file of code, an option the
+  // kit does not know, or a script.
+  const why = word => {
+    const name = family === "pwsh" ? pwshName(word) : undefined;
+    if (/\s/.test(word)) return `"${word}" as one word (Linux passes all that follows the interpreter as one), which is no option it knows`;
+    if (word === "-" || ((family === "sh" || family === "zsh") && /^-[A-Za-z]*s/.test(word))) return `${word}, which has it read commands from its input in place of this script`;
+    if (["login", "l"].includes(name) || (family !== "pwsh" && (/^-[A-Za-z]*[il]/.test(word) || /^--(?:login|interactive)$/.test(word)))) return `${word}, which makes it a login or interactive shell that reads start-up files`;
+    if (["configurationfile", "settingsfile"].includes(name) || /^--(?:rcfile|init-file)(?:=|$)/.test(word)) return `${word}, which loads code from a file`;
+    if (["file", "f"].includes(name)) return `${word}, which hands it a script of its own to run in place of this one`;
+    if (family === "pwsh" ? Boolean(name) : /^[-+]./.test(word)) return `${word}, an option the kit does not know`;
+    return `a script of its own (${word}), which it would run in place of this one`;
+  };
   for (let i = 0; i < options.length; i++) {
-    if (family && family !== "pwsh" && (options[i] === "--" || options[i] === "-")) return i + 1 < options.length;
-    if (!known(options[i])) return true;
-    if (valued(options[i])) { i++; if (i >= options.length || (family !== "pwsh" && !setName(options[i]))) return true; }
+    if (family && family !== "pwsh" && (options[i] === "--" || options[i] === "-")) return i + 1 < options.length ? `a script of its own after ${options[i]} (${options[i + 1]}), which it would run in place of this one` : null;
+    if (!known(options[i])) return why(options[i]);
+    if (valued(options[i])) {
+      i++;
+      if (i >= options.length) return `${options[i - 1]} with nothing after it, so it would take this script as its value`;
+      if (family !== "pwsh" && !setName(options[i])) return `${options[i - 1]} ${options[i]}, a setting the kit does not know`;
+    }
   }
-  return false;
+  return null;
 };
 
 // A script's first line names its interpreter, and `#!/usr/bin/env node` has env look node up by its bare name on PATH,
@@ -704,7 +737,8 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
     // <worktree>/payload, #!/bin/bash -s; GPT second look, round 27), or on macOS as words split at blanks (Claude
     // review, round 27).
     const given = process.platform === "darwin" ? rest.split(/[ \t]+/) : [rest];
-    if (rest && namesShell(interpreter, names, shut) && handsScript(interpreter, interpreter, given)) refuse(`${file} starts with ${line}, which hands the shell (${basename(interpreter)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
+    const handed = rest && namesShell(interpreter, names, shut) ? handsScript(interpreter, interpreter, given) : null;
+    if (handed) refuse(`${file} starts with ${line}, which hands the shell (${basename(interpreter)}) ${handed}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
     // A binary interpreter the kernel starts itself; one that is a script again is followed (the kernel passes what
     // follows the interpreter as one argument, before the script).
     const next = interpreted(interpreter, [...(rest ? [rest] : []), file, ...args], env, shut, refuse, depth + 1, names);
@@ -751,7 +785,8 @@ function interpreted(file, args, env, shut, refuse, depth = 0, names = env) {
   const shell = startedShell(options, names, shut) ?? (namesShell(found, names, shut) && options.some(option => runsString(option, kind)) ? basename(name) : null);
   if (shell) refuse(`${file} starts with env ${rest}, which starts a shell (${shell}), and a shell can build PATH= or BASH_ENV= out of pieces; ${shellAdvice(shell, " from that line") ?? "start the program from that line directly"}, or set ASE_KEY_GUARD=off to run without the lock`);
   // A shell given anything but options would run something else in place of this script (handsScript).
-  if (namesShell(found, names, shut) && handsScript(found, name, options)) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) a script or -s besides its options, so it would run something other than ${file}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
+  const handed = namesShell(found, names, shut) ? handsScript(found, name, options) : null;
+  if (handed) refuse(`${file} starts with env ${rest}, which hands the shell (${basename(name)}) ${handed}; keep only options on that line, or set ASE_KEY_GUARD=off to run without the lock`);
   const [command, commandArgs] = interpreted(found, [...options, file, ...args], env, shut, refuse, depth + 1, names);
   if (!assignments.length) return [command, commandArgs];
   // env sets them and starts the program by the full path it is given (one with = in it would read as one more).
