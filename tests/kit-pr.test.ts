@@ -5625,7 +5625,7 @@ test("kit pr's push to an ssh remote never starts an ssh PATH holds only as a li
 // outside any lock.
 test("kit pr refuses a push whose remote lists a folder after another push address, or one on this machine", t => {
   const f = fixture(t);
-  const noted = join(f.dir, "hook.txt");
+  const noted = join(f.origin, "hook.txt");
   writeFileSync(join(f.origin, "hooks/pre-receive"), `#!/bin/sh\necho ran >> ${JSON.stringify(noted)}\ncat > /dev/null\n`, { mode: 0o755 });
   // A build lists an outside address first and the folder second. The outside one is an ssh remote whose ssh (the
   // lead's, outside the worktree) serves a bare repository here, so its push goes through and git goes on to the next.
