@@ -295,12 +295,16 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   `git-safety.mjs`, facing the other way: the build keeps its work and loses write access to the rest of the machine;
   git's ssh keeps the keys and loses access to the build. No string filter decides where a write may go. The kernel
   also refuses writes through a worktree link into HOME. Codex keeps its own profile, with only the run's private temp
-  folder writable rather than all of `/tmp`. Other CLIs' build state starts with copies of their own login and settings;
+  folder writable rather than all of `/tmp`, on every platform Codex supports. Claude's build state starts with copies of its own login and settings;
   skills and other resources are read-only links. A build's artifact folder holds a `cli-state` link to its private
-  temporary folder, so a resume keeps its session. That folder may contain the CLI's refreshed login; remove it with
-  the artifacts when the run is no longer needed. Checks' private folders are removed when `kit pr` exits. Tools that
+  temporary folder, so a resume keeps its session. That folder may contain the CLI's refreshed login. Before removing
+  the artifacts, read the `cli-state` link and remove that temporary folder too. A cleared session gives a message to
+  start a new build. The lead must check a real Claude login refresh before merging a change to this isolation: a copy
+  is never written back to the home login from an untrusted build. Checks' private folders are removed when `kit pr` exits.
+  A push to a folder remote also allows writes to that named destination; its hooks still see no keys. Tools that
   insist on writing to a fixed home path fail; use their cache or state setting to put those writes in the worktree or
-  `$TMPDIR`. There is no fence where the lock is off or runs unwrapped (macOS and Windows).
+  `$TMPDIR`. Installed Playwright browsers remain readable at their original cache path when `PLAYWRIGHT_BROWSERS_PATH`
+  is unset. There is no bubblewrap fence where the lock is off or runs unwrapped (macOS and Windows); Codex keeps its native profile there.
 - **What the key lock does not do.** It keeps an agent the kit starts from reading the key files while it runs; it does
   not confine what the agent writes. A build writes wherever the user can (the worktree, the repository's Git folder and
   settings, files under HOME), and what it leaves runs later with whoever starts it. The kit's own later steps are

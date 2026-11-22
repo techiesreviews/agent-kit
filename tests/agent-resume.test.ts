@@ -83,9 +83,10 @@ function alive(pid: number) {
 function fixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "ase-agent-resume-"));
   const root = join(dir, "work tree"), bin = join(dir, "bin"), out = join(dir, "out");
-  const brief = join(dir, "brief.md"), callsFile = join(dir, "calls.jsonl"), hold = join(dir, "release");
+  const brief = join(dir, "brief.md"), callsFile = join(root, ".scratch/calls.jsonl"), hold = join(dir, "release");
   const statusPath = join(out, "status.json");
   for (const path of [root, bin, out]) mkdirSync(path);
+  mkdirSync(join(root, ".scratch"));
   writeFileSync(brief, "Build this brief.\n");
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   for (const cli of ["codex", "claude"]) {
@@ -97,6 +98,7 @@ function fixture(t: TestContext) {
     return result.stdout.trim();
   };
   git("init", "-b", "test");
+  writeFileSync(join(root, ".git/info/exclude"), ".scratch/\n");
   git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base");
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASE_SKIP_DOCTOR: "1", ASE_AGENT_TIMEOUT: "20s",
     ASE_RESUME_POLL_MS: "10", ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", FAKE_CALLS: callsFile, KIT_TALK_STYLE: "plain" };
@@ -189,7 +191,7 @@ for (const cli of ["codex", "claude"]) test(`${cli} writes running status with a
   assert.equal(f.status().state, "done"); assert.equal(f.status().exitCode, 0);
   assert.equal(f.status().session, assigned); assert.equal(f.status().pid, status.pid);
   assert.match(result.stdout, /^artifacts: /); assert.ok(result.stdout.includes(report));
-  assert.deepEqual(readdirSync(f.out).sort(), ["out.md", "run.log", "status.json"]);
+  assert.deepEqual(readdirSync(f.out).sort(), [...(cli === "claude" ? ["cli-state"] : []), "out.md", "run.log", "status.json"]);
 });
 
 test("nonzero CLI exit records failed and retains the exit code", async t => {
@@ -351,7 +353,7 @@ for (const cli of ["codex", "claude"]) test(`concurrent ${cli} resumes with dist
   const briefs = [join(f.dir, "first.md"), join(f.dir, "second.md")];
   const prompts = ["Fix the first finding.\n", "Fix the second finding.\n"];
   briefs.forEach((brief, index) => writeFileSync(brief, prompts[index]));
-  const barrier = join(f.dir, "barrier"), claims = join(f.dir, "claims.jsonl"), events = join(f.dir, "events.jsonl");
+  const barrier = join(f.dir, "barrier"), claims = join(f.dir, "claims.jsonl"), events = join(f.root, ".scratch/events.jsonl");
   const loader = join(f.dir, "claim-barrier.mjs"); mkdirSync(barrier);
   // Intercept only the initial claim's atomic link. Both runners must select
   // generation 1 before either can publish it, so one necessarily loses.

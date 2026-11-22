@@ -1089,7 +1089,8 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
   // A local package type makes these extensionless fixtures ESM under Node 24.
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   for (const cli of ["codex", "claude"]) { writeFileSync(join(bin, cli), fake); chmodSync(join(bin, cli), 0o755); }
-  const capture = join(dir, "capture.json");
+  const capture = join(wt, ".scratch/capture.json");
+  mkdirSync(join(wt, ".scratch"), { recursive: true });
   const invoke = (script: string, args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve(script), ...args], {
     encoding: "utf8", timeout: 15_000,
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: sourceHome, ASE_FAKE_CAPTURE: capture, ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", KIT_TALK_STYLE: "plain", ...overrides },
@@ -1553,7 +1554,8 @@ console.log(JSON.stringify({ result: "REVIEW_STATUS: complete\\nDefects: none\\n
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   writeFileSync(join(bin, "claude"), `#!/usr/bin/env node\n${fake}`); chmodSync(join(bin, "claude"), 0o755);
   const run = (kind: string) => {
-    const pidFile = join(dir, `${kind}-pids.json`);
+    const pidFile = join(wt, ".scratch", `${kind}-pids.json`);
+    mkdirSync(join(wt, ".scratch"), { recursive: true });
     pidFiles.push(pidFile);
     const result = spawnSync("bash", [resolve("agent.sh"), kind, wt, brief, "--model", "claude-haiku-5-5", ...(kind === "review" ? ["--base", "origin/dev"] : [])], {
       encoding: "utf8", timeout: 20_000,

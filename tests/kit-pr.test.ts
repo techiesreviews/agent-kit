@@ -253,7 +253,7 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
   symlinkSync(process.execPath, join(bin, "node"));
   writeFileSync(join(bin, "fake-calls.mjs"), fakeCalls);
   const env: NodeJS.ProcessEnv = { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main,
-    ASE_OWNER: "ak-14", KIT_PR_KIT: join(bin, "fake-kit"), KIT_PR_CALLS: join(bin, "fake-calls.mjs"), FAKE_CALLS: join(dir, "calls.jsonl"), CLAUDECODE: "",
+    ASE_OWNER: "ak-14", KIT_PR_KIT: join(bin, "fake-kit"), KIT_PR_CALLS: join(bin, "fake-calls.mjs"), FAKE_CALLS: join(root, ".scratch/calls.jsonl"), CLAUDECODE: "",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", XDG_STATE_HOME: join(dir, "state") };
   for (const key of Object.keys(env)) if (key.startsWith("FAKE_") && key !== "FAKE_CALLS") delete env[key];
   // The origin is a folder, so GH_REPO names the fake's repo (what its gh repo view answers); kit pr stops without one.
@@ -265,6 +265,7 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
   };
   gitAt(dir, "init", "--bare", "--initial-branch=dev", origin);
   gitAt(dir, "clone", origin, root);
+  mkdirSync(join(root, ".scratch"));
   const git = (...args: string[]) => gitAt(root, ...args);
   git("config", "user.name", "Kit test"); git("config", "user.email", "kit@example.com");
   writeFileSync(join(root, ".gitignore"), ".scratch/\n");

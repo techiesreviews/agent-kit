@@ -4,7 +4,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { completedFixRounds, openFindings } from "../review-findings.mjs";
 import { branchRisk, fixRoundsDone, isAncestorOf, isNit, roundLimit } from "../review-loop.mjs";
 import { reviewGate, shortText } from "../review-gate.mjs";
@@ -354,14 +354,14 @@ async function main(args) {
       const here = others.filter((_, index) => near[index]);
       if (here.length) throw new Error(`${remote} pushes to this machine itself (${here.join(", ")}), whose hooks would run outside the key lock; push to another address, or set ASE_KEY_GUARD=off to run without the lock`);
       if (push && folders.length && others.length) throw new Error(`${remote} pushes to a folder on this machine (${folders.join(", ")}) beside other addresses (${others.join(", ")}), and that folder's hooks would run with the keys; keep one push address in remote.${remote}.pushurl or remote.${remote}.url, or set ASE_KEY_GUARD=off to run without the lock`);
-      return folders.length > 0;
+      return { local: folders.length > 0, writable: push ? folders.map(url => /^file:/i.test(url) ? fileURLToPath(url) : resolve(root, url)) : [] };
     };
     // The checks' lock, made when the first check starts; a note says where they run unlocked. A push to a folder remote
     // takes the plain lock (it starts no sandbox of its own).
-    let checksLocked, pushLocked;
+    let checksLocked;
     const lockNotes = [];
-    const lockFor = () => {
-      const lock = checkLock({ worktree: root, common, env: { ...env, ...startupFiles }, readOnly: programs ? [programs] : [] });
+    const lockFor = (writable = []) => {
+      const lock = checkLock({ worktree: root, common, env: { ...env, ...startupFiles }, readOnly: programs ? [programs] : [], writable });
       if (lock.close) process.once("exit", lock.close);
       return lock;
     };
@@ -394,7 +394,10 @@ async function main(args) {
         Object.assign(childEnv, safety(childEnv, network));
         // A push to a folder remote runs that folder's own hooks with this call's variables (git clears the settings
         // above for it); it needs no credentials, so it runs inside the key lock.
-        if (network && guarded && await lockedRemote(argv)) { const lock = pushLocked ??= lockFor(); [program, args] = lock.wrap(gitBin, argv); Object.assign(childEnv, lock.env); }
+        if (network && guarded) {
+          const remote = await lockedRemote(argv);
+          if (remote.local) { const lock = lockFor(remote.writable); [program, args] = lock.wrap(gitBin, argv); Object.assign(childEnv, lock.env); }
+        }
       }
       else {
         Object.assign(childEnv, safety(childEnv));
