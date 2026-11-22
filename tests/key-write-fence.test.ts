@@ -817,3 +817,58 @@ test("TOOLS-397: ensureFenceStateDir refuses worktree state paths without leakin
     new RegExp(`saved-session path \\(${parentFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\) is not a folder`),
   );
 });
+
+test("TOOLS-397: replacing a build's artifact folder with a link to another build in the same worktree refuses resume", { skip: noBwrap }, t => {
+  const { dir, worktree, common, env } = workspace(t);
+  const agentDir = join(worktree, ".scratch/agent");
+  const outA = join(agentDir, "build-a"), outB = join(agentDir, "build-b");
+  mkdirSync(outA, { recursive: true });
+  mkdirSync(outB, { recursive: true });
+  const stateA = join(outA, "cli-state"), stateB = join(outB, "cli-state");
+
+  const guardA = keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateA });
+  const guardB = keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateB });
+  const savedA = realpathSync(stateA), savedB = realpathSync(stateB);
+  t.after(() => {
+    for (const saved of [savedA, savedB]) {
+      rmSync(saved, { recursive: true, force: true });
+      rmSync(`${saved}.owner`, { force: true });
+    }
+  });
+  writeFileSync(join(guardB.env.CLAUDE_CONFIG_DIR, "private-b"), "b-only");
+  guardA.close();
+  guardB.close();
+
+  // Swapping build A's artifact folder for a link to build B's folder must not let A claim B's private state.
+  rmSync(outA, { recursive: true, force: true });
+  symlinkSync(outB, outA);
+  assert.throws(
+    () => keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateA }),
+    /saved session cannot be used/,
+  );
+
+  // Relative link swap and higher writable ancestor link swap are refused the same way.
+  rmSync(outA);
+  symlinkSync("build-b", outA);
+  assert.throws(
+    () => keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateA }),
+    /saved session cannot be used/,
+  );
+  rmSync(outA);
+  const movedAgent = join(worktree, ".scratch/agent-real");
+  renameSync(agentDir, movedAgent);
+  symlinkSync(movedAgent, agentDir);
+  assert.throws(
+    () => keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateB }),
+    /saved session cannot be used/,
+  );
+  rmSync(agentDir);
+  renameSync(movedAgent, agentDir);
+
+  // Restoring build B still resumes normally, including through a non-writable symlink to the worktree.
+  const wtLink = join(dir, "wt-link");
+  symlinkSync(worktree, wtLink);
+  const resumedB = keyGuard({ cli: "claude", kind: "build", worktree: wtLink, common, env, state: join(wtLink, ".scratch/agent/build-b/cli-state") });
+  t.after(() => resumedB.close());
+  assert.equal(readFileSync(join(resumedB.env.CLAUDE_CONFIG_DIR, "private-b"), "utf8"), "b-only");
+});

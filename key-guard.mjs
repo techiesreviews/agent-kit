@@ -336,8 +336,38 @@ function migrateClaudeSession(source, target, worktree, session) {
   }
 }
 
-function canonicalStatePointer(state) {
-  return join(real(dirname(state)), basename(state));
+// Resolve read-only ancestors of `state` while refusing symlinks inside writable roots, so a build cannot swap its
+// artifact folder for a link to another build's folder in the same worktree and satisfy that build's owner check.
+function canonicalStatePointer(state, writableRoots = []) {
+  const invalid = () => new Error("this build's saved session cannot be used; start a new build");
+  if (process.platform === "win32") return join(real(dirname(state)), basename(state));
+  const raw = isAbsolute(state) ? state : `${process.cwd()}/${state}`;
+  const name = basename(raw);
+  if (!name || name === "." || name === "..") throw invalid();
+  let at = "/", rest = dirname(raw).split("/"), links = 0;
+  while (rest.length) {
+    const part = rest.shift();
+    if (part === "" || part === ".") continue;
+    if (part === "..") { at = dirname(at); continue; }
+    const next = join(at, part);
+    let info;
+    try { info = lstatSync(next); } catch (error) {
+      if (error.code === "ENOENT") throw error;
+      throw invalid();
+    }
+    if (!info.isSymbolicLink()) {
+      if (!info.isDirectory()) throw invalid();
+      at = next;
+      continue;
+    }
+    if (writableRoots.some(root => inside(next, root))) throw invalid();
+    if (++links > 40) throw invalid();
+    let target;
+    try { target = readlinkSync(next); } catch { throw invalid(); }
+    if (isAbsolute(target)) at = "/";
+    rest = [...target.split("/"), ...rest];
+  }
+  return join(at, name);
 }
 
 function readFenceOwner(ownerFile) {
@@ -1613,15 +1643,15 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
   // rename its root (its parent is masked and read-only). A sibling `<name>.owner` record ties each session to the
   // exact state link and worktree that created it, so another build cannot repoint its link at it.
   let dir, fresh = true, parent = null, ownerFile = null;
-  const expectedState = state ? canonicalStatePointer(state) : "", expectedWorktree = worktree ? real(worktree) : "";
+  const expectedState = state ? canonicalStatePointer(state, allRoots) : "", expectedWorktree = worktree ? real(worktree) : "";
   if (state) {
     const fenceRoot = fenceStateDir(env);
     let info;
-    try { info = lstatSync(state); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    try { info = lstatSync(expectedState); } catch (error) { if (error.code !== "ENOENT") throw error; }
     if (info) {
       const invalid = () => new Error("this build's saved session cannot be used; start a new build");
       if (!info.isSymbolicLink()) throw invalid();
-      dir = readlinkSync(state);
+      dir = readlinkSync(expectedState);
       let saved;
       try { saved = statSync(dir); }
       catch { throw new Error("this build's saved session is gone because its state folder was removed; start a new build"); }
@@ -1684,7 +1714,7 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
     }
     if (state && fresh) {
       writeFileSync(ownerFile, JSON.stringify({ state: expectedState, worktree: expectedWorktree }), { mode: 0o600 });
-      symlinkSync(dir, state);
+      symlinkSync(dir, expectedState);
     }
     return { env: extra, dir, writable: parent ? [...roots, ...extraRoots] : [...roots, ...extraRoots, dir], writableFds, fds, pinned: pinnedDestinations, writableAfter: parent ? [dir] : [], parent, close };
   } catch (error) {
