@@ -206,6 +206,8 @@ for (const [name, text] of Object.entries({ ...standardLicences, "BSD-3-Clause":
     f.put(join(f.home, ".claude/skills/crane/references/legal.md"), rewrapped);
     f.put(join(f.home, ".claude/skills/crane/scripts/licensed.js"), text.split("\n").map(line => `// ${line}`).join("\n"));
     f.put(join(f.home, ".claude/skills/crane/templates/licensed.html"), text.split("\n").map(line => `<!-- ${line} -->`).join("\n"));
+    f.put(join(f.repo, "src/licensed.js"), text.split("\n").map(line => `// ${line}`).join("\n"));
+    f.put(join(f.repo, "public/licensed.html"), text.split("\n").map(line => `<!-- ${line} -->`).join("\n"));
     f.put(join(f.repo, "vendor/icons/LICENSE.txt"), text);
     f.git("add", "."); f.git("commit", "-q", "-m", "vendored licence");
     f.put(join(f.repo, "src/icons.js"), `/*\n${text.split("\n").map(line => ` * ${line}`).join("\n")}\n */\n`);
@@ -230,13 +232,15 @@ test("standard licence text never hides a copied skill line in the same file", (
   assert.match(result.stderr, /vendor\/icons\/LICENSE.txt:\d+: holds a line from the local skill crane/);
   assert.match(result.stdout, /RESULT: fail skill-guard 1 problem/);
   assert.doesNotMatch(result.stdout + result.stderr, /paper crane/);
-  const mixedLine = `${text.split("\n").find(line => line.startsWith("Permission"))} ${secret}`;
+  const unique = "Tuck the crane tail under the saucer and count every fold aloud to the moon";
+  const mixedLine = `${text.split("\n").find(line => line.startsWith("Permission"))} ${unique}`;
   f.put(join(f.home, ".claude/skills/crane/references/mixed.md"), mixedLine);
   f.put(join(f.repo, "mixed.md"), mixedLine);
   const mixed = f.run(["--base", "HEAD~1"]);
   assert.equal(mixed.status, 1, mixed.stderr);
   assert.match(mixed.stderr, /mixed\.md:1: holds a line from the local skill crane/);
   assert.match(mixed.stdout, /RESULT: fail skill-guard 2 problem/);
+  assert.doesNotMatch(mixed.stdout + mixed.stderr, /Tuck the crane/);
 });
 
 test("a project's own licence passes whatever licence text it holds, and a skill line in any other file still fails", (t) => {
