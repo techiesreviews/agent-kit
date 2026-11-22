@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -194,6 +194,8 @@ test("TOOLS-397: pruning a worktree removes its saved write-fence session and le
   const g2 = keyGuard({ cli: "claude", kind: "build", worktree: keepWork, common, env, state: keepState });
   const oldFence = realpathSync(oldState), keepFence = realpathSync(keepState);
   g1.close(); g2.close();
+  // Even if a build changed its own session folder's mode inside the fence, pruning removes both folder and owner record.
+  chmodSync(oldFence, 0o755);
   const head = git("-C", oldWork, "rev-parse", "HEAD").trim();
   const info = { path: oldWork, branch: "merged-old", head, protected: false, locked: false, dirty: false, merged: true, commitAge: 5, createdAge: 5, live: false };
   const outcome = await pruneWorktree(info, 3, {

@@ -223,14 +223,15 @@ export function removeFenceSessions(worktree, env = process.env) {
     const ownerFile = join(parent, entry), dir = join(parent, name);
     const owner = readFenceOwner(ownerFile);
     if (!owner || owner.worktree !== target) continue;
+    let removeOwner = false;
     try {
       const saved = lstatSync(dir);
-      if (saved.isDirectory() && realpathSync(dir) === dir && (saved.mode & 0o777) === 0o700
-        && (typeof process.getuid !== "function" || saved.uid === process.getuid())) {
+      if (saved.isDirectory() && realpathSync(dir) === dir && (typeof process.getuid !== "function" || saved.uid === process.getuid())) {
         rmSync(dir, { recursive: true, force: true });
+        removeOwner = true;
       }
-    } catch { /* Session folder already removed. */ }
-    rmSync(ownerFile, { force: true });
+    } catch (error) { if (error.code === "ENOENT") removeOwner = true; }
+    if (removeOwner) rmSync(ownerFile, { force: true });
   }
 }
 
