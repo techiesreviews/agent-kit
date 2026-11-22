@@ -50,7 +50,7 @@ const standardLicences = Object.values(licenceTexts).map(text => normalLine(text
 const licenceLine = (line) => normalLine(line.replace(/^\s*(?:\/\*+|\/\/|\*|<!--)\s?/, "").replace(/\s*(?:\*\/|-->)\s*$/, "")).toLowerCase();
 const isStandardLicenceLine = (line) => {
   const text = licenceLine(line);
-  return text.length >= minimum && standardLicences.some(licence => licence.includes(text));
+  return text.length > 0 && standardLicences.some(licence => licence.includes(text));
 };
 
 /** A normalised line that is shared web boilerplate, never left in the index. */
