@@ -1403,7 +1403,7 @@ function isHomeSetup(target, env, cwd = process.cwd()) {
   if (folders.some(folder => inside(target, folder))) return true;
   if (inside(target, base) && target !== base) {
     const first = relative(base, target).split(sep)[0];
-    const tempRoot = real(tmpdir());
+    const tempRoot = real(isAbsolute(env.TMPDIR ?? "") ? env.TMPDIR : tmpdir());
     const inHostTemp = inside(tempRoot, base) && tempRoot !== base && inside(target, tempRoot);
     if (first.startsWith(".") && !inHostTemp) return true;
   }
@@ -1465,8 +1465,8 @@ export function openLocalPushTarget(path, { env = process.env, remote = "origin"
       && entry("refs", stat => stat.isDirectory());
     if (!isGit) throw badRepo();
     const base = real(home(env));
-    if (inside(base, full)) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own");
-    if (isHomeSetup(full, env, cwd) || isSystemFolder(full)) throw new Error("this push goes to a home setup or system folder; push to a repository folder of its own");
+    if (inside(base, full)) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
+    if (isHomeSetup(full, env, cwd) || isSystemFolder(full)) throw new Error("this push goes to a home setup or system folder; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
     return pinned;
   } catch (error) {
     close();
@@ -1486,19 +1486,19 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
   for (const entry of writable) {
     if (!entry) continue;
     if (isPinnedTarget(entry)) {
-      if (!verifyPinnedTarget(entry)) throw new Error("this push destination changed after validation; push to a repository folder of its own");
-      if (inside(base, entry.path)) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own");
-      if (isHomeSetup(entry.path, env, worktree) || isSystemFolder(entry.path)) throw new Error("this push goes to a home setup or system folder; push to a repository folder of its own");
+      if (!verifyPinnedTarget(entry)) throw new Error("this push destination changed after validation; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
+      if (inside(base, entry.path)) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
+      if (isHomeSetup(entry.path, env, worktree) || isSystemFolder(entry.path)) throw new Error("this push goes to a home setup or system folder; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
       pinnedDestinations.push(entry);
     } else {
       const raw = resolve(entry);
       let info = null;
       try { info = lstatSync(raw); } catch { /* Missing path is ignored by bwrapArgs. */ }
-      if (info?.isSymbolicLink()) throw new Error("this push goes to a link, not a direct repository folder; push to a repository folder of its own");
+      if (info?.isSymbolicLink()) throw new Error("this push goes to a link, not a direct repository folder; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
       const resolved = real(raw);
-      if (inside(base, resolved)) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own");
-      if (isHomeSetup(resolved, env, worktree) || isSystemFolder(resolved)) throw new Error("this push goes to a home setup or system folder; push to a repository folder of its own");
-      if (info && resolved !== raw) throw new Error("this push goes to a link, not a direct repository folder; push to a repository folder of its own");
+      if (inside(base, resolved)) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
+      if (isHomeSetup(resolved, env, worktree) || isSystemFolder(resolved)) throw new Error("this push goes to a home setup or system folder; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
+      if (info && resolved !== raw) throw new Error("this push goes to a link, not a direct repository folder; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
       stringDestinations.push(resolved);
     }
   }
@@ -2001,7 +2001,7 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [], 
   // Inside kit pr's own lock for its checks the checks are locked already: no second sandbox, and nothing to note.
   if (bwrapWorks(env, shut) && outerLock(env)) {
     const pinned = writable.filter(isPinnedTarget);
-    for (const target of pinned) if (!verifyPinnedTarget(target)) throw new Error("this push destination changed after validation; push to a repository folder of its own");
+    for (const target of pinned) if (!verifyPinnedTarget(target)) throw new Error("this push destination changed after validation; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
     return { env: scrub, fds: [], wrap: plain, note: null, close() { for (const target of pinned) target.close?.(); } };
   }
   const refuse = problem => { throw new Error(`cannot lock the key files for kit pr's checks: ${problem}`); };
@@ -2016,7 +2016,7 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [], 
   // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
   const wrap = (command, args) => {
     for (const target of fence.pinned) {
-      if (!verifyPinnedTarget(target)) throw new Error("this push destination changed after validation; push to a repository folder of its own");
+      if (!verifyPinnedTarget(target)) throw new Error("this push destination changed after validation; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock");
     }
     return [bwrap, [...outer, ...mark.args, "--", command, ...args]];
   };

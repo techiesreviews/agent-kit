@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapWorks, checkLock, keyGuard, openLocalPushTarget } from "../key-guard.mjs";
+import { bwrapWorks, checkLock, keyGuard, openLocalPushTarget, resetBwrapProbe } from "../key-guard.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 const noBwrap = bwrapWorks() === null ? false : "bubblewrap cannot run here";
@@ -507,6 +507,44 @@ test("TOOLS-397: pinned local push targets refuse HOME setup folders and stay pi
     stdio: ["ignore", "pipe", "pipe", ...(inWorkLock.fds ?? [])],
     encoding: "utf8",
   });
+  assert.equal(existsSync(planted), false);
+  assert.deepEqual(readdirSync(bin), []);
+
+  // Custom XDG/CLI config folders outside HOME are refused, while a host TMPDIR nested under HOME is still accepted.
+  const outsideCfg = join(dir, "cfg"), outsideCfgRepo = join(outsideCfg, "repo.git");
+  const outsideClaude = join(dir, "claude-cfg"), outsideClaudeRepo = join(outsideClaude, "repo.git");
+  const homeTmp = join(home, ".tmp"), homeTmpRepo = join(homeTmp, "x.git");
+  git(dir, "init", "-q", "--bare", outsideCfgRepo);
+  git(dir, "init", "-q", "--bare", outsideClaudeRepo);
+  git(dir, "init", "-q", "--bare", homeTmpRepo);
+  assert.throws(() => openLocalPushTarget(outsideCfgRepo, { env: { ...env, XDG_CONFIG_HOME: outsideCfg } }), /home setup or system folder/);
+  assert.throws(() => openLocalPushTarget(outsideClaudeRepo, { env: { ...env, CLAUDE_CONFIG_DIR: outsideClaude } }), /home setup or system folder/);
+  const inHomeTmp = openLocalPushTarget(homeTmpRepo, { env: { ...env, TMPDIR: homeTmp } });
+  inHomeTmp.close();
+
+  // Older bubblewrap without --bind-fd falls back to --bind <path> <path> with empty lock.fds and still refuses a swapped link at mount time.
+  const shimDir = join(dir, "old-bwrap-bin"), shim = join(shimDir, "bwrap");
+  mkdirSync(shimDir, { recursive: true });
+  const realBwrap = spawnSync("which", ["bwrap"], { env, encoding: "utf8" }).stdout.trim();
+  writeFileSync(shim, `#!/bin/sh\nif [ "$1" = "--help" ]; then echo "usage: bwrap [OPTIONS...]"; exit 0; fi\nexec ${JSON.stringify(realBwrap)} "$@"\n`, { mode: 0o755 });
+  const oldEnv = { ...env, PATH: `${shimDir}:${env.PATH}` };
+  t.after(() => resetBwrapProbe());
+  resetBwrapProbe();
+  const oldRemote = join(dir, "old-ext"), oldSibling = join(dir, "old-ext.git");
+  git(dir, "init", "-q", "--bare", oldRemote);
+  git(dir, "init", "-q", "--bare", oldSibling);
+  writeFileSync(join(oldSibling, "hooks/pre-receive"), `#!/bin/sh\necho planted > ${JSON.stringify(planted)}\n`, { mode: 0o755 });
+  const oldPinned = openLocalPushTarget(oldRemote, { env: oldEnv });
+  const oldLock = checkLock({ worktree, common, env: oldEnv, writable: [oldPinned] });
+  t.after(() => oldLock.close?.());
+  assert.deepEqual(oldLock.fds, []);
+  const [oldCmd, oldArgs] = oldLock.wrap("/usr/bin/git", ["push", oldRemote, "HEAD:refs/heads/dev"]);
+  const bindIdx = oldArgs.indexOf("--bind");
+  assert.ok(oldArgs.some((arg: string, i: number) => arg === "--bind" && oldArgs[i + 1] === oldRemote && oldArgs[i + 2] === oldRemote), `expected --bind ${oldRemote} ${oldRemote} in ${oldArgs.join(" ")} (first --bind at ${bindIdx})`);
+  renameSync(oldRemote, `${oldRemote}.aside`);
+  symlinkSync(bin, oldRemote);
+  const oldRaced = spawnSync(oldCmd, oldArgs, { cwd: worktree, env: { ...oldEnv, ...oldLock.env }, encoding: "utf8" });
+  assert.notEqual(oldRaced.status, 0, oldRaced.stdout + oldRaced.stderr);
   assert.equal(existsSync(planted), false);
   assert.deepEqual(readdirSync(bin), []);
 });
