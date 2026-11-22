@@ -6,6 +6,8 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
 import "./support/kit-env.ts";
+// @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+import { bwrapWorks } from "../key-guard.mjs";
 
 // The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
 delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
@@ -191,7 +193,7 @@ for (const cli of ["codex", "claude"]) test(`${cli} writes running status with a
   assert.equal(f.status().state, "done"); assert.equal(f.status().exitCode, 0);
   assert.equal(f.status().session, assigned); assert.equal(f.status().pid, status.pid);
   assert.match(result.stdout, /^artifacts: /); assert.ok(result.stdout.includes(report));
-  assert.deepEqual(readdirSync(f.out).sort(), [...(cli === "claude" ? ["cli-state"] : []), "out.md", "run.log", "status.json"]);
+  assert.deepEqual(readdirSync(f.out).sort(), [...(cli === "claude" && bwrapWorks() === null ? ["cli-state"] : []), "out.md", "run.log", "status.json"]);
 });
 
 test("nonzero CLI exit records failed and retains the exit code", async t => {
