@@ -30,7 +30,7 @@
 // one does: it installs with one command.
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, copyFileSync, globSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, copyFileSync, globSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -415,7 +415,7 @@ export function bwrapArgs(paths, { writable = null, writableAfter = [], readOnly
   // `readOnly` folders come next, before the masks, so a key path inside one stays hidden; `readOnlyAfter` and
   // `writableAfter` come after them, so a folder inside a masked one (kit pr's links in the runtime folder, or a
   // build's own session inside the masked fence-state root) is still there while siblings stay hidden.
-  const args = [...(writable === null ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", ...(fence ? ["--dev", "/dev"] : ["--dev-bind", "/dev", "/dev"]),
+  const args = [...(fence ? ["--die-with-parent"] : []), ...(writable === null ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", ...(fence ? ["--dev", "/dev"] : ["--dev-bind", "/dev", "/dev"]),
     ...existingPaths(writable).flatMap(path => ["--bind", path, path])]), ...existingPaths(readOnly).flatMap(path => ["--ro-bind", path, path])];
   const masked = [];
   for (const path of [...paths].sort((a, b) => a.length - b.length)) {
@@ -1270,6 +1270,61 @@ function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
   return { paths, problem: null };
 }
 
+// On resume, refresh Claude's private login inside a write-fenced bubblewrap that can only write `dir`: even if a
+// leftover build process swaps the staged file before fchmod or swaps `claude/` right after validation and before
+// rename, the kernel refuses any write or permission change outside `dir`.
+const refreshCredentialsScript = `
+const { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const [target, staged, sourceMtime] = process.argv.slice(1);
+const fail = () => { process.stderr.write("changed\\n"); process.exit(2); };
+const tampered = new Set(["EROFS", "EXDEV", "EISDIR", "ENOTDIR", "ELOOP", "EACCES", "EPERM", "ENOENT"]);
+let fd;
+try {
+  let actual;
+  try { actual = realpathSync(target); } catch { fail(); }
+  if (actual !== target || !lstatSync(target).isDirectory()) fail();
+  const to = join(target, ".credentials.json");
+  let info;
+  try { info = lstatSync(to); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (info?.isDirectory()) fail();
+  if (info && info.isFile() && Number(sourceMtime) <= info.mtimeMs) {
+    if (!lstatSync(target).isDirectory() || realpathSync(target) !== target) fail();
+    process.exit(0);
+  }
+  const data = readFileSync(0);
+  fd = openSync(staged, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  fchmodSync(fd, 0o600);
+  writeFileSync(fd, data);
+  const { dev, ino } = fstatSync(fd);
+  if (!lstatSync(target).isDirectory() || realpathSync(target) !== target) fail();
+  renameSync(staged, to);
+  if (!lstatSync(target).isDirectory() || realpathSync(target) !== target) fail();
+  const placed = lstatSync(to);
+  if (!placed.isFile() || placed.dev !== dev || placed.ino !== ino) fail();
+} catch (error) {
+  if (tampered.has(error.code)) fail();
+  throw error;
+} finally {
+  if (fd !== undefined) closeSync(fd);
+  try { unlinkSync(staged); } catch {}
+}
+`;
+
+function refreshClaudeCredentials(dir, target, sourceMtime, sourceBytes, env) {
+  if (!bwrap) throw new Error("bubblewrap is required to refresh saved credentials");
+  const staged = join(dir, `.credentials-${randomUUID()}.tmp`);
+  const cleanEnv = { ...env };
+  for (const key of Object.keys(scrubbedEnv("", env))) delete cleanEnv[key];
+  const result = spawnSync(bwrap, ["--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--bind", dir, dir,
+    "--", process.execPath, "-e", refreshCredentialsScript, target, staged, String(sourceMtime)],
+  { env: cleanEnv, input: sourceBytes, stdio: ["pipe", "ignore", "pipe"], encoding: "utf8", timeout: 20_000 });
+  if (result.status === 0) return;
+  if (result.status === 2) throw new Error("this build's saved session has a changed folder; start a new build");
+  const why = result.error ? result.error.message : String(result.stderr ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
+  throw new Error(`this build's saved session could not refresh credentials (${why}); start a new build`);
+}
+
 // Run state is writable, but never in a home setup folder. A runner supplies a pointer in its artifacts so resumed
 // builds keep their session under the kit's state folder (surviving reboots). Direct callers get a private temporary
 // folder, removed by close(). CLI resources remain readable through links; settings and the CLI's own login are private
@@ -1336,24 +1391,14 @@ function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
         if (/^(?:settings(?:\.local)?\.json|\.credentials\.json)$/.test(name) && statSync(from).isFile()) copyFileSync(from, to, constants.COPYFILE_EXCL);
         else if (["CLAUDE.md", "output-styles", "skills", "plugins", "commands", "agents", "hooks"].includes(name)) symlinkSync(resolve(from), to);
       } else if (!fresh) {
-        // On resume, pull in a newer home login without removing through `target`: stage directly in `dir` and rename
-        // into place only after rechecking that `target` is still a real directory.
-        const from = join(source, ".credentials.json"), to = join(target, ".credentials.json");
-        let sourceInfo, targetInfo;
-        try { sourceInfo = statSync(from); } catch { /* No home credentials file. */ }
-        if (sourceInfo?.isFile()) {
-          try { targetInfo = lstatSync(to); } catch { /* Missing in private copy. */ }
-          if (targetInfo?.isDirectory()) throw new Error("this build's saved session has a changed folder; start a new build");
-          if (!targetInfo || !targetInfo.isFile() || sourceInfo.mtimeMs > targetInfo.mtimeMs) {
-            const staged = join(dir, `.credentials-${randomUUID()}.tmp`);
-            try {
-              copyFileSync(from, staged, constants.COPYFILE_EXCL);
-              chmodSync(staged, 0o600);
-              if (!lstatSync(target).isDirectory() || realpathSync(target) !== target) throw new Error("this build's saved session has a changed folder; start a new build");
-              renameSync(staged, to);
-            } finally { rmSync(staged, { force: true }); }
-          }
-        }
+        // On resume, pull in a newer home login inside the write fence so no replaced link can touch HOME.
+        const from = join(source, ".credentials.json");
+        let sourceInfo, sourceBytes;
+        try {
+          sourceInfo = statSync(from);
+          if (sourceInfo.isFile()) sourceBytes = readFileSync(from);
+        } catch { /* No home credentials file. */ }
+        if (sourceBytes !== undefined) refreshClaudeCredentials(dir, target, sourceInfo.mtimeMs, sourceBytes, env);
       }
       if (variable) extra[variable] = target;
     }
