@@ -10,7 +10,7 @@ import { kitEnv } from "./support/kit-env.ts";
 
 const noBwrap = bwrapWorks() === null ? false : "bubblewrap cannot run here";
 
-function fixture(t: TestContext) {
+function workspace(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "kit-write-fence-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const home = join(dir, "home"), worktree = join(home, "work"), common = join(dir, "git");
@@ -18,6 +18,11 @@ function fixture(t: TestContext) {
   const env = { ...kitEnv(), HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"),
     XDG_DATA_HOME: join(home, ".local/share"), XDG_STATE_HOME: join(home, ".local/state") };
   for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "KIT_OUTER_LOCK"]) delete env[name];
+  return { dir, home, worktree, common, env };
+}
+
+function fixture(t: TestContext) {
+  const { dir, home, worktree, common, env } = workspace(t);
   const guard = keyGuard({ cli: "claude", kind: "build", worktree, common, env });
   t.after(() => guard.close());
   const run = (source: string) => {
@@ -210,6 +215,11 @@ test("TOOLS-397: saved sessions live under XDG_STATE_HOME, stay writable inside 
   rmSync(stateA); symlinkSync(savedB, stateA);
   assert.throws(() => keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateA }), /saved session cannot be used/);
   rmSync(stateA); symlinkSync(savedA, stateA);
+  // R2-4: another worktree linking to this run's artifacts folder (so canonical cli-state matches) is still refused by the worktree owner check.
+  const otherWork = join(home, "other-work"), otherAgent = join(otherWork, ".scratch/agent");
+  mkdirSync(otherAgent, { recursive: true });
+  symlinkSync(worktree, join(otherAgent, "build-1"));
+  assert.throws(() => keyGuard({ cli: "claude", kind: "build", worktree: otherWork, common, env, state: join(otherAgent, "build-1/cli-state-a") }), /saved session cannot be used/);
   // Newer home credentials refresh on resume, safely replacing a symlink in private state, and earlier writes survive.
   rmSync(copyCreds); symlinkSync(join(home, ".profile"), copyCreds);
   writeFileSync(creds, '{"token":"v2"}');
@@ -244,7 +254,7 @@ test("TOOLS-397: checkLock.close removes its private folder and refuses a push d
 });
 
 test("TOOLS-397: Codex build puts TMPDIR and cache in a private folder, names it in its profile and removes it on close", t => {
-  const { worktree, common, env } = fixture(t);
+  const { worktree, common, env } = workspace(t);
   const guard = keyGuard({ cli: "codex", kind: "build", worktree, common, env });
   const privateDir = dirname(guard.env.TMPDIR);
   assert.equal(existsSync(privateDir), true);
@@ -255,7 +265,7 @@ test("TOOLS-397: Codex build puts TMPDIR and cache in a private folder, names it
 });
 
 test("TOOLS-397: PLAYWRIGHT_BROWSERS_PATH is not forced to a Linux cache path on macOS", t => {
-  const { worktree, common, env } = fixture(t);
+  const { worktree, common, env } = workspace(t);
   const childEnv = { ...env };
   delete childEnv.PLAYWRIGHT_BROWSERS_PATH;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", `

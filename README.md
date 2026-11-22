@@ -294,7 +294,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   folders rather than writable home folders. This uses the same bubblewrap mount boundary as the clean room in
   `git-safety.mjs`, facing the other way: the build keeps its work and loses write access to the rest of the machine;
   git's ssh keeps the keys and loses access to the build. No string filter decides where a write may go. The kernel
-  also refuses writes through a worktree link into HOME. Codex keeps its own profile, with only the run's private temp
+  also refuses writes through a worktree link into HOME. Codex keeps its own profile, with only the run's private
   folder writable rather than all of `/tmp`, on every platform Codex supports. Claude's build state starts with copies of its own login and settings;
   `CLAUDE.md`, `output-styles`, skills and other resources are read-only links. A build's artifact folder holds a `cli-state` link to its private
   state folder under `${XDG_STATE_HOME:-~/.local/state}/agent-kit/fence/`, so a resume keeps its session across reboots.
@@ -302,7 +302,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   `cli-state` path and worktree, so sibling sessions and their login copies stay hidden from other builds, reviews and
   checks, another build cannot claim a session, and a build cannot rename its own state root. That folder may contain
   the CLI's refreshed login; on resume, a newer home login is copied into the private folder, while an untrusted build's
-  copy is never written back to HOME. `kit worktrees --prune` removes saved fence folders belonging to pruned worktrees;
+  copy is never written back to HOME. `worktrees.sh --prune` removes saved fence folders belonging to pruned worktrees;
   when removing artifacts by hand, read the `cli-state` link and remove that state folder too. A removed session gives a message to start a new build. The lead must check a real Claude login refresh
   before merging a change to this isolation. Checks' private temporary folders are removed when `kit pr` exits.
   A push to a folder remote allows writes only when the destination is a direct bare Git repository folder with no links
