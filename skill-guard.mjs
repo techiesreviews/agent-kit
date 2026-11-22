@@ -6,6 +6,7 @@
 // A project's own skill folders, listed by path in `skillGuard.allow` of scripts/agents/kit.json, pass the path
 // check; the line check still reads every line in them. A changed file that is the project's own licence (LICENSE,
 // LICENSE.md, COPYING, … in the top folder) is left out of the changed lines: licence texts are shared word for word by design.
+// Standard MIT, Apache-2.0, BSD and ISC text in any skill file is also left out of the index.
 // --history reads every blob.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";

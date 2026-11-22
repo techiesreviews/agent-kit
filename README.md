@@ -731,7 +731,7 @@ a skill's licence files (`LICENSE`, `UNLICENSE`, `COPYING`, `NOTICE`, a longer n
 top folder (a licence name on its own, such as `LICENSE`, `LICENSE.md`, `LICENSE-MIT`, `COPYING` or `UNLICENSE`) is left out of the changed lines `kit pr` checks (`--history` still
 reads it). Standard MIT, Apache-2.0, BSD-3-Clause and ISC text in any skill file is also left out of the
 index, including comment headers and different line wrapping. `licence-texts.json` holds the standard texts
-(MIT from tsx, Apache-2.0 and BSD from Debian's common licences, and ISC). Only lines contained in those texts
+(MIT from tsx, Apache-2.0 and Regents BSD from Debian's common licences, generic BSD-3-Clause and ISC). Only lines contained in those texts
 are excluded; a copied skill line alongside a licence still fails, including in a vendored `LICENSE.txt`.
 Tests use made-up skill text only.
 
