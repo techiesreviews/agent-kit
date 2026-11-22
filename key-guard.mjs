@@ -194,6 +194,21 @@ function fenceStateDir(env) {
   return join(isAbsolute(env.XDG_STATE_HOME ?? "") ? env.XDG_STATE_HOME : join(home(env), ".local/state"), "agent-kit", "fence");
 }
 
+function nonFolderPart(path) {
+  let at = resolve(path);
+  for (;;) {
+    try {
+      if (!statSync(at).isDirectory()) return at;
+      return path;
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") return path;
+      const up = dirname(at);
+      if (up === at) return path;
+      at = up;
+    }
+  }
+}
+
 // Ensure the saved-session parent folder exists before preparing any lock's mounts or Codex profile, so a lock started
 // before the first persistent build still hides sessions created afterward.
 function ensureFenceStateDir(env, { worktree, common, extraRoots = [], refuse }) {
@@ -205,7 +220,7 @@ function ensureFenceStateDir(env, { worktree, common, extraRoots = [], refuse })
   if (badRoot(candidate)) refuse(`the write fence state folder (${candidate}) cannot hold HOME or sit inside the worktree or Git folder; set XDG_STATE_HOME to a folder of its own`);
   let existing = null;
   try { existing = lstatSync(fenceRoot); } catch (error) {
-    if (error.code === "ENOTDIR") refuse(`the saved-session path (${fenceRoot}) is not a folder; remove it or set XDG_STATE_HOME to a folder of its own`);
+    if (error.code === "ENOTDIR") refuse(`the saved-session path (${nonFolderPart(fenceRoot)}) is not a folder; remove it or set XDG_STATE_HOME to a folder of its own`);
     if (error.code !== "ENOENT") refuse(`cannot inspect the saved-session folder (${fenceRoot}): ${error.code || error.message}; set XDG_STATE_HOME to a writable folder`);
   }
   if (existing && !existing.isDirectory()) {
@@ -224,7 +239,7 @@ function ensureFenceStateDir(env, { worktree, common, extraRoots = [], refuse })
         return null;
       }
       if (error.code === "EEXIST" || error.code === "ENOTDIR") {
-        refuse(`the saved-session path (${fenceRoot}) is not a folder; remove it or set XDG_STATE_HOME to a folder of its own`);
+        refuse(`the saved-session path (${nonFolderPart(fenceRoot)}) is not a folder; remove it or set XDG_STATE_HOME to a folder of its own`);
       }
       refuse(`cannot create the saved-session folder (${fenceRoot}): ${error.code || error.message}; fix its permissions or set XDG_STATE_HOME to a writable folder`);
     }
@@ -239,18 +254,31 @@ function ensureFenceStateDir(env, { worktree, common, extraRoots = [], refuse })
   return parent;
 }
 
-// Read a regular file without following symlinks at the final path component, keeping stat and read on one handle.
-function readRegularFile(path) {
+// Read a regular Claude config or login file on one handle, following legitimate dotfiles links outside the build's
+// writable folders while refusing unreadable files and targets inside the worktree or Git folder.
+function readClaudeFile(path, shut) {
+  if (shutIn(path, shut)) {
+    throw new Error(`Claude's file (${path}) leads into the worktree or Git folder, where a build can change it; move it outside them, or set ASE_KEY_GUARD=off to run without the lock`);
+  }
   let fd;
   try {
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(path, constants.O_RDONLY);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw new Error(`cannot read Claude's file (${path}): ${error.code || error.message}; fix its permissions or move CLAUDE_CONFIG_DIR, or set ASE_KEY_GUARD=off to run without the lock`);
+  }
+  try {
     const info = fstatSync(fd);
     if (!info.isFile()) return null;
+    if (process.platform === "linux") {
+      const target = readlinkSync(`/proc/self/fd/${fd}`);
+      if (shutIn(target, shut)) {
+        throw new Error(`Claude's file (${path}) leads into the worktree or Git folder (${target}), where a build can change it; move it outside them, or set ASE_KEY_GUARD=off to run without the lock`);
+      }
+    }
     return { info, bytes: readFileSync(fd) };
-  } catch {
-    return null;
   } finally {
-    if (fd !== undefined) closeSync(fd);
+    closeSync(fd);
   }
 }
 
@@ -1629,8 +1657,8 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
       npm_config_cache: join(folders.cache, "npm"), ...(process.platform === "linux" && env.PLAYWRIGHT_BROWSERS_PATH === undefined
         ? { PLAYWRIGHT_BROWSERS_PATH: resolve(worktree || process.cwd(), env.XDG_CACHE_HOME || join(home(env), ".cache"), "ms-playwright") } : {}) };
     const claudeSource = env.CLAUDE_CONFIG_DIR ? resolve(worktree || process.cwd(), env.CLAUDE_CONFIG_DIR) : join(home(env), ".claude");
-    if (cli === "claude" && shutIn(claudeSource, work)) {
-      throw new Error("Claude's config folder cannot sit inside the worktree or Git folder; move CLAUDE_CONFIG_DIR outside them, or set ASE_KEY_GUARD=off to run without the lock");
+    if (cli === "claude" && shutIn(claudeSource, allRoots)) {
+      throw new Error(`Claude's config folder (${claudeSource}) cannot sit inside the worktree or Git folder; move CLAUDE_CONFIG_DIR outside them, or set ASE_KEY_GUARD=off to run without the lock`);
     }
     const sources = cli === "claude" ? [[claudeSource, join(dir, "claude"), "CLAUDE_CONFIG_DIR"]]
       : [];
@@ -1639,17 +1667,17 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
       if (fresh && existingPaths([source]).length) {
         for (const name of readdirSync(source)) {
           const from = join(source, name), to = join(target, name);
-          // Session logs and caches can be huge. Copy Claude settings and credentials without following symlinks; link
-          // instructions and resources read-only so global instructions and skills keep working without exposing home files to writes.
+          // Session logs and caches can be huge. Copy Claude settings and credentials on one handle (refusing links into
+          // writable folders); link instructions and resources read-only so global instructions and skills keep working.
           if (/^(?:settings(?:\.local)?\.json|\.credentials\.json)$/.test(name)) {
-            const file = readRegularFile(from);
+            const file = readClaudeFile(from, allRoots);
             if (file) writeFileSync(to, file.bytes, { flag: "wx", mode: name === ".credentials.json" ? 0o600 : 0o644 });
           } else if (["CLAUDE.md", "output-styles", "skills", "plugins", "commands", "agents", "hooks"].includes(name)) symlinkSync(resolve(from), to);
         }
         if (session && worktree) migrateClaudeSession(source, target, worktree, session);
       } else if (!fresh) {
-        // On resume, pull in a newer home login without following symlinks, inside the write fence so no replaced link can touch HOME.
-        const file = readRegularFile(join(source, ".credentials.json"));
+        // On resume, pull in a newer home login on one handle, inside the write fence so no replaced link can touch HOME.
+        const file = readClaudeFile(join(source, ".credentials.json"), allRoots);
         if (file) refreshClaudeCredentials(dir, target, file.info.mtimeMs, file.bytes, env);
       }
       if (variable) extra[variable] = target;
