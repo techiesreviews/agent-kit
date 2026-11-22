@@ -7,7 +7,7 @@ import test from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { gitCommonDir } from "../git-safety.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapWorks, checkLock, outerLock } from "../key-guard.mjs";
+import { bwrapWorks, checkLock, outerLock, resetBwrapProbe } from "../key-guard.mjs";
 import { kitFiles } from "./support/kit-files.ts";
 
 const update = resolve("kit.d/update");
@@ -479,18 +479,23 @@ function tmpReadOnly() {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EROFS"; }
 }
 
+function readOnlyTmpFailure(verify: { status: number | null; stdout: string; stderr: string }, readOnly = tmpReadOnly()) {
+  return typeof verify.status === "number" && verify.status !== 0 && readOnly && !verify.stdout.trim()
+    && /^Failed to set ?up working directory: Read-only file system\s*$/.test(verify.stderr);
+}
+
 // Both unit files verified by systemd's own reader, where it is installed (it checks ExecStart exists too).
 // systemd-analyze verify hardcodes /tmp/systemd-analyze-XXXXXX (ignoring TMPDIR), so inside a read-only
 // sandbox such as kit pr's write fence it cannot create its working directory; skip only that failure there.
 function verifyUnits(t: { diagnostic: (message: string) => void }, k: { directory: string; env: NodeJS.ProcessEnv }) {
   if (spawnSync("sh", ["-c", "command -v systemd-analyze"]).status !== 0) { t.diagnostic("no systemd-analyze: unit files not verified by systemd"); return; }
   const files = ["timer", "service"].map((kind) => join(units(k), `agent-kit-update.${kind}`));
+  // Force English strerror(EROFS) text so the read-only /tmp check stays locale-independent.
   const env = { ...k.env, LC_MESSAGES: "C" };
   delete env.LC_ALL;
   delete env.LANGUAGE;
   const verify = spawnSync("systemd-analyze", ["verify", ...files], { env, encoding: "utf8", timeout: 30_000 });
-  if (typeof verify.status === "number" && verify.status !== 0 && tmpReadOnly() && !verify.stdout.trim()
-    && /^Failed to set ?up working directory: Read-only file system\s*$/.test(verify.stderr)) {
+  if (readOnlyTmpFailure(verify)) {
     t.diagnostic("read-only /tmp: unit files not verified by systemd-analyze");
     return;
   }
@@ -590,10 +595,22 @@ test("kit update --install-timer writes %, $ and @ in its paths and repo the way
   }
 });
 
-test("both kit update --install-timer tests pass inside kit pr's key lock", {
-  skip: outerLock() ? "already inside kit pr's key lock" : bwrapWorks() !== null ? "bubblewrap cannot run here" : false,
-}, (t) => {
+test("readOnlyTmpFailure matches only systemd-analyze's working-directory EROFS failure on a read-only /tmp", () => {
+  for (const stderr of ["Failed to setup working directory: Read-only file system\n", "Failed to set up working directory: Read-only file system\n"]) {
+    assert.equal(readOnlyTmpFailure({ status: 1, stdout: "", stderr }, true), true);
+    assert.equal(readOnlyTmpFailure({ status: 1, stdout: "", stderr }, false), false);
+  }
+  assert.equal(readOnlyTmpFailure({ status: 0, stdout: "", stderr: "Failed to setup working directory: Read-only file system\n" }, true), false);
+  assert.equal(readOnlyTmpFailure({ status: null, stdout: "", stderr: "Failed to setup working directory: Read-only file system\n" }, true), false);
+  assert.equal(readOnlyTmpFailure({ status: 1, stdout: "warning\n", stderr: "Failed to setup working directory: Read-only file system\n" }, true), false);
+  assert.equal(readOnlyTmpFailure({ status: 1, stdout: "", stderr: "Failed to setup working directory: Read-only file system\nextra\n" }, true), false);
+  assert.equal(readOnlyTmpFailure({ status: 1, stdout: "", stderr: "agent-kit-update.service: Command not found\n" }, true), false);
+});
+
+test("both kit update --install-timer tests pass under node --test inside kit pr's key lock", (t) => {
+  if (outerLock()) { t.skip("already inside kit pr's key lock"); return; }
   const root = resolve(".");
+  const common = gitCommonDir(root) ?? undefined;
   const home = temp(t);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -606,20 +623,23 @@ test("both kit update --install-timer tests pass inside kit pr's key lock", {
   for (const name of ["ASE_KEY_GUARD", "KIT_KEY_PATHS", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL", "KIT_OUTER_LOCK", "NODE_TEST_CONTEXT", "NODE_OPTIONS"]) {
     delete env[name];
   }
-  const lock = checkLock({ worktree: root, common: gitCommonDir(root) ?? undefined, env });
+  resetBwrapProbe();
+  if (bwrapWorks(env, [root, ...(common ? [common] : [])]) !== null) { t.skip("bubblewrap cannot run here"); return; }
+  const lock = checkLock({ worktree: root, common, env });
   try {
-    const childEnv: NodeJS.ProcessEnv = { ...env, ...lock.env };
-    for (const key of Object.keys(childEnv)) if (childEnv[key] === undefined) delete childEnv[key];
     const [program, args] = lock.wrap(process.execPath, [
       "--test",
       "--test-reporter=tap",
       "--test-name-pattern=^kit update --install-timer (writes both unit files|writes %, \\$ and @)",
       resolve("tests/kit-update.test.ts"),
     ]);
-    const run = spawnSync(program, args, { cwd: root, env: childEnv, encoding: "utf8", timeout: 60_000 });
+    const run = spawnSync(program, args, { cwd: root, env: { ...env, ...lock.env }, encoding: "utf8", timeout: 120_000 });
     assert.equal(run.status, 0, run.stdout + run.stderr);
     assert.match(run.stdout, /^# pass 2$/m, run.stdout);
     assert.match(run.stdout, /^# fail 0$/m, run.stdout);
+    if (spawnSync("sh", ["-c", "command -v systemd-analyze"]).status === 0) {
+      assert.match(run.stdout, /^# read-only \/tmp: unit files not verified by systemd-analyze$/m, run.stdout);
+    }
   } finally {
     lock.close?.();
   }
