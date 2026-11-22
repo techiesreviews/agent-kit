@@ -646,14 +646,19 @@ test("TOOLS-397: locks started before the saved-session parent exists hide sessi
   assert.ok(reviewArgs.some((arg: string, i: number) => arg === "--tmpfs" && reviewArgs[i + 1] === realReviewFence), `review must mask ${realReviewFence}: ${reviewArgs.join(" ")}`);
 });
 
-test("TOOLS-397: relative CLAUDE_CONFIG_DIR resolves against the worktree for login, settings, migration and refresh", { skip: noBwrap }, t => {
-  const { dir, worktree, common, env } = workspace(t);
-  const runnerCwd = join(dir, "runner-cwd");
-  const relCfg = "rel-claude";
-  const runnerCfg = join(runnerCwd, relCfg);
-  const worktreeCfg = join(worktree, relCfg);
+test("TOOLS-397: relative CLAUDE_CONFIG_DIR resolves against the worktree for login, settings, migration and refresh, and refuses worktree configs or symlinked credentials", { skip: noBwrap }, t => {
+  const { dir, home, common, env } = workspace(t);
+  const runnerCwd = join(dir, "runner/sub");
+  const worktree = join(dir, "wt/work");
+  mkdirSync(runnerCwd, { recursive: true });
+  mkdirSync(worktree, { recursive: true });
+  const relCfg = "../rel-claude";
+  const runnerCfg = resolve(runnerCwd, relCfg);
+  const worktreeCfg = resolve(worktree, relCfg);
   const projectKey = realpathSync(worktree).replace(/[^A-Za-z0-9-]/g, "-");
   const sessionId = "legacy-rel-session";
+  const homeSecret = join(home, "secret-key");
+  writeFileSync(homeSecret, "home-secret");
 
   for (const [cfg, label] of [[runnerCfg, "runner"], [worktreeCfg, "worktree"]] as const) {
     mkdirSync(join(cfg, "projects", projectKey), { recursive: true });
@@ -667,7 +672,7 @@ test("TOOLS-397: relative CLAUDE_CONFIG_DIR resolves against the worktree for lo
 
   const state = join(worktree, "cli-state");
   const script = `
-    import { readFileSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
+    import { readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
     import { join } from "node:path";
     const { keyGuard } = await import(${JSON.stringify(resolve("key-guard.mjs"))});
     const worktree = ${JSON.stringify(worktree)};
@@ -677,6 +682,7 @@ test("TOOLS-397: relative CLAUDE_CONFIG_DIR resolves against the worktree for lo
     const projectKey = ${JSON.stringify(projectKey)};
     const runnerCreds = ${JSON.stringify(join(runnerCfg, ".credentials.json"))};
     const worktreeCreds = ${JSON.stringify(join(worktreeCfg, ".credentials.json"))};
+    const homeSecret = ${JSON.stringify(homeSecret)};
 
     const first = keyGuard({ cli: "claude", kind: "build", worktree, common, env: process.env, state, session });
     const cfgDir = first.env.CLAUDE_CONFIG_DIR;
@@ -700,7 +706,16 @@ test("TOOLS-397: relative CLAUDE_CONFIG_DIR resolves against the worktree for lo
     const resumedCreds = JSON.parse(readFileSync(join(resumed.env.CLAUDE_CONFIG_DIR, ".credentials.json"), "utf8"));
     const saved = realpathSync(state);
     resumed.close();
-    console.log(JSON.stringify({ firstResult, resumedCreds, saved }));
+
+    // Replacing the source credentials with a symlink to HOME must not copy the secret into saved state on resume.
+    const savedCreds = join(saved, "claude", ".credentials.json");
+    utimesSync(savedCreds, new Date(0), new Date(0));
+    rmSync(worktreeCreds);
+    symlinkSync(homeSecret, worktreeCreds);
+    const afterSymlink = keyGuard({ cli: "claude", kind: "build", worktree, common, env: process.env, state, session });
+    const afterSymlinkCreds = readFileSync(join(afterSymlink.env.CLAUDE_CONFIG_DIR, ".credentials.json"), "utf8");
+    afterSymlink.close();
+    console.log(JSON.stringify({ firstResult, resumedCreds, afterSymlinkCreds }));
   `;
 
   const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
@@ -716,4 +731,58 @@ test("TOOLS-397: relative CLAUDE_CONFIG_DIR resolves against the worktree for lo
   assert.equal(out.firstResult.instructions, "worktree instructions\n");
   assert.deepEqual(out.firstResult.transcript, { from: "worktree" });
   assert.deepEqual(out.resumedCreds, { token: "worktree-v2" });
+  assert.ok(!out.afterSymlinkCreds.includes("home-secret"), `symlinked source credentials leaked: ${out.afterSymlinkCreds}`);
+
+  // A CLAUDE_CONFIG_DIR resolving inside the worktree (such as "rel-claude") is refused at start and on resume,
+  // preventing a build from planting a symlink there to leak HOME secrets on resume.
+  const inWorkCfg = join(worktree, "rel-claude");
+  mkdirSync(inWorkCfg, { recursive: true });
+  symlinkSync(homeSecret, join(inWorkCfg, ".credentials.json"));
+  assert.throws(
+    () => keyGuard({ cli: "claude", kind: "build", worktree, common, env: { ...env, CLAUDE_CONFIG_DIR: "rel-claude" } }),
+    /cannot sit inside the worktree or Git folder/,
+  );
+  const savedCreds = join(realpathSync(state), "claude", ".credentials.json");
+  utimesSync(savedCreds, new Date(0), new Date(0));
+  assert.throws(
+    () => keyGuard({ cli: "claude", kind: "build", worktree, common, env: { ...env, CLAUDE_CONFIG_DIR: "rel-claude" }, state }),
+    /cannot sit inside the worktree or Git folder/,
+  );
+  assert.ok(!readFileSync(savedCreds, "utf8").includes("home-secret"));
+});
+
+test("TOOLS-397: ensureFenceStateDir refuses worktree state paths without leaking temp dirs and refuses non-folder paths in plain words", { skip: noBwrap }, t => {
+  const { worktree, common, env } = workspace(t);
+
+  // (a) XDG_STATE_HOME inside worktree is refused by both keyGuard review and checkLock.
+  const inWorkEnv = { ...env, XDG_STATE_HOME: join(worktree, "state") };
+  assert.throws(
+    () => keyGuard({ cli: "claude", kind: "review", worktree, common, env: inWorkEnv }),
+    /cannot hold HOME or sit inside the worktree/,
+  );
+
+  // (c) checkLock in case (a) cleans up its temporary ase-write-fence-* folder when ensureFenceStateDir throws.
+  const before = new Set(readdirSync(tmpdir()).filter(name => name.startsWith("ase-write-fence-")));
+  assert.throws(
+    () => checkLock({ worktree, common, env: inWorkEnv }),
+    /cannot hold HOME or sit inside the worktree/,
+  );
+  const leaked = readdirSync(tmpdir()).filter(name => name.startsWith("ase-write-fence-") && !before.has(name));
+  assert.deepEqual(leaked, [], `checkLock leaked temporary fence folders: ${leaked.join(", ")}`);
+
+  // (b) A plain file at agent-kit/fence is refused in one plain sentence with no EEXIST and no repeated prefix.
+  const fenceFile = join(env.XDG_STATE_HOME, "agent-kit/fence");
+  mkdirSync(dirname(fenceFile), { recursive: true });
+  writeFileSync(fenceFile, "not a folder\n");
+  for (const run of [
+    () => keyGuard({ cli: "claude", kind: "review", worktree, common, env }),
+    () => checkLock({ worktree, common, env }),
+  ]) {
+    let caught: Error | null = null;
+    try { run(); } catch (error) { caught = error as Error; }
+    assert.ok(caught, "expected non-folder fence path to be refused");
+    assert.match(caught.message, /is not a folder/);
+    assert.doesNotMatch(caught.message, /EEXIST/);
+    assert.equal(caught.message.match(/cannot lock the key files/g)?.length, 1, caught.message);
+  }
 });
