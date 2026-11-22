@@ -166,11 +166,46 @@ test("a changed line holding a skill line fails with its place and the skill's n
 // Standard open-source licence texts, never paid skill content.
 const standardLicences = JSON.parse(readFileSync(new URL("../licence-texts.json", import.meta.url), "utf8")) as Record<string, string>;
 
-for (const [name, text] of Object.entries(standardLicences)) {
+// Independent BSD template: the Regents variant alone misses common BSD licence wording.
+const bsdTemplate = `BSD 3-Clause License
+
+Copyright (c) <year>, <copyright holder>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+`;
+
+for (const [name, text] of Object.entries({ ...standardLicences, "BSD-3-Clause": bsdTemplate })) {
   test(`standard ${name} licence text in a skill index does not flag a vendored licence or header`, (t) => {
     const f = fixture(t);
     // Reproduce a skill reference containing a licence, rather than a separately named licence file.
-    f.put(join(f.home, ".claude/skills/crane/references/legal.md"), text);
+    const rewrapped = text.split(/\n\s*\n/).map(paragraph => paragraph.replace(/\s+/g, " ").trim().replace(/(.{1,65})(?: +|$)/g, "$1\n")).join("\n");
+    f.put(join(f.home, ".claude/skills/crane/references/legal.md"), rewrapped);
+    f.put(join(f.home, ".claude/skills/crane/scripts/licensed.js"), text.split("\n").map(line => `// ${line}`).join("\n"));
+    f.put(join(f.home, ".claude/skills/crane/templates/licensed.html"), text.split("\n").map(line => `<!-- ${line} -->`).join("\n"));
     f.put(join(f.repo, "vendor/icons/LICENSE.txt"), text);
     f.git("add", "."); f.git("commit", "-q", "-m", "vendored licence");
     f.put(join(f.repo, "src/icons.js"), `/*\n${text.split("\n").map(line => ` * ${line}`).join("\n")}\n */\n`);
@@ -195,6 +230,13 @@ test("standard licence text never hides a copied skill line in the same file", (
   assert.match(result.stderr, /vendor\/icons\/LICENSE.txt:\d+: holds a line from the local skill crane/);
   assert.match(result.stdout, /RESULT: fail skill-guard 1 problem/);
   assert.doesNotMatch(result.stdout + result.stderr, /paper crane/);
+  const mixedLine = `${text.split("\n").find(line => line.startsWith("Permission"))} ${secret}`;
+  f.put(join(f.home, ".claude/skills/crane/references/mixed.md"), mixedLine);
+  f.put(join(f.repo, "mixed.md"), mixedLine);
+  const mixed = f.run(["--base", "HEAD~1"]);
+  assert.equal(mixed.status, 1, mixed.stderr);
+  assert.match(mixed.stderr, /mixed\.md:1: holds a line from the local skill crane/);
+  assert.match(mixed.stdout, /RESULT: fail skill-guard 2 problem/);
 });
 
 test("a project's own licence passes whatever licence text it holds, and a skill line in any other file still fails", (t) => {
