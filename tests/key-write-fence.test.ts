@@ -161,15 +161,17 @@ test("TOOLS-397: a saved-session link cannot select a folder the build can renam
   const { worktree, common, env } = fixture(t);
   const planted = join(worktree, "ase-write-fence-abcdef"), state = join(worktree, "cli-state");
   mkdirSync(planted, { mode: 0o700 });
-  for (const name of ["tmp", "cache", "config", "data", "state", "claude"]) mkdirSync(join(planted, name));
+  for (const name of ["tmp", "cache", "claude"]) mkdirSync(join(planted, name));
   symlinkSync(planted, state);
   assert.throws(() => keyGuard({ cli: "claude", kind: "build", worktree, common, env, state }), /saved session.*start a new build/);
 });
 
-test("TOOLS-397: saved sessions live under XDG_STATE_HOME, hide siblings and refresh newer home credentials on resume", { skip: noBwrap }, t => {
+test("TOOLS-397: saved sessions live under XDG_STATE_HOME, stay writable inside bwrap, bind to their owner and refresh newer home credentials on resume", { skip: noBwrap }, t => {
   const { home, worktree, common, env } = fixture(t);
-  const claudeHome = join(home, ".claude"), creds = join(claudeHome, ".credentials.json"), settings = join(claudeHome, "settings.json"), skills = join(claudeHome, "skills");
-  mkdirSync(skills, { recursive: true });
+  const claudeHome = join(home, ".claude"), creds = join(claudeHome, ".credentials.json"), settings = join(claudeHome, "settings.json");
+  const skills = join(claudeHome, "skills"), instructions = join(claudeHome, "CLAUDE.md"), styles = join(claudeHome, "output-styles");
+  mkdirSync(skills, { recursive: true }); mkdirSync(styles, { recursive: true });
+  writeFileSync(instructions, "global instructions\n");
   writeFileSync(settings, '{"home":true}');
   writeFileSync(creds, '{"token":"v1"}');
   const older = new Date(Date.now() - 10_000);
@@ -180,27 +182,35 @@ test("TOOLS-397: saved sessions live under XDG_STATE_HOME, hide siblings and ref
   const savedA = realpathSync(stateA), savedB = realpathSync(stateB);
   t.after(() => { rmSync(savedA, { recursive: true, force: true }); rmSync(savedB, { recursive: true, force: true }); });
   assert.equal(dirname(savedA), realpathSync(join(env.XDG_STATE_HOME, "agent-kit/fence")));
-  // R1-12: settings.json and .credentials.json are copies; skills is a link; edits to copies leave home alone.
+  // R1-12 & R1-5: settings.json and .credentials.json are copies; CLAUDE.md, output-styles and skills are read-only links.
   const copySettings = join(guardA.env.CLAUDE_CONFIG_DIR, "settings.json");
   const copyCreds = join(guardA.env.CLAUDE_CONFIG_DIR, ".credentials.json");
-  const linkSkills = join(guardA.env.CLAUDE_CONFIG_DIR, "skills");
   assert.equal(lstatSync(copySettings).isFile(), true);
   assert.equal(lstatSync(copyCreds).isFile(), true);
-  assert.equal(lstatSync(linkSkills).isSymbolicLink(), true);
+  for (const name of ["CLAUDE.md", "output-styles", "skills"]) assert.equal(lstatSync(join(guardA.env.CLAUDE_CONFIG_DIR, name)).isSymbolicLink(), true, name);
+  assert.equal(readFileSync(join(guardA.env.CLAUDE_CONFIG_DIR, "CLAUDE.md"), "utf8"), "global instructions\n");
   writeFileSync(copySettings, '{"mutated":true}');
   writeFileSync(copyCreds, '{"token":"mutated"}');
   assert.equal(readFileSync(settings, "utf8"), '{"home":true}');
   assert.equal(readFileSync(creds, "utf8"), '{"token":"v1"}');
-  // Sibling saved sessions stay hidden inside bubblewrap, and another run cannot see guardA's folder.
+  // R1-6 & sibling isolation: inside bubblewrap after --remount-ro on the fence root, $CLAUDE_CONFIG_DIR and $TMPDIR
+  // remain writable while sibling sessions stay hidden.
   writeFileSync(join(savedB, "sibling-secret"), "hidden");
-  const [command, args] = guardA.wrap(process.execPath, ["-e", `const fs = require('node:fs');
+  const [command, args] = guardA.wrap(process.execPath, ["-e", `const fs = require('node:fs'), path = require('node:path');
+    fs.mkdirSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'projects'), { recursive: true });
+    fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'projects/x'), 'session-data');
+    fs.writeFileSync(path.join(process.env.TMPDIR, 'x'), 'temp-data');
     console.log(JSON.stringify(fs.readdirSync(${JSON.stringify(dirname(savedA))})));
     try { fs.readFileSync(${JSON.stringify(join(savedB, "sibling-secret"))}); console.log('leaked'); } catch (e) { console.log(e.code); }`]);
   const probe = spawnSync(command, args, { cwd: worktree, env: { ...env, ...guardA.env }, encoding: "utf8" });
   assert.equal(probe.status, 0, probe.stderr);
   assert.equal(probe.stdout.trim(), `${JSON.stringify([savedA.split("/").at(-1)])}\nENOENT`);
   guardA.close(); guardB.close();
-  // Newer home credentials refresh on resume, safely replacing even a symlink left in private state.
+  // R1-7: repointing stateA at another valid session (stateB's) is refused by the owner record.
+  rmSync(stateA); symlinkSync(savedB, stateA);
+  assert.throws(() => keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateA }), /saved session cannot be used/);
+  rmSync(stateA); symlinkSync(savedA, stateA);
+  // Newer home credentials refresh on resume, safely replacing a symlink in private state, and earlier writes survive.
   rmSync(copyCreds); symlinkSync(join(home, ".profile"), copyCreds);
   writeFileSync(creds, '{"token":"v2"}');
   const newer = new Date(Date.now() + 10_000);
@@ -210,6 +220,17 @@ test("TOOLS-397: saved sessions live under XDG_STATE_HOME, hide siblings and ref
   assert.equal(lstatSync(copyCreds).isFile(), true);
   assert.equal(readFileSync(copyCreds, "utf8"), '{"token":"v2"}');
   assert.equal(existsSync(join(home, ".profile")), false);
+  const [readCmd, readArgs] = resumed.wrap(process.execPath, ["-e", `const fs = require('node:fs'), path = require('node:path');
+    console.log(fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'projects/x'), 'utf8'));
+    console.log(fs.readFileSync(path.join(process.env.TMPDIR, 'x'), 'utf8'));`]);
+  const readBack = spawnSync(readCmd, readArgs, { cwd: worktree, env: { ...env, ...resumed.env }, encoding: "utf8" });
+  assert.equal(readBack.status, 0, readBack.stderr);
+  assert.equal(readBack.stdout.trim(), "session-data\ntemp-data");
+  // R1-9: swapping dir/claude for a link to ~/.claude before resuming is refused and leaves ~/.claude/.credentials.json intact.
+  rmSync(join(savedA, "claude"), { recursive: true, force: true });
+  symlinkSync(claudeHome, join(savedA, "claude"));
+  assert.throws(() => keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateA }), /saved session has a changed folder/);
+  assert.equal(readFileSync(creds, "utf8"), '{"token":"v2"}');
 });
 
 test("TOOLS-397: checkLock.close removes its private folder and refuses a push destination holding HOME", { skip: noBwrap }, t => {
@@ -222,12 +243,13 @@ test("TOOLS-397: checkLock.close removes its private folder and refuses a push d
   assert.throws(() => checkLock({ worktree, common, env, writable: [home] }), /push goes to a folder that holds your home folder/);
 });
 
-test("TOOLS-397: Codex build puts TMPDIR in a private folder, names it in its profile and removes it on close", t => {
+test("TOOLS-397: Codex build puts TMPDIR and cache in a private folder, names it in its profile and removes it on close", t => {
   const { worktree, common, env } = fixture(t);
   const guard = keyGuard({ cli: "codex", kind: "build", worktree, common, env });
   const privateDir = dirname(guard.env.TMPDIR);
   assert.equal(existsSync(privateDir), true);
-  assert.ok(guard.codex.some((arg: string) => arg.includes(`${JSON.stringify(guard.env.TMPDIR)}="write"`)), guard.codex.join(" "));
+  assert.equal(dirname(guard.env.XDG_CACHE_HOME), privateDir);
+  assert.ok(guard.codex.some((arg: string) => arg.includes(`${JSON.stringify(privateDir)}="write"`)), guard.codex.join(" "));
   guard.close();
   assert.equal(existsSync(privateDir), false);
 });

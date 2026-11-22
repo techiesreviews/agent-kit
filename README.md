@@ -296,23 +296,25 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   git's ssh keeps the keys and loses access to the build. No string filter decides where a write may go. The kernel
   also refuses writes through a worktree link into HOME. Codex keeps its own profile, with only the run's private temp
   folder writable rather than all of `/tmp`, on every platform Codex supports. Claude's build state starts with copies of its own login and settings;
-  skills and other resources are read-only links. A build's artifact folder holds a `cli-state` link to its private
+  `CLAUDE.md`, `output-styles`, skills and other resources are read-only links. A build's artifact folder holds a `cli-state` link to its private
   state folder under `${XDG_STATE_HOME:-~/.local/state}/agent-kit/fence/`, so a resume keeps its session across reboots.
-  The parent fence folder is masked and read-only inside locked runs, so sibling sessions and their login copies stay
-  hidden from other builds, reviews and checks, and a build cannot rename its own state root. That folder may contain
+  The parent fence folder is masked and read-only inside locked runs, and each session has an owner record tied to its
+  `cli-state` path and worktree, so sibling sessions and their login copies stay hidden from other builds, reviews and
+  checks, another build cannot claim a session, and a build cannot rename its own state root. That folder may contain
   the CLI's refreshed login; on resume, a newer home login is copied into the private folder, while an untrusted build's
-  copy is never written back to HOME. Before removing the artifacts, read the `cli-state` link and remove that state
-  folder too. A removed session gives a message to start a new build. The lead must check a real Claude login refresh
+  copy is never written back to HOME. `kit worktrees --prune` removes saved fence folders belonging to pruned worktrees;
+  when removing artifacts by hand, read the `cli-state` link and remove that state folder too. A removed session gives a message to start a new build. The lead must check a real Claude login refresh
   before merging a change to this isolation. Checks' private temporary folders are removed when `kit pr` exits.
   A push to a folder remote allows writes only when the destination is a direct bare Git repository folder with no links
   on the way; its hooks still see no keys. Tools that
   insist on writing to a fixed home path fail; use their cache or state setting to put those writes in the worktree or
   `$TMPDIR`. On Linux, installed Playwright browsers remain readable at their original cache path when `PLAYWRIGHT_BROWSERS_PATH`
   is unset. There is no bubblewrap fence where the lock is off or runs unwrapped (macOS and Windows); Codex keeps its native profile there.
-- **What the key lock does not do.** It keeps an agent the kit starts from reading the key files while it runs; it does
-  not confine what the agent writes. A build writes wherever the user can (the worktree, the repository's Git folder and
-  settings, files under HOME), and what it leaves runs later with whoever starts it. The kit's own later steps are
-  covered (TOOLS-303):
+- **What the key lock does not do.** On Linux with bubblewrap, a locked build and `kit pr`'s locked checks write only to
+  their worktree, Git common folder and private run state (Write fence, above), and what a build leaves inside its
+  worktree and Git folder still runs later with whoever starts it. Where the lock is off or runs unwrapped (macOS,
+  Windows, or `ASE_KEY_GUARD=off`), a build writes wherever the user can (the worktree, the repository's Git folder and
+  settings, files under HOME). The kit's own later steps are covered (TOOLS-303):
   - **Git calls.** Every git call the runner and `kit pr` make on a build's worktree (`kit pr`'s own, the kit's helpers
     in its process (the release check, the review and the second look among them), and those of the programs it
     starts (`gh` among them)) runs with `git-safety.mjs`'s settings: no hooks (`core.hooksPath=/dev/null`), no file

@@ -30,7 +30,7 @@
 // one does: it installs with one command.
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, copyFileSync, globSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, copyFileSync, globSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -192,6 +192,46 @@ function home(env) {
 // Saved build sessions live under the kit's state folder so resumes survive reboots while staying outside the worktree.
 function fenceStateDir(env) {
   return join(isAbsolute(env.XDG_STATE_HOME ?? "") ? env.XDG_STATE_HOME : join(home(env), ".local/state"), "agent-kit", "fence");
+}
+
+const fenceFolderPattern = /^ase-write-fence-[A-Za-z0-9]{6}$/;
+
+function canonicalStatePointer(state) {
+  return join(real(dirname(state)), basename(state));
+}
+
+function readFenceOwner(ownerFile) {
+  try {
+    const info = lstatSync(ownerFile);
+    if (!info.isFile() || (typeof process.getuid === "function" && info.uid !== process.getuid())) return null;
+    const parsed = JSON.parse(readFileSync(ownerFile, "utf8"));
+    return typeof parsed?.state === "string" && typeof parsed?.worktree === "string" ? parsed : null;
+  } catch { return null; }
+}
+
+/**
+ * Remove validated saved build sessions whose owner record belongs to a removed worktree.
+ */
+export function removeFenceSessions(worktree, env = process.env) {
+  const target = real(worktree), parent = real(fenceStateDir(env));
+  let names = [];
+  try { names = readdirSync(parent); } catch { return; }
+  for (const entry of names) {
+    if (!entry.endsWith(".owner")) continue;
+    const name = entry.slice(0, -".owner".length);
+    if (!fenceFolderPattern.test(name)) continue;
+    const ownerFile = join(parent, entry), dir = join(parent, name);
+    const owner = readFenceOwner(ownerFile);
+    if (!owner || owner.worktree !== target) continue;
+    try {
+      const saved = lstatSync(dir);
+      if (saved.isDirectory() && realpathSync(dir) === dir && (saved.mode & 0o777) === 0o700
+        && (typeof process.getuid !== "function" || saved.uid === process.getuid())) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    } catch { /* Session folder already removed. */ }
+    rmSync(ownerFile, { force: true });
+  }
 }
 
 /**
@@ -1241,9 +1281,10 @@ function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
   const roots = named.filter((root, index) => named.indexOf(root) === index && !named.some(other => other !== root && inside(root, other)));
   // A persistent artifact is only a pointer. Its writable mount lives directly under the kit's state folder
   // (`${XDG_STATE_HOME:-~/.local/state}/agent-kit/fence`): the locked run can write inside its own folder but cannot
-  // rename its root (its parent is masked and read-only). Mounting a folder under the worktree instead would let a
-  // lingering process from a previous run swap it for a link after this check and before bwrap starts.
-  let dir, fresh = true, parent = null;
+  // rename its root (its parent is masked and read-only). A sibling `<name>.owner` record ties each session to the
+  // exact state link and worktree that created it, so another build cannot repoint its link at it.
+  let dir, fresh = true, parent = null, ownerFile = null;
+  const expectedState = state ? canonicalStatePointer(state) : "", expectedWorktree = worktree ? real(worktree) : "";
   if (state) {
     const fenceRoot = fenceStateDir(env);
     let info;
@@ -1256,15 +1297,18 @@ function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
       try { saved = statSync(dir); }
       catch { throw new Error("this build's saved session is gone because its state folder was removed; start a new build"); }
       parent = real(fenceRoot);
-      if (!/^ase-write-fence-[A-Za-z0-9]{6}$/.test(basename(dir)) || realpathSync(dir) !== dir || dirname(dir) !== parent
+      const owner = readFenceOwner(`${dir}.owner`);
+      if (!fenceFolderPattern.test(basename(dir)) || realpathSync(dir) !== dir || dirname(dir) !== parent
         || !saved.isDirectory() || (saved.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && saved.uid !== process.getuid())
-        || inside(base, dir) || roots.some(root => inside(parent, root))) throw invalid();
+        || inside(base, dir) || roots.some(root => inside(parent, root))
+        || !owner || owner.state !== expectedState || owner.worktree !== expectedWorktree) throw invalid();
       fresh = false;
     } else {
       mkdirSync(fenceRoot, { recursive: true, mode: 0o700 });
       parent = real(fenceRoot);
       if (inside(base, parent) || roots.some(root => inside(parent, root))) throw new Error("the write fence state folder cannot hold HOME or sit inside the worktree or Git folder; set XDG_STATE_HOME to a folder of its own");
       dir = mkdtempSync(join(parent, "ase-write-fence-"));
+      ownerFile = `${dir}.owner`;
     }
   } else dir = mkdtempSync(join(real(tmpdir()), "ase-write-fence-"));
   const close = () => { if (!state) rmSync(dir, { recursive: true, force: true }); };
@@ -1276,9 +1320,7 @@ function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
       if (actual !== path) throw new Error("this build's saved session has a changed folder; start a new build");
       return path;
     };
-    const folders = Object.fromEntries(["tmp", "cache", "config", "data", "state"].map(name => {
-      return [name, folderAt(join(dir, name))];
-    }));
+    const folders = Object.fromEntries(["tmp", "cache"].map(name => [name, folderAt(join(dir, name))]));
     const extra = { TMPDIR: folders.tmp, TMP: folders.tmp, TEMP: folders.tmp, XDG_CACHE_HOME: folders.cache,
       npm_config_cache: join(folders.cache, "npm"), ...(process.platform === "linux" && env.PLAYWRIGHT_BROWSERS_PATH === undefined
         ? { PLAYWRIGHT_BROWSERS_PATH: resolve(worktree || process.cwd(), env.XDG_CACHE_HOME || join(home(env), ".cache"), "ms-playwright") } : {}) };
@@ -1288,28 +1330,44 @@ function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
       folderAt(target);
       if (fresh && existingPaths([source]).length) for (const name of readdirSync(source)) {
         const from = join(source, name), to = join(target, name);
-        // Session databases and caches can be huge. Only configuration, logins and the OpenCode database are copied;
-        // resources (skills, plugins and commands) are read-only links, other runtime folders start empty.
-        if (/^(?:settings(?:\.local)?\.json|\.credentials\.json|auth\.json|config\.toml|opencode\.jsonc?|opencode\.db(?:-wal|-shm)?)$/.test(name) && statSync(from).isFile()) copyFileSync(from, to, constants.COPYFILE_EXCL);
-        else if (["skills", "plugins", "commands", "agents", "hooks"].includes(name)) symlinkSync(resolve(from), to);
+        // Session logs and caches can be huge. Copy Claude settings and credentials; link instructions and resources
+        // read-only so global instructions and skills keep working without exposing home files to writes.
+        if (/^(?:settings(?:\.local)?\.json|\.credentials\.json)$/.test(name) && statSync(from).isFile()) copyFileSync(from, to, constants.COPYFILE_EXCL);
+        else if (["CLAUDE.md", "output-styles", "skills", "plugins", "commands", "agents", "hooks"].includes(name)) symlinkSync(resolve(from), to);
       } else if (!fresh) {
-        // On resume, pull in a newer home login so a refreshed host login is not shadowed by an older private copy.
+        // On resume, pull in a newer home login without removing through `target`: stage directly in `dir` and rename
+        // into place only after rechecking that `target` is still a real directory.
         const from = join(source, ".credentials.json"), to = join(target, ".credentials.json");
         let sourceInfo, targetInfo;
         try { sourceInfo = statSync(from); } catch { /* No home credentials file. */ }
         if (sourceInfo?.isFile()) {
           try { targetInfo = lstatSync(to); } catch { /* Missing in private copy. */ }
+          if (targetInfo?.isDirectory()) throw new Error("this build's saved session has a changed folder; start a new build");
           if (!targetInfo || !targetInfo.isFile() || sourceInfo.mtimeMs > targetInfo.mtimeMs) {
-            rmSync(to, { recursive: true, force: true });
-            copyFileSync(from, to, constants.COPYFILE_EXCL);
+            const staged = join(dir, `.credentials-${randomUUID()}.tmp`);
+            try {
+              copyFileSync(from, staged, constants.COPYFILE_EXCL);
+              chmodSync(staged, 0o600);
+              if (!lstatSync(target).isDirectory() || realpathSync(target) !== target) throw new Error("this build's saved session has a changed folder; start a new build");
+              renameSync(staged, to);
+            } finally { rmSync(staged, { force: true }); }
           }
         }
       }
       if (variable) extra[variable] = target;
     }
-    if (state && fresh) symlinkSync(dir, state);
-    return { env: extra, writable: parent ? roots : [...roots, dir], writableAfter: parent ? [dir] : [], parent, close };
-  } catch (error) { if (fresh) rmSync(dir, { recursive: true, force: true }); throw error; }
+    if (state && fresh) {
+      writeFileSync(ownerFile, JSON.stringify({ state: expectedState, worktree: expectedWorktree }), { mode: 0o600 });
+      symlinkSync(dir, state);
+    }
+    return { env: extra, dir, writable: parent ? roots : [...roots, dir], writableAfter: parent ? [dir] : [], parent, close };
+  } catch (error) {
+    if (fresh) {
+      rmSync(dir, { recursive: true, force: true });
+      if (ownerFile) rmSync(ownerFile, { force: true });
+    }
+    throw error;
+  }
 }
 
 /**
@@ -1376,7 +1434,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
     const warning = [gap, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
     // Codex locks its own commands; the runner's helpers go through bubblewrap where it runs.
     const fence = kind === "build" ? writeFence(cli, env, { worktree, common }) : null;
-    return { env: { ...scrub, ...fence?.env }, codex: codexProfile(kind, common, codexPaths(paths), fence?.env.TMPDIR), warning, wrap: direct,
+    return { env: { ...scrub, ...fence?.env }, codex: codexProfile(kind, common, codexPaths(paths), fence?.dir), warning, wrap: direct,
       helper: bwrapWorks(env, shut) === null ? inside(bwrapArgs(paths, fence ? { writable: fence.writable, fence: true } : {})) : direct,
       close() { fence?.close(); } };
   }
