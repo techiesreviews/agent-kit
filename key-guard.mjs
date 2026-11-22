@@ -338,7 +338,7 @@ function migrateClaudeSession(source, target, worktree, session) {
 
 // Resolve read-only ancestors of `state` while refusing symlinks inside writable roots, so a build cannot swap its
 // artifact folder for a link to another build's folder in the same worktree and satisfy that build's owner check.
-function canonicalStatePointer(state, writableRoots = []) {
+function canonicalStatePointer(state, writableRoots = [], { resume = false } = {}) {
   const invalid = () => new Error("this build's saved session cannot be used; start a new build");
   if (process.platform === "win32") return join(real(dirname(state)), basename(state));
   const raw = isAbsolute(state) ? state : `${process.cwd()}/${state}`;
@@ -352,7 +352,7 @@ function canonicalStatePointer(state, writableRoots = []) {
     const next = join(at, part);
     let info;
     try { info = lstatSync(next); } catch (error) {
-      if (error.code === "ENOENT") throw error;
+      if (error.code === "ENOENT") throw new Error(`this build's artifact folder (${next}) is missing`);
       throw invalid();
     }
     if (!info.isSymbolicLink()) {
@@ -360,7 +360,10 @@ function canonicalStatePointer(state, writableRoots = []) {
       at = next;
       continue;
     }
-    if (writableRoots.some(root => inside(next, root))) throw invalid();
+    if (writableRoots.some(root => inside(next, root))) {
+      if (resume) throw invalid();
+      throw new Error(`the build's artifact path passes through a link inside the worktree or Git folder (${next}); make it a real folder, or pass --out outside them, and start again`);
+    }
     if (++links > 40) throw invalid();
     let target;
     try { target = readlinkSync(next); } catch { throw invalid(); }
@@ -1595,6 +1598,41 @@ export function openLocalPushTarget(path, { env = process.env, remote = "origin"
   }
 }
 
+// Create an ephemeral private fence folder outside every writable root, so a check or build cannot rename an ancestor
+// under an inherited TMPDIR inside the worktree and swap the mount path for a relative link to HOME.
+function ephemeralTempDir(env, allRoots, base) {
+  const inWritable = folder => allRoots.some(root => inside(folder, root));
+  const envTemp = process.platform === "win32" ? (env.TEMP || env.TMP) : env.TMPDIR;
+  const systemTemp = process.platform === "win32" ? (process.env.SystemRoot ? join(process.env.SystemRoot, "Temp") : tmpdir()) : "/tmp";
+  const candidates = [];
+  for (const raw of [isAbsolute(envTemp ?? "") ? envTemp : null, tmpdir(), systemTemp]) {
+    if (!raw) continue;
+    const folder = real(raw);
+    if (!candidates.includes(folder)) candidates.push(folder);
+  }
+  const fenceRoot = fenceStateDir(env);
+  const fenceReal = real(fenceRoot);
+  for (const folder of candidates) {
+    if (inWritable(folder) || inside(folder, fenceReal)) continue;
+    try {
+      const dir = mkdtempSync(join(folder, "ase-write-fence-"));
+      if (inWritable(dir) || inside(base, dir)) { rmSync(dir, { recursive: true, force: true }); continue; }
+      return { dir, parent: null };
+    } catch { /* Try the next safe temp folder. */ }
+  }
+  if (!inside(base, fenceReal) && !allRoots.some(root => inside(fenceReal, root) || inside(root, fenceReal))) {
+    try {
+      mkdirSync(fenceRoot, { recursive: true, mode: 0o700 });
+      const parent = real(fenceRoot);
+      if (!inside(base, parent) && !allRoots.some(root => inside(parent, root) || inside(root, parent))) {
+        const dir = mkdtempSync(join(parent, "ase-write-fence-"));
+        return { dir, parent };
+      }
+    } catch { /* Fall through to plain refusal. */ }
+  }
+  throw new Error("cannot create a private temporary folder outside the writable roots; set TMPDIR or XDG_STATE_HOME to a folder outside the worktree and Git folder");
+}
+
 // Run state is writable, but never in a home setup folder. A runner supplies a pointer in its artifacts so resumed
 // builds keep their session under the kit's state folder (surviving reboots). Direct callers get a private temporary
 // folder, removed by close(). CLI resources remain readable through links; settings and the CLI's own login are private
@@ -1643,7 +1681,8 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
   // rename its root (its parent is masked and read-only). A sibling `<name>.owner` record ties each session to the
   // exact state link and worktree that created it, so another build cannot repoint its link at it.
   let dir, fresh = true, parent = null, ownerFile = null;
-  const expectedState = state ? canonicalStatePointer(state, allRoots) : "", expectedWorktree = worktree ? real(worktree) : "";
+  const stateExists = state ? existingPaths([state]).length > 0 : false;
+  const expectedState = state ? canonicalStatePointer(state, allRoots, { resume: Boolean(session) || stateExists }) : "", expectedWorktree = worktree ? real(worktree) : "";
   if (state) {
     const fenceRoot = fenceStateDir(env);
     let info;
@@ -1669,7 +1708,7 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
       dir = mkdtempSync(join(parent, "ase-write-fence-"));
       ownerFile = `${dir}.owner`;
     }
-  } else dir = mkdtempSync(join(real(tmpdir()), "ase-write-fence-"));
+  } else ({ dir, parent } = ephemeralTempDir(env, allRoots, base));
   const close = () => {
     for (const target of pinnedDestinations) target.close?.();
     if (!state) rmSync(dir, { recursive: true, force: true });
@@ -1791,10 +1830,11 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
     const warning = [gap, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
     // Codex locks its own commands; the runner's helpers go through bubblewrap where it runs.
     const fenceParent = ensureFenceStateDir(env, { worktree, common, refuse: refuseLock });
-    const maskedPaths = fenceParent && !paths.includes(fenceParent) ? [...paths, fenceParent] : paths;
     const fence = kind === "build" ? writeFence(cli, env, { worktree, common }) : null;
+    const parent = fence?.parent ?? fenceParent;
+    const maskedPaths = parent && !paths.includes(parent) ? [...paths, parent] : paths;
     return { env: { ...scrub, ...fence?.env }, codex: codexProfile(kind, common, codexPaths(maskedPaths), fence?.dir), warning, wrap: direct,
-      helper: bwrapWorks(env, shut) === null ? inside(bwrapArgs(maskedPaths, fence ? { writable: fence.writable, fence: true } : {})) : direct,
+      helper: bwrapWorks(env, shut) === null ? inside(bwrapArgs(maskedPaths, fence ? { writable: fence.writable, writableAfter: fence.writableAfter, fence: true } : {})) : direct,
       close() { fence?.close(); } };
   }
   const problem = bwrapWorks(env, shut);
@@ -1833,11 +1873,11 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
 // KIT_OUTER_LOCK. Outside the lock the runtime folder is the real one, which no locked build can write.
 const markName = "kit-outer-lock";
 const runtimeFolder = env => env.XDG_RUNTIME_DIR || (typeof process.getuid === "function" ? `/run/user/${process.getuid()}` : "");
-function outerMark(env, outer) {
+function outerMark(env, outer, tempRoot = tmpdir()) {
   const runtime = runtimeFolder(env);
   // Only where the lock masks an existing runtime folder; without one, a run inside starts its own sandbox as before.
   if (!runtime.startsWith("/") || !outer.some((arg, index) => arg === "--tmpfs" && outer[index + 1] === resolve(runtime))) return { env: {}, args: [], close() {} };
-  const token = randomUUID(), dir = mkdtempSync(join(tmpdir(), "ase-outer-lock-")), file = join(dir, markName);
+  const token = randomUUID(), dir = mkdtempSync(join(tempRoot, "ase-outer-lock-")), file = join(dir, markName);
   writeFileSync(file, token);
   const remount = outer.findIndex((word, index) => word === "--remount-ro" && outer[index + 1] === resolve(runtime));
   if (remount >= 0) outer.splice(remount, 2);
@@ -2147,9 +2187,10 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [], 
     throw error;
   }
   Object.assign(scrub, fence.env);
-  const maskedPaths = fenceParent && !paths.includes(fenceParent) ? [...paths, fenceParent] : paths;
-  const outer = bwrapArgs(maskedPaths, { writable: fence.writable, writableFds: fence.writableFds, fence: true, readOnly: kitFolders(env, { worktree, common }), readOnlyAfter: readOnly });
-  const mark = outerMark(env, outer);
+  const parent = fence.parent ?? fenceParent;
+  const maskedPaths = parent && !paths.includes(parent) ? [...paths, parent] : paths;
+  const outer = bwrapArgs(maskedPaths, { writable: fence.writable, writableFds: fence.writableFds, writableAfter: fence.writableAfter, fence: true, readOnly: kitFolders(env, { worktree, common }), readOnlyAfter: readOnly });
+  const mark = outerMark(env, outer, dirname(fence.dir));
   // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
   const wrap = (command, args) => {
     for (const target of fence.pinned) {

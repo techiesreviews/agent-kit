@@ -299,6 +299,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   `CLAUDE.md`, `output-styles`, skills and other resources are read-only links. A locked build refuses a `CLAUDE_CONFIG_DIR`
   (or a linked login or settings file) that leads into the worktree or Git folder; move `CLAUDE_CONFIG_DIR` outside them. A build's artifact folder holds a `cli-state` link to its private
   state folder under `${XDG_STATE_HOME:-~/.local/state}/agent-kit/fence/`, so a resume keeps its session across reboots.
+  The path to `cli-state` must have no links inside the worktree, Git folder or other writable roots; fresh starts and
+  resumes through such a link are refused.
   The parent fence folder is masked and read-only inside locked runs, and each session has an owner record tied to its
   `cli-state` path and worktree, so sibling sessions and their login copies stay hidden from other builds, reviews and
   checks, another build cannot claim a session, and a build cannot rename its own state root. That folder may contain
