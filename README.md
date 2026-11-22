@@ -318,7 +318,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     process or external (a filter, `diff.external`, a text converter, a merge driver,
     `core.sshCommand`, `core.alternateRefsCommand`, a credential helper...), every alias, per-command pager and trace2
     target. Settings that only commands `kit pr` never runs read (`difftool.<tool>.path`, `submodule.<name>.update`) are
-    not matched. A call without the network reads no global or system Git config (a build can write `~/.gitconfig`); the
+    not matched. A call without the network reads no global or system Git config (an earlier unlocked build may have changed `~/.gitconfig`); the
     user's name and e-mail, the excludes file and the line-ending settings come along. A fetch or push keeps the global
     config (its credential helper) and is refused while the repository's own config holds `http.*` or `credential.*`
     settings. Every call allows only the transports git has itself (file, git, http, https, ssh), and a fetch or push
@@ -353,12 +353,12 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
       git's ssh there keeps the path filter; the key files are hidden there anyway. `kit doctor` says which:
       `keyed steps: clean room on`, or not on this machine.
     - **What the room does not close.** Git itself still reads the Git folder before it starts ssh; its settings stay
-      guarded as above (no hooks, program settings set empty). Files a build wrote outside its own folders still run
-      with the keys: `~/.gitconfig` (a fetch or push reads the global config), `~/.bashrc`, a PATH folder under HOME
-      such as `~/.local/bin`, `~/.ssh/config`. And a remote over https never starts ssh at all: it signs in through the
-      credential helper the global config names, a file a build can write. Only a fence on where a build may write
-      closes those (TOOLS-397). A build process still running when the room is up (the build's lock lets one outlive
-      the build) could move a hidden folder aside and put another folder at its path, which the room does not hide; a
+      guarded as above (no hooks, program settings set empty). The room alone does not protect home setup:
+      `~/.gitconfig` (a fetch or push reads the global config), `~/.bashrc`, a PATH folder such as `~/.local/bin`, or
+      `~/.ssh/config`. A remote over https never starts ssh at all: it signs in through the credential helper the
+      global config names. The write fence above (TOOLS-397) now keeps locked builds and checks from changing those
+      files. Files left by earlier unlocked runs still need review. A process from an unlocked build still running
+      when the room is up could move a hidden folder aside and put another folder at its path, which the room does not hide; a
       link into it then reaches that folder. And a main worktree the Git folder does not record (a Git folder made with
       `--separate-git-dir` and no `core.worktree`) stays visible during a fetch or push from a linked worktree.
     - **On macOS and Windows (no bubblewrap) it is as before:** git's ssh starts by its full path (TOOLS-320), found as
