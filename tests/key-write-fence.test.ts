@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -558,4 +558,162 @@ test("TOOLS-397: pinned local push targets refuse HOME setup folders and stay pi
   spawnSync(oldInWorkCmd, oldInWorkArgs, { cwd: worktree, env: { ...oldEnv, ...oldInWorkLock.env }, encoding: "utf8" });
   assert.equal(existsSync(planted), false);
   assert.deepEqual(readdirSync(bin), []);
+});
+
+test("TOOLS-397: locks started before the saved-session parent exists hide sessions created later and deny it in Codex profiles", { skip: noBwrap }, async t => {
+  const { dir, home, worktree, common, env } = workspace(t);
+  const fenceParent = join(env.XDG_STATE_HOME, "agent-kit/fence");
+  assert.equal(existsSync(fenceParent), false, "saved-session parent must be absent before check starts");
+
+  // Give the user a dummy Claude login that a later build will copy into a new saved session.
+  const claudeHome = join(home, ".claude");
+  mkdirSync(claudeHome, { recursive: true });
+  writeFileSync(join(claudeHome, ".credentials.json"), '{"token":"late-session-secret"}');
+
+  // Start checkLock before fenceParent exists, and keep the check process running.
+  const lock = checkLock({ worktree, common, env });
+  t.after(() => lock.close?.());
+  const readyFile = join(worktree, "ready");
+  const targetFile = join(worktree, "target");
+  const [checkCmd, checkArgs] = lock.wrap(process.execPath, ["-e", `
+    const fs = require("node:fs");
+    fs.writeFileSync(${JSON.stringify(readyFile)}, "ready\\n");
+    const deadline = Date.now() + 15000;
+    while (!fs.existsSync(${JSON.stringify(targetFile)}) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+    const credsPath = fs.readFileSync(${JSON.stringify(targetFile)}, "utf8").trim();
+    let readResult;
+    try { readResult = "LEAKED:" + fs.readFileSync(credsPath, "utf8"); } catch (e) { readResult = e.code; }
+    let entries;
+    try { entries = fs.readdirSync(${JSON.stringify(fenceParent)}); } catch (e) { entries = e.code; }
+    console.log(JSON.stringify({ readResult, entries }));
+  `]);
+  const child = spawn(checkCmd, checkArgs, { cwd: worktree, env: { ...env, ...lock.env }, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", chunk => { stdout += chunk; });
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  const exited = new Promise<number | null>((resolveExit, rejectExit) => {
+    child.on("error", rejectExit);
+    child.on("exit", code => resolveExit(code));
+  });
+  const waitDeadline = Date.now() + 15_000;
+  while (!existsSync(readyFile) && Date.now() < waitDeadline) await new Promise(r => setTimeout(r, 20));
+  assert.equal(existsSync(readyFile), true, `running check did not start: ${stderr}`);
+
+  // Create a Claude saved session AFTER the check is already running.
+  const otherWork = join(dir, "other-work"), otherCommon = join(dir, "other-git");
+  mkdirSync(otherWork, { recursive: true }); mkdirSync(otherCommon, { recursive: true });
+  const lateState = join(otherWork, "cli-state");
+  const lateBuild = keyGuard({ cli: "claude", kind: "build", worktree: otherWork, common: otherCommon, env, state: lateState });
+  const lateSaved = realpathSync(lateState);
+  t.after(() => {
+    lateBuild.close();
+    rmSync(lateSaved, { recursive: true, force: true });
+    rmSync(`${lateSaved}.owner`, { force: true });
+  });
+  const lateCreds = join(lateBuild.env.CLAUDE_CONFIG_DIR, ".credentials.json");
+  assert.equal(readFileSync(lateCreds, "utf8"), '{"token":"late-session-secret"}');
+
+  // Tell the running check where the new session's credentials live and verify it cannot read them.
+  writeFileSync(targetFile, `${lateCreds}\n`);
+  const code = await exited;
+  assert.equal(code, 0, stderr);
+  const observed = JSON.parse(stdout.trim());
+  assert.equal(observed.readResult, "ENOENT", `running check read late session credentials: ${stdout}`);
+  assert.deepEqual(observed.entries, [], `running check listed late session folder: ${stdout}`);
+
+  // Fresh workspaces with no saved-session parent must also deny it in Codex build/review profiles and mask it in reviews.
+  for (const kind of ["build", "review"] as const) {
+    const codexWs = workspace(t);
+    const codexFence = join(codexWs.env.XDG_STATE_HOME, "agent-kit/fence");
+    assert.equal(existsSync(codexFence), false);
+    const codexGuard = keyGuard({ cli: "codex", kind, worktree: codexWs.worktree, common: codexWs.common, env: codexWs.env });
+    t.after(() => codexGuard.close());
+    assert.equal(existsSync(codexFence), true, `codex ${kind} must create saved-session parent`);
+    const realCodexFence = realpathSync(codexFence);
+    assert.ok(codexGuard.codex.some((arg: string) => arg.includes(`${JSON.stringify(realCodexFence)}="none"`)), `codex ${kind} profile must deny ${realCodexFence}: ${codexGuard.codex.join(" ")}`);
+  }
+
+  const reviewWs = workspace(t);
+  const reviewFence = join(reviewWs.env.XDG_STATE_HOME, "agent-kit/fence");
+  assert.equal(existsSync(reviewFence), false);
+  const reviewGuard = keyGuard({ cli: "claude", kind: "review", worktree: reviewWs.worktree, common: reviewWs.common, env: reviewWs.env });
+  t.after(() => reviewGuard.close());
+  assert.equal(existsSync(reviewFence), true);
+  const [, reviewArgs] = reviewGuard.wrap(process.execPath, ["-e", "0"]);
+  const realReviewFence = realpathSync(reviewFence);
+  assert.ok(reviewArgs.some((arg: string, i: number) => arg === "--tmpfs" && reviewArgs[i + 1] === realReviewFence), `review must mask ${realReviewFence}: ${reviewArgs.join(" ")}`);
+});
+
+test("TOOLS-397: relative CLAUDE_CONFIG_DIR resolves against the worktree for login, settings, migration and refresh", { skip: noBwrap }, t => {
+  const { dir, worktree, common, env } = workspace(t);
+  const runnerCwd = join(dir, "runner-cwd");
+  const relCfg = "rel-claude";
+  const runnerCfg = join(runnerCwd, relCfg);
+  const worktreeCfg = join(worktree, relCfg);
+  const projectKey = realpathSync(worktree).replace(/[^A-Za-z0-9-]/g, "-");
+  const sessionId = "legacy-rel-session";
+
+  for (const [cfg, label] of [[runnerCfg, "runner"], [worktreeCfg, "worktree"]] as const) {
+    mkdirSync(join(cfg, "projects", projectKey), { recursive: true });
+    writeFileSync(join(cfg, "settings.json"), JSON.stringify({ source: label }));
+    writeFileSync(join(cfg, ".credentials.json"), JSON.stringify({ token: `${label}-v1` }));
+    writeFileSync(join(cfg, "CLAUDE.md"), `${label} instructions\n`);
+    writeFileSync(join(cfg, "projects", projectKey, `${sessionId}.jsonl`), JSON.stringify({ from: label }) + "\n");
+    const older = new Date(Date.now() - 10_000);
+    utimesSync(join(cfg, ".credentials.json"), older, older);
+  }
+
+  const state = join(worktree, "cli-state");
+  const script = `
+    import { readFileSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    const { keyGuard } = await import(${JSON.stringify(resolve("key-guard.mjs"))});
+    const worktree = ${JSON.stringify(worktree)};
+    const common = ${JSON.stringify(common)};
+    const state = ${JSON.stringify(state)};
+    const session = ${JSON.stringify(sessionId)};
+    const projectKey = ${JSON.stringify(projectKey)};
+    const runnerCreds = ${JSON.stringify(join(runnerCfg, ".credentials.json"))};
+    const worktreeCreds = ${JSON.stringify(join(worktreeCfg, ".credentials.json"))};
+
+    const first = keyGuard({ cli: "claude", kind: "build", worktree, common, env: process.env, state, session });
+    const cfgDir = first.env.CLAUDE_CONFIG_DIR;
+    const firstResult = {
+      settings: JSON.parse(readFileSync(join(cfgDir, "settings.json"), "utf8")),
+      creds: JSON.parse(readFileSync(join(cfgDir, ".credentials.json"), "utf8")),
+      instructions: readFileSync(join(cfgDir, "CLAUDE.md"), "utf8"),
+      transcript: JSON.parse(readFileSync(join(cfgDir, "projects", projectKey, session + ".jsonl"), "utf8")),
+    };
+    first.close();
+
+    // Update both configs so runner's credentials are even newer than the worktree's; resume must still read the worktree's.
+    writeFileSync(worktreeCreds, JSON.stringify({ token: "worktree-v2" }));
+    const newerWork = new Date(Date.now() + 10_000);
+    utimesSync(worktreeCreds, newerWork, newerWork);
+    writeFileSync(runnerCreds, JSON.stringify({ token: "runner-v2" }));
+    const newerRunner = new Date(Date.now() + 20_000);
+    utimesSync(runnerCreds, newerRunner, newerRunner);
+
+    const resumed = keyGuard({ cli: "claude", kind: "build", worktree, common, env: process.env, state, session });
+    const resumedCreds = JSON.parse(readFileSync(join(resumed.env.CLAUDE_CONFIG_DIR, ".credentials.json"), "utf8"));
+    const saved = realpathSync(state);
+    resumed.close();
+    console.log(JSON.stringify({ firstResult, resumedCreds, saved }));
+  `;
+
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: runnerCwd,
+    env: { ...env, CLAUDE_CONFIG_DIR: relCfg },
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const out = JSON.parse(run.stdout.trim());
+  assert.deepEqual(out.firstResult.settings, { source: "worktree" });
+  assert.deepEqual(out.firstResult.creds, { token: "worktree-v1" });
+  assert.equal(out.firstResult.instructions, "worktree instructions\n");
+  assert.deepEqual(out.firstResult.transcript, { from: "worktree" });
+  assert.deepEqual(out.resumedCreds, { token: "worktree-v2" });
 });

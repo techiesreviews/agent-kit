@@ -194,6 +194,35 @@ function fenceStateDir(env) {
   return join(isAbsolute(env.XDG_STATE_HOME ?? "") ? env.XDG_STATE_HOME : join(home(env), ".local/state"), "agent-kit", "fence");
 }
 
+// Ensure the saved-session parent folder exists before preparing any lock's mounts or Codex profile, so a lock started
+// before the first persistent build still hides sessions created afterward.
+function ensureFenceStateDir(env, { worktree, common, extraRoots = [], refuse }) {
+  const fenceRoot = fenceStateDir(env);
+  const base = real(home(env));
+  const roots = [...buildFolders(worktree, common), ...extraRoots.map(real)];
+  const badRoot = path => inside(base, path) || roots.some(root => inside(path, root) || inside(root, path));
+  const candidate = real(fenceRoot);
+  if (badRoot(candidate)) refuse(`the write fence state folder (${candidate}) cannot hold HOME or sit inside the worktree or Git folder; set XDG_STATE_HOME to a folder of its own`);
+  try {
+    mkdirSync(fenceRoot, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    // Synthetic test environments may pass a nonexistent, uncreatable HOME (e.g. /h) without XDG_STATE_HOME:
+    // no build can create saved sessions there either.
+    if (!isAbsolute(env.XDG_STATE_HOME ?? "") && !existingPaths([home(env)]).length && ["EACCES", "EROFS", "ENOENT", "EPERM"].includes(error.code)) {
+      return null;
+    }
+    refuse(`cannot prepare the saved-session folder (${fenceRoot}): ${error.message}; fix its permissions or set XDG_STATE_HOME to a writable folder`);
+  }
+  const parent = real(fenceRoot);
+  if (badRoot(parent)) refuse(`the write fence state folder (${parent}) cannot hold HOME or sit inside the worktree or Git folder; set XDG_STATE_HOME to a folder of its own`);
+  try {
+    if (!statSync(parent).isDirectory()) refuse(`the saved-session path (${parent}) is not a folder; remove it or set XDG_STATE_HOME to a folder of its own`);
+  } catch (error) {
+    refuse(`cannot inspect the saved-session folder (${parent}): ${error.message}; set XDG_STATE_HOME to a writable folder`);
+  }
+  return parent;
+}
+
 const fenceFolderPattern = /^ase-write-fence-[A-Za-z0-9]{6}$/;
 const sessionIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -1568,7 +1597,8 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
     const extra = { TMPDIR: folders.tmp, TMP: folders.tmp, TEMP: folders.tmp, XDG_CACHE_HOME: folders.cache,
       npm_config_cache: join(folders.cache, "npm"), ...(process.platform === "linux" && env.PLAYWRIGHT_BROWSERS_PATH === undefined
         ? { PLAYWRIGHT_BROWSERS_PATH: resolve(worktree || process.cwd(), env.XDG_CACHE_HOME || join(home(env), ".cache"), "ms-playwright") } : {}) };
-    const sources = cli === "claude" ? [[env.CLAUDE_CONFIG_DIR || join(home(env), ".claude"), join(dir, "claude"), "CLAUDE_CONFIG_DIR"]]
+    const claudeSource = env.CLAUDE_CONFIG_DIR ? resolve(worktree || process.cwd(), env.CLAUDE_CONFIG_DIR) : join(home(env), ".claude");
+    const sources = cli === "claude" ? [[claudeSource, join(dir, "claude"), "CLAUDE_CONFIG_DIR"]]
       : [];
     for (const [source, target, variable] of sources) {
       folderAt(target);
@@ -1662,6 +1692,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   for (const name of [cli, "git"]) program(name);
   const { paths, problem: refusal, glue } = searchedPaths(cli, env, { apiRoute, worktree, common });
   if (refusal) throw new Error(`cannot lock the key files for this ${kind}: ${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
+  const refuseLock = problem => refuse(`${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   // Codex's own sandbox shares the network too, so the display warning (when bubblewrap can check it) applies to it.
   if (cli === "codex") {
     let display = Boolean(env.DISPLAY);
@@ -1670,9 +1701,11 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
     const gap = !display ? null : unchecked ? `the X display could not be checked (${absent && process.platform !== "linux" ? "this system has no bubblewrap" : unchecked}), so it may let programs in without its cookie; do not copy or type keys while agents run` : displayWarning;
     const warning = [gap, keyPathsWarning(env)].filter(Boolean).join("; ") || null;
     // Codex locks its own commands; the runner's helpers go through bubblewrap where it runs.
+    const fenceParent = ensureFenceStateDir(env, { worktree, common, refuse: refuseLock });
+    const maskedPaths = fenceParent && !paths.includes(fenceParent) ? [...paths, fenceParent] : paths;
     const fence = kind === "build" ? writeFence(cli, env, { worktree, common }) : null;
-    return { env: { ...scrub, ...fence?.env }, codex: codexProfile(kind, common, codexPaths(paths), fence?.dir), warning, wrap: direct,
-      helper: bwrapWorks(env, shut) === null ? inside(bwrapArgs(paths, fence ? { writable: fence.writable, fence: true } : {})) : direct,
+    return { env: { ...scrub, ...fence?.env }, codex: codexProfile(kind, common, codexPaths(maskedPaths), fence?.dir), warning, wrap: direct,
+      helper: bwrapWorks(env, shut) === null ? inside(bwrapArgs(maskedPaths, fence ? { writable: fence.writable, fence: true } : {})) : direct,
       close() { fence?.close(); } };
   }
   const problem = bwrapWorks(env, shut);
@@ -1683,9 +1716,11 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // Grok's own read-only sandbox cannot start inside this one (agent-run turns it off), so a Grok review gets a read-only
   // lock instead: it writes only its own state folder and the temp folders.
   // The machine's kit stays read-only to the run (kitFolders).
+  const fenceParent = ensureFenceStateDir(env, { worktree, common, refuse: refuseLock });
   const fence = kind === "build" ? writeFence(cli, env, { worktree, common, state, session }) : null;
   Object.assign(scrub, fence?.env);
-  const maskedPaths = fence?.parent && !paths.includes(fence.parent) ? [...paths, fence.parent] : paths;
+  const parent = fence?.parent ?? fenceParent;
+  const maskedPaths = parent && !paths.includes(parent) ? [...paths, parent] : paths;
   const outer = bwrapArgs(maskedPaths, { readOnly: kitFolders(env, { worktree, common }), ...(fence ? { writable: fence.writable, writableAfter: fence.writableAfter, fence: true } : cli === "grok" && kind === "review"
     ? { writable: [join(home(env), ".grok"), env.GROK_HOME, tmpdir(), "/tmp", env.XDG_RUNTIME_DIR].filter(Boolean).map(path => resolve(path)) } : {}) });
   const warning = keyGuardWarning(env, shut);
@@ -2012,8 +2047,19 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [], 
   const { paths, problem: refusal, glue } = searchedPaths("", env, { worktree, common });
   if (refusal) refuse(`${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
   const fence = writeFence("", env, { worktree, common, writable });
+  let fenceParent;
+  try {
+    fenceParent = ensureFenceStateDir(env, {
+      worktree, common, extraRoots: [...fence.writable, ...fence.pinned.map(target => target.path)],
+      refuse: why => refuse(`${why}; or set ASE_KEY_GUARD=off to run without the lock`),
+    });
+  } catch (error) {
+    fence.close();
+    throw error;
+  }
   Object.assign(scrub, fence.env);
-  const outer = bwrapArgs(paths, { writable: fence.writable, writableFds: fence.writableFds, fence: true, readOnly: kitFolders(env, { worktree, common }), readOnlyAfter: readOnly });
+  const maskedPaths = fenceParent && !paths.includes(fenceParent) ? [...paths, fenceParent] : paths;
+  const outer = bwrapArgs(maskedPaths, { writable: fence.writable, writableFds: fence.writableFds, fence: true, readOnly: kitFolders(env, { worktree, common }), readOnlyAfter: readOnly });
   const mark = outerMark(env, outer);
   // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
   const wrap = (command, args) => {
