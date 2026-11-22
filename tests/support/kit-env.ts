@@ -49,7 +49,17 @@ function testHome() {
 }
 // Ephemeral build and check temp folders live under TMPDIR; retained build sessions live under XDG_STATE_HOME.
 // Giving each test process its own temp and state roots removes both on exit without touching real folders.
-const testTemporary = mkdtempSync(join(tmpdir(), "kit-test-tmp-"));
+// Keep the folder name short (and prefer /tmp when an inherited TMPDIR is already long and /tmp is writable) so
+// nested test runs stay under the Unix domain socket path limit (108 bytes on Linux, 104 on macOS) for tools like tsx.
+const maxTestTmpParentBytes = 55;
+function makeTestTemporary() {
+  const current = tmpdir();
+  if (!process.env.KIT_TEST_KEEP_TMPDIR && process.platform !== "win32" && Buffer.byteLength(current) > maxTestTmpParentBytes) {
+    try { return mkdtempSync(join("/tmp", "kt-")); } catch { /* /tmp may be read-only inside the key lock. */ }
+  }
+  return mkdtempSync(join(current, "kt-"));
+}
+const testTemporary = makeTestTemporary();
 process.once("exit", () => rmSync(testTemporary, { recursive: true, force: true }));
 Object.assign(process.env, { TMPDIR: testTemporary, TMP: testTemporary, TEMP: testTemporary });
 export const testHomeFolder = testHome();

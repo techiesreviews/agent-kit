@@ -1600,6 +1600,10 @@ export function openLocalPushTarget(path, { env = process.env, remote = "origin"
 
 // Create an ephemeral private fence folder outside every writable root, so a check or build cannot rename an ancestor
 // under an inherited TMPDIR inside the worktree and swap the mount path for a relative link to HOME.
+// Unix domain sockets (such as tsx's ${TMPDIR}/tsx-<uid>/<pid>.pipe) fail with EINVAL once the path exceeds
+// sockaddr_un.sun_path (108 bytes on Linux, 104 on macOS), so prefer candidates whose fence tmp folder stays within
+// maxFenceTmpBytes while keeping longer candidates as fallback.
+const maxFenceTmpBytes = 64;
 function ephemeralTempDir(env, allRoots, base) {
   const inWritable = folder => allRoots.some(root => inside(folder, root));
   const envTemp = process.platform === "win32" ? (env.TEMP || env.TMP) : env.TMPDIR;
@@ -1610,9 +1614,12 @@ function ephemeralTempDir(env, allRoots, base) {
     const folder = real(raw);
     if (!candidates.includes(folder)) candidates.push(folder);
   }
+  const fitsSocketBudget = folder => process.platform === "win32"
+    || Buffer.byteLength(join(folder, "ase-write-fence-XXXXXX", "tmp")) <= maxFenceTmpBytes;
+  const ordered = [...candidates.filter(fitsSocketBudget), ...candidates.filter(folder => !fitsSocketBudget(folder))];
   const fenceRoot = fenceStateDir(env);
   const fenceReal = real(fenceRoot);
-  for (const folder of candidates) {
+  for (const folder of ordered) {
     if (inWritable(folder) || inside(folder, fenceReal)) continue;
     try {
       const dir = mkdtempSync(join(folder, "ase-write-fence-"));

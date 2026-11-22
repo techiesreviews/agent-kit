@@ -132,7 +132,8 @@ test(guardName, { timeout: ceiling + 60_000 }, async t => {
   for (const file of ["kit-pr", "kit-review", "agent-resume", "agent-scripts", "kit-doctor"]) {
     assert.ok(files.includes(`tests/${file}.test.ts`), `guard must run ${file}`);
   }
-  const temporary = mkdtempSync(join(tmpdir(), "kit-tests-clean-"));
+  // Short prefix keeps nested TMPDIR paths under Linux's 108-byte Unix domain socket limit inside kit pr's key lock.
+  const temporary = mkdtempSync(join(tmpdir(), "kc-"));
   t.after(() => rmSync(temporary, { recursive: true, force: true }));
   const artifacts = join(repo, ".scratch/agent");
   const before = new Set(entries(artifacts));
@@ -147,7 +148,7 @@ test(guardName, { timeout: ceiling + 60_000 }, async t => {
   try { shared = mkdtempSync(join(process.env.KIT_TEST_SHM || "/dev/shm", "kit-tests-clean-")); } catch { /* No /dev/shm here: those tests use the TMPDIR. */ }
   t.after(() => { if (shared) rmSync(shared, { recursive: true, force: true }); });
   const env = { ...kitEnv(), TMPDIR: temporary, TMP: temporary, TEMP: temporary, XDG_STATE_HOME: state,
-    TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ...(shared && { KIT_TEST_SHM: shared }) };
+    KIT_TEST_KEEP_TMPDIR: "1", TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ...(shared && { KIT_TEST_SHM: shared }) };
   // Node otherwise treats this as an existing test worker and runs no files.
   delete env.NODE_TEST_CONTEXT;
   delete env.ASE_KIT_CLEAN_LIMIT_MS;
@@ -193,13 +194,13 @@ test("a run whose limit grows while it runs is not cut off, and one whose limit 
 });
 
 test("a guard run cut off at its limit names the time-out and leaves no temp folder", { timeout: 180_000 }, async t => {
-  const outer = mkdtempSync(join(tmpdir(), "kit-tests-cutoff-"));
+  const outer = mkdtempSync(join(tmpdir(), "kc-cut-"));
   t.after(() => rmSync(outer, { recursive: true, force: true }));
   // The inner guard's own /dev/shm folder goes here, so the check below sees whether it was removed.
   const shared = join(outer, "shm");
   mkdirSync(shared);
   const env = { ...kitEnv(), TMPDIR: outer, TMP: outer, TEMP: outer, KIT_TEST_SHM: shared,
-    TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ASE_KIT_CLEAN_LIMIT_MS: "8000" };
+    KIT_TEST_KEEP_TMPDIR: "1", TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1", ASE_KIT_CLEAN_LIMIT_MS: "8000" };
   delete env.NODE_TEST_CONTEXT;
   const artifacts = join(repo, ".scratch/agent");
   const before = new Set(entries(artifacts));

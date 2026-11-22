@@ -1036,3 +1036,30 @@ test("TOOLS-397: fresh build through a worktree symlink names the link, leaves n
     /artifact folder .* is missing/,
   );
 });
+
+test("TOOLS-406: checkLock picks a short temp root when inherited TMPDIR would crowd the Unix domain socket limit", { skip: noBwrap }, t => {
+  const { home, worktree, common, env } = workspace(t);
+  const longTmp = join(home, "long-temp-parent-a".repeat(2), "long-temp-parent-b".repeat(2));
+  mkdirSync(longTmp, { recursive: true });
+  const lock = checkLock({ worktree, common, env: { ...env, TMPDIR: longTmp, TMP: longTmp, TEMP: longTmp } });
+  const privateDir = dirname(lock.env.TMPDIR);
+  try {
+    assert.ok(Buffer.byteLength(lock.env.TMPDIR) <= 64, `expected short lock TMPDIR, got (${Buffer.byteLength(lock.env.TMPDIR)} bytes): ${lock.env.TMPDIR}`);
+    const [cmd, args] = lock.wrap(process.execPath, ["-e", `
+      const fs = require("node:fs");
+      const net = require("node:net");
+      const path = require("node:path");
+      const dir = path.join(process.env.TMPDIR, "tsx-1000");
+      fs.mkdirSync(dir, { recursive: true });
+      const sock = path.join(dir, process.pid + ".pipe");
+      const server = net.createServer();
+      server.listen(sock, () => server.close(() => { fs.rmSync(sock, { force: true }); console.log("ok"); }));
+    `]);
+    const run = spawnSync(cmd, args, { cwd: worktree, env: { ...env, ...lock.env }, encoding: "utf8", timeout: 30_000 });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.equal(run.stdout.trim(), "ok");
+  } finally {
+    lock.close?.();
+  }
+  assert.equal(existsSync(privateDir), false, "checkLock.close must remove its private folder");
+});
