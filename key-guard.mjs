@@ -189,6 +189,11 @@ function home(env) {
   return env.HOME || homedir();
 }
 
+// Saved build sessions live under the kit's state folder so resumes survive reboots while staying outside the worktree.
+function fenceStateDir(env) {
+  return join(isAbsolute(env.XDG_STATE_HOME ?? "") ? env.XDG_STATE_HOME : join(home(env), ".local/state"), "agent-kit", "fence");
+}
+
 /**
  * Every path the run must not read, absolute and without duplicates: the key list, the other CLIs' logins, extra
  * paths from KIT_KEY_PATHS (separated by the system's path separator, full paths only: keyPathsWarning names the rest), the desktop's runtime folder
@@ -263,6 +268,7 @@ export function lockedPaths(cli, env = process.env, { apiRoute = false, cwd = pr
   // The display's cookie wherever the session keeps it (older SDDM: /tmp/xauth_…).
   paths.push(...named(env.XAUTHORITY));
   paths.push(...extraKeyPaths(env).filter(path => isAbsolute(path)));
+  paths.push(real(fenceStateDir(env)));
   const uid = typeof process.getuid === "function" ? process.getuid() : null;
   const runtime = env.XDG_RUNTIME_DIR || (uid === null ? "" : `/run/user/${uid}`);
   if (runtime.startsWith("/")) paths.push(runtime);
@@ -363,10 +369,11 @@ function inside(path, folder) {
  * it is refused. A path inside an already masked folder is left out. With `writable` (a list), the file system is
  * read-only but for those folders.
  */
-export function bwrapArgs(paths, { writable = null, readOnly = [], readOnlyAfter = [], fence = false } = {}) {
+export function bwrapArgs(paths, { writable = null, writableAfter = [], readOnly = [], readOnlyAfter = [], fence = false } = {}) {
   // Read-only: the whole file system read-only with devices as they are, and writes only to the folders named. The
-  // `readOnly` folders come next, before the masks, so a key path inside one stays hidden; `readOnlyAfter` after them,
-  // so a folder inside a masked one (kit pr's links in a temp folder under the runtime folder) is still there.
+  // `readOnly` folders come next, before the masks, so a key path inside one stays hidden; `readOnlyAfter` and
+  // `writableAfter` come after them, so a folder inside a masked one (kit pr's links in the runtime folder, or a
+  // build's own session inside the masked fence-state root) is still there while siblings stay hidden.
   const args = [...(writable === null ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", ...(fence ? ["--dev", "/dev"] : ["--dev-bind", "/dev", "/dev"]),
     ...existingPaths(writable).flatMap(path => ["--bind", path, path])]), ...existingPaths(readOnly).flatMap(path => ["--ro-bind", path, path])];
   const masked = [];
@@ -379,6 +386,7 @@ export function bwrapArgs(paths, { writable = null, readOnly = [], readOnlyAfter
     else args.push("--ro-bind", "/dev/null", path);
   }
   args.push(...existingPaths(readOnlyAfter).flatMap(path => ["--ro-bind", path, path]));
+  args.push(...existingPaths(writableAfter).flatMap(path => ["--bind", path, path]));
   if (fence) args.push(...masked.flatMap(path => ["--remount-ro", path]));
   return args;
 }
@@ -1211,7 +1219,7 @@ function runsUnwrapped(env, shut) {
  */
 function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
   const uid = typeof process.getuid === "function" ? process.getuid() : -1;
-  const sockets = [env.XDG_RUNTIME_DIR || `/run/user/${uid}`, `/tmp/tmux-${uid}`, "/run/screen", "/tmp/.X11-unix"];
+  const sockets = [env.XDG_RUNTIME_DIR || `/run/user/${uid}`, `/tmp/tmux-${uid}`, "/run/screen", "/tmp/.X11-unix", real(fenceStateDir(env))];
   const { paths, unsafe, unlisted, tooLarge } = linkTargets(lockedPaths(cli, env, { apiRoute, cwd: worktree }), { skip: sockets,
     // Compared with the links' real targets, so through any link on the way (~/Projects -> /data/Projects).
     keep: [home(env), worktree, common].filter(Boolean).map(path => { try { return realpathSync(path); } catch { return resolve(path); } }) });
@@ -1221,18 +1229,23 @@ function searchedPaths(cli, env, { apiRoute = false, worktree, common } = {}) {
   return { paths, problem: null };
 }
 
-// Run state is writable, but never in a home setup folder. A runner supplies a folder in its artifacts so resumed
-// builds keep their session. Direct callers get a private temporary folder, removed by close(). CLI resources remain
-// readable through links; settings and the CLI's own login are private copies so an atomic refresh changes no home file.
+// Run state is writable, but never in a home setup folder. A runner supplies a pointer in its artifacts so resumed
+// builds keep their session under the kit's state folder (surviving reboots). Direct callers get a private temporary
+// folder, removed by close(). CLI resources remain readable through links; settings and the CLI's own login are private
+// copies so an atomic refresh changes no home file.
 function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
-  const named = [worktree, common, ...writable].filter(Boolean).map(real), base = real(home(env));
+  const work = [worktree, common].filter(Boolean).map(real), destinations = writable.filter(Boolean).map(real), base = real(home(env));
+  if (work.some(root => inside(base, root))) throw new Error("the write fence cannot make HOME or one of its parents writable; use a worktree and Git folder of their own");
+  if (destinations.some(root => inside(base, root))) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own");
+  const named = [...work, ...destinations];
   const roots = named.filter((root, index) => named.indexOf(root) === index && !named.some(other => other !== root && inside(root, other)));
-  if (roots.some(root => inside(base, root))) throw new Error("the write fence cannot make HOME or one of its parents writable; use a worktree and Git folder of their own");
-  // A persistent artifact is only a pointer. Its writable mount lives directly in the host's temporary folder:
-  // the locked run can write inside it but cannot rename its root (its parent stays read-only). Mounting a folder
-  // under the worktree instead would let a previous run swap it for a link after this check and before bwrap starts.
-  let dir, fresh = true;
+  // A persistent artifact is only a pointer. Its writable mount lives directly under the kit's state folder
+  // (`${XDG_STATE_HOME:-~/.local/state}/agent-kit/fence`): the locked run can write inside its own folder but cannot
+  // rename its root (its parent is masked and read-only). Mounting a folder under the worktree instead would let a
+  // lingering process from a previous run swap it for a link after this check and before bwrap starts.
+  let dir, fresh = true, parent = null;
   if (state) {
+    const fenceRoot = fenceStateDir(env);
     let info;
     try { info = lstatSync(state); } catch (error) { if (error.code !== "ENOENT") throw error; }
     if (info) {
@@ -1241,14 +1254,19 @@ function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
       dir = readlinkSync(state);
       let saved;
       try { saved = statSync(dir); }
-      catch { throw new Error("this build's saved session is gone because its temporary folder was cleared; start a new build"); }
-      if (!/^ase-write-fence-[A-Za-z0-9]{6}$/.test(basename(dir)) || realpathSync(dir) !== dir || !saved.isDirectory()
-        || (saved.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && saved.uid !== process.getuid())
-        || inside(base, dir)) throw invalid();
+      catch { throw new Error("this build's saved session is gone because its state folder was removed; start a new build"); }
+      parent = real(fenceRoot);
+      if (!/^ase-write-fence-[A-Za-z0-9]{6}$/.test(basename(dir)) || realpathSync(dir) !== dir || dirname(dir) !== parent
+        || !saved.isDirectory() || (saved.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && saved.uid !== process.getuid())
+        || inside(base, dir) || roots.some(root => inside(parent, root))) throw invalid();
       fresh = false;
+    } else {
+      mkdirSync(fenceRoot, { recursive: true, mode: 0o700 });
+      parent = real(fenceRoot);
+      if (inside(base, parent) || roots.some(root => inside(parent, root))) throw new Error("the write fence state folder cannot hold HOME or sit inside the worktree or Git folder; set XDG_STATE_HOME to a folder of its own");
+      dir = mkdtempSync(join(parent, "ase-write-fence-"));
     }
-  }
-  dir ||= mkdtempSync(join(real(tmpdir()), "ase-write-fence-"));
+  } else dir = mkdtempSync(join(real(tmpdir()), "ase-write-fence-"));
   const close = () => { if (!state) rmSync(dir, { recursive: true, force: true }); };
   try {
     const folderAt = path => {
@@ -1262,7 +1280,7 @@ function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
       return [name, folderAt(join(dir, name))];
     }));
     const extra = { TMPDIR: folders.tmp, TMP: folders.tmp, TEMP: folders.tmp, XDG_CACHE_HOME: folders.cache,
-      npm_config_cache: join(folders.cache, "npm"), ...(env.PLAYWRIGHT_BROWSERS_PATH === undefined
+      npm_config_cache: join(folders.cache, "npm"), ...(process.platform === "linux" && env.PLAYWRIGHT_BROWSERS_PATH === undefined
         ? { PLAYWRIGHT_BROWSERS_PATH: resolve(worktree || process.cwd(), env.XDG_CACHE_HOME || join(home(env), ".cache"), "ms-playwright") } : {}) };
     const sources = cli === "claude" ? [[env.CLAUDE_CONFIG_DIR || join(home(env), ".claude"), join(dir, "claude"), "CLAUDE_CONFIG_DIR"]]
       : [];
@@ -1274,11 +1292,23 @@ function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
         // resources (skills, plugins and commands) are read-only links, other runtime folders start empty.
         if (/^(?:settings(?:\.local)?\.json|\.credentials\.json|auth\.json|config\.toml|opencode\.jsonc?|opencode\.db(?:-wal|-shm)?)$/.test(name) && statSync(from).isFile()) copyFileSync(from, to, constants.COPYFILE_EXCL);
         else if (["skills", "plugins", "commands", "agents", "hooks"].includes(name)) symlinkSync(resolve(from), to);
+      } else if (!fresh) {
+        // On resume, pull in a newer home login so a refreshed host login is not shadowed by an older private copy.
+        const from = join(source, ".credentials.json"), to = join(target, ".credentials.json");
+        let sourceInfo, targetInfo;
+        try { sourceInfo = statSync(from); } catch { /* No home credentials file. */ }
+        if (sourceInfo?.isFile()) {
+          try { targetInfo = lstatSync(to); } catch { /* Missing in private copy. */ }
+          if (!targetInfo || !targetInfo.isFile() || sourceInfo.mtimeMs > targetInfo.mtimeMs) {
+            rmSync(to, { recursive: true, force: true });
+            copyFileSync(from, to, constants.COPYFILE_EXCL);
+          }
+        }
       }
       if (variable) extra[variable] = target;
     }
     if (state && fresh) symlinkSync(dir, state);
-    return { env: extra, writable: [...roots, dir], close };
+    return { env: extra, writable: parent ? roots : [...roots, dir], writableAfter: parent ? [dir] : [], parent, close };
   } catch (error) { if (fresh) rmSync(dir, { recursive: true, force: true }); throw error; }
 }
 
@@ -1360,7 +1390,8 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // The machine's kit stays read-only to the run (kitFolders).
   const fence = kind === "build" ? writeFence(cli, env, { worktree, common, state }) : null;
   Object.assign(scrub, fence?.env);
-  const outer = bwrapArgs(paths, { readOnly: kitFolders(env, { worktree, common }), ...(fence ? { writable: fence.writable, fence: true } : cli === "grok" && kind === "review"
+  const maskedPaths = fence?.parent && !paths.includes(fence.parent) ? [...paths, fence.parent] : paths;
+  const outer = bwrapArgs(maskedPaths, { readOnly: kitFolders(env, { worktree, common }), ...(fence ? { writable: fence.writable, writableAfter: fence.writableAfter, fence: true } : cli === "grok" && kind === "review"
     ? { writable: [join(home(env), ".grok"), env.GROK_HOME, tmpdir(), "/tmp", env.XDG_RUNTIME_DIR].filter(Boolean).map(path => resolve(path)) } : {}) });
   const warning = keyGuardWarning(env, shut);
   if (!apiRoute) return { env: scrub, bwrap: true, warning, wrap: inside(outer), helper: inside(outer), close() { fence?.close(); } };

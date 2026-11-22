@@ -289,7 +289,7 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   searches the key folders as a run in that worktree would, so it says "on" only where a run would really start: a
   key folder that cannot be listed, is too large or links to a folder the lock cannot hide shows there first.
 - **Write fence (TOOLS-397).** A locked build and `kit pr`'s locked checks see the disk read-only, with writes only to
-  their worktree, Git common folder and private temporary state. Home setup files, including `.gitconfig`, `.bashrc`,
+  their worktree, Git common folder and private run state. Home setup files, including `.gitconfig`, `.bashrc`,
   `.profile`, `.local/bin`, `.config/systemd/user` and `.ssh`, stay read-only or hidden. CLI state and caches use private
   folders rather than writable home folders. This uses the same bubblewrap mount boundary as the clean room in
   `git-safety.mjs`, facing the other way: the build keeps its work and loses write access to the rest of the machine;
@@ -297,13 +297,17 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   also refuses writes through a worktree link into HOME. Codex keeps its own profile, with only the run's private temp
   folder writable rather than all of `/tmp`, on every platform Codex supports. Claude's build state starts with copies of its own login and settings;
   skills and other resources are read-only links. A build's artifact folder holds a `cli-state` link to its private
-  temporary folder, so a resume keeps its session. That folder may contain the CLI's refreshed login. Before removing
-  the artifacts, read the `cli-state` link and remove that temporary folder too. A cleared session gives a message to
-  start a new build. The lead must check a real Claude login refresh before merging a change to this isolation: a copy
-  is never written back to the home login from an untrusted build. Checks' private folders are removed when `kit pr` exits.
-  A push to a folder remote also allows writes to that named destination; its hooks still see no keys. Tools that
+  state folder under `${XDG_STATE_HOME:-~/.local/state}/agent-kit/fence/`, so a resume keeps its session across reboots.
+  The parent fence folder is masked and read-only inside locked runs, so sibling sessions and their login copies stay
+  hidden from other builds, reviews and checks, and a build cannot rename its own state root. That folder may contain
+  the CLI's refreshed login; on resume, a newer home login is copied into the private folder, while an untrusted build's
+  copy is never written back to HOME. Before removing the artifacts, read the `cli-state` link and remove that state
+  folder too. A removed session gives a message to start a new build. The lead must check a real Claude login refresh
+  before merging a change to this isolation. Checks' private temporary folders are removed when `kit pr` exits.
+  A push to a folder remote allows writes only when the destination is a direct bare Git repository folder with no links
+  on the way; its hooks still see no keys. Tools that
   insist on writing to a fixed home path fail; use their cache or state setting to put those writes in the worktree or
-  `$TMPDIR`. Installed Playwright browsers remain readable at their original cache path when `PLAYWRIGHT_BROWSERS_PATH`
+  `$TMPDIR`. On Linux, installed Playwright browsers remain readable at their original cache path when `PLAYWRIGHT_BROWSERS_PATH`
   is unset. There is no bubblewrap fence where the lock is off or runs unwrapped (macOS and Windows); Codex keeps its native profile there.
 - **What the key lock does not do.** It keeps an agent the kit starts from reading the key files while it runs; it does
   not confine what the agent writes. A build writes wherever the user can (the worktree, the repository's Git folder and

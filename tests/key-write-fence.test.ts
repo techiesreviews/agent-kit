@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapWorks, checkLock, keyGuard } from "../key-guard.mjs";
@@ -155,4 +155,94 @@ test("TOOLS-397: a folder-remote push can write its named destination while its 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(join(remote, "hook-ran"), "utf8"), "locked\n");
   assert.equal(readFileSync(join(remote, "leaked"), "utf8"), "");
+});
+
+test("TOOLS-397: a saved-session link cannot select a folder the build can rename", { skip: noBwrap }, t => {
+  const { worktree, common, env } = fixture(t);
+  const planted = join(worktree, "ase-write-fence-abcdef"), state = join(worktree, "cli-state");
+  mkdirSync(planted, { mode: 0o700 });
+  for (const name of ["tmp", "cache", "config", "data", "state", "claude"]) mkdirSync(join(planted, name));
+  symlinkSync(planted, state);
+  assert.throws(() => keyGuard({ cli: "claude", kind: "build", worktree, common, env, state }), /saved session.*start a new build/);
+});
+
+test("TOOLS-397: saved sessions live under XDG_STATE_HOME, hide siblings and refresh newer home credentials on resume", { skip: noBwrap }, t => {
+  const { home, worktree, common, env } = fixture(t);
+  const claudeHome = join(home, ".claude"), creds = join(claudeHome, ".credentials.json"), settings = join(claudeHome, "settings.json"), skills = join(claudeHome, "skills");
+  mkdirSync(skills, { recursive: true });
+  writeFileSync(settings, '{"home":true}');
+  writeFileSync(creds, '{"token":"v1"}');
+  const older = new Date(Date.now() - 10_000);
+  utimesSync(creds, older, older);
+  const stateA = join(worktree, "cli-state-a"), stateB = join(worktree, "cli-state-b");
+  const guardA = keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateA });
+  const guardB = keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateB });
+  const savedA = realpathSync(stateA), savedB = realpathSync(stateB);
+  t.after(() => { rmSync(savedA, { recursive: true, force: true }); rmSync(savedB, { recursive: true, force: true }); });
+  assert.equal(dirname(savedA), realpathSync(join(env.XDG_STATE_HOME, "agent-kit/fence")));
+  // R1-12: settings.json and .credentials.json are copies; skills is a link; edits to copies leave home alone.
+  const copySettings = join(guardA.env.CLAUDE_CONFIG_DIR, "settings.json");
+  const copyCreds = join(guardA.env.CLAUDE_CONFIG_DIR, ".credentials.json");
+  const linkSkills = join(guardA.env.CLAUDE_CONFIG_DIR, "skills");
+  assert.equal(lstatSync(copySettings).isFile(), true);
+  assert.equal(lstatSync(copyCreds).isFile(), true);
+  assert.equal(lstatSync(linkSkills).isSymbolicLink(), true);
+  writeFileSync(copySettings, '{"mutated":true}');
+  writeFileSync(copyCreds, '{"token":"mutated"}');
+  assert.equal(readFileSync(settings, "utf8"), '{"home":true}');
+  assert.equal(readFileSync(creds, "utf8"), '{"token":"v1"}');
+  // Sibling saved sessions stay hidden inside bubblewrap, and another run cannot see guardA's folder.
+  writeFileSync(join(savedB, "sibling-secret"), "hidden");
+  const [command, args] = guardA.wrap(process.execPath, ["-e", `const fs = require('node:fs');
+    console.log(JSON.stringify(fs.readdirSync(${JSON.stringify(dirname(savedA))})));
+    try { fs.readFileSync(${JSON.stringify(join(savedB, "sibling-secret"))}); console.log('leaked'); } catch (e) { console.log(e.code); }`]);
+  const probe = spawnSync(command, args, { cwd: worktree, env: { ...env, ...guardA.env }, encoding: "utf8" });
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(probe.stdout.trim(), `${JSON.stringify([savedA.split("/").at(-1)])}\nENOENT`);
+  guardA.close(); guardB.close();
+  // Newer home credentials refresh on resume, safely replacing even a symlink left in private state.
+  rmSync(copyCreds); symlinkSync(join(home, ".profile"), copyCreds);
+  writeFileSync(creds, '{"token":"v2"}');
+  const newer = new Date(Date.now() + 10_000);
+  utimesSync(creds, newer, newer);
+  const resumed = keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateA });
+  t.after(() => resumed.close());
+  assert.equal(lstatSync(copyCreds).isFile(), true);
+  assert.equal(readFileSync(copyCreds, "utf8"), '{"token":"v2"}');
+  assert.equal(existsSync(join(home, ".profile")), false);
+});
+
+test("TOOLS-397: checkLock.close removes its private folder and refuses a push destination holding HOME", { skip: noBwrap }, t => {
+  const { home, worktree, common, env } = fixture(t);
+  const lock = checkLock({ worktree, common, env });
+  const privateDir = dirname(lock.env.TMPDIR);
+  assert.equal(existsSync(privateDir), true);
+  lock.close?.();
+  assert.equal(existsSync(privateDir), false);
+  assert.throws(() => checkLock({ worktree, common, env, writable: [home] }), /push goes to a folder that holds your home folder/);
+});
+
+test("TOOLS-397: Codex build puts TMPDIR in a private folder, names it in its profile and removes it on close", t => {
+  const { worktree, common, env } = fixture(t);
+  const guard = keyGuard({ cli: "codex", kind: "build", worktree, common, env });
+  const privateDir = dirname(guard.env.TMPDIR);
+  assert.equal(existsSync(privateDir), true);
+  assert.ok(guard.codex.some((arg: string) => arg.includes(`${JSON.stringify(guard.env.TMPDIR)}="write"`)), guard.codex.join(" "));
+  guard.close();
+  assert.equal(existsSync(privateDir), false);
+});
+
+test("TOOLS-397: PLAYWRIGHT_BROWSERS_PATH is not forced to a Linux cache path on macOS", t => {
+  const { worktree, common, env } = fixture(t);
+  const childEnv = { ...env };
+  delete childEnv.PLAYWRIGHT_BROWSERS_PATH;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const { keyGuard } = await import(${JSON.stringify(resolve("key-guard.mjs"))});
+    const guard = keyGuard({ cli: "codex", kind: "build", worktree: ${JSON.stringify(worktree)}, common: ${JSON.stringify(common)}, env: process.env });
+    console.log(JSON.stringify({ pw: guard.env.PLAYWRIGHT_BROWSERS_PATH ?? null }));
+    guard.close();
+  `], { env: childEnv, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout.trim()).pw, null);
 });

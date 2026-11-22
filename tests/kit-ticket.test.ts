@@ -1742,9 +1742,9 @@ test("only card keys count as blockers", async t => {
 test("an agent the kit starts never inherits a lead's ORBIT_ROLE", async t => {
   const home = mkdtempSync(join(tmpdir(), "kit-ticket-role-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  const bin = join(home, "bin"), seen = join(home, "seen"), root = join(home, "work");
+  const bin = join(home, "bin"), root = join(home, "work"), seen = join(root, ".scratch/seen");
   mkdirSync(bin);
-  mkdirSync(root);
+  mkdirSync(join(root, ".scratch"), { recursive: true });
   spawnSync("git", ["init", "-q", root]);
   const fake = (name: string) => {
     writeFileSync(join(bin, name), `#!/bin/sh\nprintf '%s' "\${ORBIT_ROLE-none}" > "${seen}"\ncat > /dev/null\necho "{}"\n`);
