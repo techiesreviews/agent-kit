@@ -3328,6 +3328,37 @@ test("a KIT_HOME outside the project runs its own unit.sh by absolute path, as t
   assert.ok(f.body().includes(`- ${join(home, "unit.sh")} tests/a.test.ts: ok`), f.body());
 });
 
+test("a KIT_HOME at the project root runs ./unit.sh inside the key lock, including when KIT_HOME is relative", t => {
+  for (const kitHomeValue of ["root", "."] as const) {
+    const f = fixture(t, { "tests/a.test.ts": "// changed\n" });
+    f.git("checkout", "dev");
+    for (const name of ["unit.sh", "tickets.mjs"]) copyFileSync(join(f.root, "scripts/agents", name), join(f.root, name));
+    chmodSync(join(f.root, "unit.sh"), 0o755);
+    rmSync(join(f.root, "scripts/agents/unit.sh"));
+    f.git("add", "-A");
+    f.git("commit", "-m", "place kit helpers at repo root");
+    f.git("push", "origin", "dev");
+    f.git("checkout", "feature/kit-pr");
+    f.git("rebase", "dev");
+    const result = f.run(["--no-merge"], { KIT_HOME: kitHomeValue === "root" ? f.root : "." });
+    assert.equal(result.status, 0, `${kitHomeValue}: ${result.stdout}${result.stderr}`);
+    const unitCalls = f.calls().filter(call => call.tool === "unit.sh");
+    assert.deepEqual(unitCalls.map(call => call.args), [["tests/a.test.ts"]]);
+    assert.equal(unitCalls[0].script, join(f.root, "unit.sh"));
+    assert.ok(f.body().includes("- ./unit.sh tests/a.test.ts: ok"), f.body());
+  }
+  // A relative KIT_HOME outside the project still resolves to an absolute path.
+  const outside = fixture(t, { "tests/a.test.ts": "// changed\n" });
+  const home = join(outside.dir, "kit-home");
+  mkdirSync(home);
+  for (const name of ["unit.sh", "tickets.mjs"]) copyFileSync(join(outside.root, "scripts/agents", name), join(home, name));
+  chmodSync(join(home, "unit.sh"), 0o755);
+  const rel = outside.run(["--no-merge"], { KIT_HOME: "../kit-home" });
+  assert.equal(rel.status, 0, rel.stdout + rel.stderr);
+  assert.deepEqual(outside.calls().filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/a.test.ts"]]);
+  assert.ok(outside.body().includes(`- ${join(home, "unit.sh")} tests/a.test.ts: ok`), outside.body());
+});
+
 test("a docs-tier PR with a KIT_HOME outside the project runs that home's tickets.mjs, as the PR body says", t => {
   const f = fixture(t, { "docs/work/01-x.md": "---\ntitle: X\n---\n" });
   const home = join(f.dir, "kit-home");

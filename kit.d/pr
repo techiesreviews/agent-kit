@@ -1141,10 +1141,12 @@ async function main(args) {
       const [name, ...argv] = typeof text === "string" ? text.trim().split(/\s+/) : [];
       return name ? [[name, argv]] : [];
     };
-    // Shared helpers come from KIT_HOME; one inside this project keeps its short path in the PR body.
+    // Shared helpers come from KIT_HOME; one inside this project keeps its short path in the PR body
+    // (a helper at the top folder gets ./ so execvp finds it in the worktree instead of searching PATH).
     const shared = name => {
-      const path = join(kitHome(), name), local = relative(root, path);
-      return local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local) ? path : local;
+      const path = resolve(kitHome(), name), local = relative(root, path);
+      if (local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local)) return path;
+      return local.includes(sep) ? local : `.${sep}${local}`;
     };
     const commands = {
       check: () => parse(checks.check), unit: () => parse(checks.test), lint: () => parse(checks.lint),

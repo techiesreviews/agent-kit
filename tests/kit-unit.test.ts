@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
+import { gitCommonDir } from "../git-safety.mjs";
+// @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+import { bwrapWorks, checkLock, outerLock, resetBwrapProbe } from "../key-guard.mjs";
 
 const kit = resolve("kit");
 function fixture(t: TestContext) {
@@ -375,4 +378,52 @@ test("unit.files patterns pick src/**/*.test.js for --affected and every pattern
   const again = spawnSync("bash", [resolve("unit.sh")], { cwd: f.root, env, encoding: "utf8", timeout: 60_000 });
   assert.equal(again.status, 0, again.stderr + again.stdout);
   assert.match(again.stdout, /pass 4, fail 0/);
+});
+
+test("tsx-backed unit.sh tests pass under kit-tests-clean's nested TMPDIR inside kit pr's key lock", t => {
+  if (outerLock()) { t.skip("already inside kit pr's key lock"); return; }
+  const root = resolve("."), common = gitCommonDir(root) ?? undefined;
+  const cleanSource = readFileSync(resolve("tests/kit-tests-clean.test.ts"), "utf8");
+  const cleanPrefix = /const temporary = mkdtempSync\(join\(tmpdir\(\), "([^"]+)"\)\);/.exec(cleanSource)?.[1];
+  assert.ok(cleanPrefix, "expected kit-tests-clean temporary prefix");
+  const env: NodeJS.ProcessEnv = { ...kitEnv(), TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp" };
+  delete env.NODE_TEST_CONTEXT;
+  delete env.KIT_OUTER_LOCK;
+  resetBwrapProbe();
+  t.after(resetBwrapProbe);
+  if (bwrapWorks(env, [root, ...(common ? [common] : [])]) !== null) { t.skip("bubblewrap cannot run here"); return; }
+  const lock = checkLock({ worktree: root, common, env });
+  try {
+    // Reproduce the exact nesting of `npm run test:kit-clean` inside `kit pr`:
+    // checkLock TMPDIR -> outer kit-env.ts -> kit-tests-clean temporary -> child kit-env.ts -> tsx IPC socket.
+    const driver = `
+      import { spawnSync } from "node:child_process";
+      import { mkdtempSync, rmSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { join, resolve } from "node:path";
+      import { kitEnv } from "./tests/support/kit-env.ts";
+      const temporary = mkdtempSync(join(tmpdir(), ${JSON.stringify(cleanPrefix)}));
+      try {
+        const childEnv = { ...kitEnv(), TMPDIR: temporary, TMP: temporary, TEMP: temporary, KIT_TEST_KEEP_TMPDIR: "1", TSX_DISABLE_CACHE: "1", NODE_DISABLE_COMPILE_CACHE: "1" };
+        delete childEnv.NODE_TEST_CONTEXT;
+        const r = spawnSync(process.execPath, [
+          "--import", "tsx", "--test", "--test-reporter=tap",
+          "--test-name-pattern=^unit\\\\.sh with no files run from its own folder",
+          resolve("tests/kit-unit.test.ts"),
+        ], { cwd: resolve("."), env: childEnv, encoding: "utf8", timeout: 60_000 });
+        process.stdout.write(r.stdout);
+        process.stderr.write(r.stderr);
+        process.exitCode = r.status ?? 1;
+      } finally {
+        rmSync(temporary, { recursive: true, force: true });
+      }
+    `;
+    const [cmd, args] = lock.wrap(process.execPath, ["--import", "tsx", "--input-type=module", "-e", driver]);
+    const run = spawnSync(cmd, args, { cwd: root, env: { ...env, ...lock.env }, encoding: "utf8", timeout: 90_000 });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /^# pass 1$/m, run.stdout);
+    assert.match(run.stdout, /^# fail 0$/m, run.stdout);
+  } finally {
+    lock.close?.();
+  }
 });
