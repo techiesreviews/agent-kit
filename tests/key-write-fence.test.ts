@@ -220,6 +220,10 @@ test("TOOLS-397: saved sessions live under XDG_STATE_HOME, stay writable inside 
   mkdirSync(otherAgent, { recursive: true });
   symlinkSync(worktree, join(otherAgent, "build-1"));
   assert.throws(() => keyGuard({ cli: "claude", kind: "build", worktree: otherWork, common, env, state: join(otherAgent, "build-1/cli-state-a") }), /saved session cannot be used/);
+  // R11-20: a symlink outside both writable roots still reaches and triggers the worktree owner check.
+  const wtAlias = join(home, "wt-alias");
+  symlinkSync(worktree, wtAlias);
+  assert.throws(() => keyGuard({ cli: "claude", kind: "build", worktree: otherWork, common, env, state: join(wtAlias, "cli-state-a") }), /saved session cannot be used/);
   // Newer home credentials refresh on resume, safely replacing a symlink in private state, and earlier writes survive.
   rmSync(copyCreds); symlinkSync(join(home, ".profile"), copyCreds);
   writeFileSync(creds, '{"token":"v2"}');
@@ -871,4 +875,164 @@ test("TOOLS-397: replacing a build's artifact folder with a link to another buil
   const resumedB = keyGuard({ cli: "claude", kind: "build", worktree: wtLink, common, env, state: join(wtLink, ".scratch/agent/build-b/cli-state") });
   t.after(() => resumedB.close());
   assert.equal(readFileSync(join(resumedB.env.CLAUDE_CONFIG_DIR, "private-b"), "utf8"), "b-only");
+});
+
+test("TOOLS-397: inherited TMPDIR inside a writable root cannot let one check swap private state into HOME for the next", { skip: noBwrap }, t => {
+  const { home, worktree, common, env } = workspace(t);
+  const profile = join(home, ".profile");
+  writeFileSync(profile, "original\n");
+  const inWorkTmp = join(worktree, ".scratch/tmp");
+  mkdirSync(inWorkTmp, { recursive: true });
+
+  const childScript = `
+    import { spawnSync } from "node:child_process";
+    import { existsSync, realpathSync } from "node:fs";
+    import { dirname, join, resolve } from "node:path";
+    const { checkLock, keyGuard } = await import(${JSON.stringify(resolve("key-guard.mjs"))});
+    const worktree = ${JSON.stringify(worktree)};
+    const common = ${JSON.stringify(common)};
+    const home = ${JSON.stringify(home)};
+    const profile = ${JSON.stringify(profile)};
+    const inWorkTmp = ${JSON.stringify(inWorkTmp)};
+    const lock = checkLock({ worktree, common, env: process.env });
+    try {
+      const stateRoot = dirname(lock.env.TMPDIR);
+      const check1 = lock.wrap(process.execPath, ["-e", \`
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const stateRoot = path.dirname(process.env.TMPDIR);
+        const stateParent = path.dirname(stateRoot);
+        const home = \${JSON.stringify(home)};
+        const inWorkTmp = \${JSON.stringify(inWorkTmp)};
+        let swappedStateParent = false;
+        try {
+          fs.renameSync(stateParent, stateParent + ".aside");
+          fs.mkdirSync(stateParent, { recursive: true });
+          fs.symlinkSync(path.relative(stateParent, home), stateRoot);
+          swappedStateParent = true;
+        } catch {}
+        if (!swappedStateParent) {
+          fs.renameSync(inWorkTmp, inWorkTmp + ".aside");
+          fs.mkdirSync(inWorkTmp, { recursive: true });
+          fs.symlinkSync(path.relative(inWorkTmp, home), path.join(inWorkTmp, path.basename(stateRoot)));
+        }
+        console.log(JSON.stringify({ swappedStateParent }));
+      \`]);
+      const run1 = spawnSync(check1[0], check1[1], { cwd: worktree, env: { ...process.env, ...lock.env }, encoding: "utf8", timeout: 30_000 });
+      if (run1.status !== 0) throw new Error("check1 failed: " + run1.stderr);
+
+      const check2 = lock.wrap(process.execPath, ["-e", \`
+        const fs = require("node:fs");
+        try { fs.writeFileSync(\${JSON.stringify(profile)}, "planted"); console.log("wrote"); }
+        catch (error) { console.log(error.code); }
+      \`]);
+      const run2 = spawnSync(check2[0], check2[1], { cwd: worktree, env: { ...process.env, ...lock.env }, encoding: "utf8", timeout: 30_000 });
+      if (run2.status !== 0) throw new Error("check2 failed: " + run2.stderr);
+
+      const guard = keyGuard({ cli: "claude", kind: "build", worktree, common, env: process.env });
+      const guardRoot = dirname(guard.env.TMPDIR);
+      guard.close();
+
+      console.log(JSON.stringify({
+        stateRoot,
+        guardRoot,
+        worktreeReal: realpathSync(worktree),
+        check1: JSON.parse(run1.stdout.trim()),
+        check2: run2.stdout.trim(),
+        guardCleaned: !existsSync(guardRoot),
+      }));
+    } finally {
+      lock.close?.();
+    }
+  `;
+
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", childScript], {
+    cwd: worktree,
+    env: { ...env, TMPDIR: inWorkTmp, TMP: inWorkTmp, TEMP: inWorkTmp },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const out = JSON.parse(result.stdout.trim());
+  assert.equal(out.check1.swappedStateParent, false, `state root must not sit under a writable ancestor: ${out.stateRoot}`);
+  assert.equal(out.stateRoot.startsWith(`${out.worktreeReal}/`), false, `checkLock state root sat inside worktree: ${out.stateRoot}`);
+  assert.equal(out.guardRoot.startsWith(`${out.worktreeReal}/`), false, `keyGuard state root sat inside worktree: ${out.guardRoot}`);
+  assert.equal(out.guardCleaned, true);
+  assert.equal(out.check2, "EROFS");
+  assert.equal(readFileSync(profile, "utf8"), "original\n");
+  assert.equal(existsSync(out.stateRoot), false, "checkLock.close must remove its private folder");
+
+  // An inherited TMPDIR inside the Git common folder is also avoided.
+  const inCommonTmp = join(common, "tmp");
+  mkdirSync(inCommonTmp, { recursive: true });
+  const commonLock = checkLock({ worktree, common, env: { ...env, TMPDIR: inCommonTmp } });
+  const commonRoot = dirname(commonLock.env.TMPDIR);
+  t.after(() => commonLock.close?.());
+  assert.equal(commonRoot.startsWith(`${realpathSync(common)}/`), false, `state root sat inside Git folder: ${commonRoot}`);
+});
+
+test("TOOLS-397: fresh build through a worktree symlink names the link, leaves no owner record, and resumes keep the saved-session refusal", { skip: noBwrap }, t => {
+  // Case 1 (R11-19): .scratch itself is a symlink to a folder in temporary HOME on a fresh start.
+  const ws1 = workspace(t);
+  const sharedScratch = join(ws1.home, "shared-scratch");
+  mkdirSync(join(sharedScratch, "agent/build-1"), { recursive: true });
+  const scratchLink = join(ws1.worktree, ".scratch");
+  symlinkSync(sharedScratch, scratchLink);
+  const realScratchLink = join(realpathSync(ws1.worktree), ".scratch");
+  const freshState1 = join(scratchLink, "agent/build-1/cli-state");
+
+  let err1: Error | null = null;
+  try {
+    keyGuard({ cli: "claude", kind: "build", worktree: ws1.worktree, common: ws1.common, env: ws1.env, state: freshState1 });
+  } catch (error) {
+    err1 = error as Error;
+  }
+  assert.ok(err1, "fresh start through .scratch symlink must be refused");
+  assert.match(err1.message, /artifact path passes through a link inside the worktree or Git folder/);
+  assert.ok(err1.message.includes(realScratchLink), `expected link path ${realScratchLink} in: ${err1.message}`);
+  assert.doesNotMatch(err1.message, /saved session/);
+  const fenceDir1 = join(ws1.env.XDG_STATE_HOME, "agent-kit/fence");
+  const owners1 = existsSync(fenceDir1) ? readdirSync(fenceDir1).filter(name => name.endsWith(".owner")) : [];
+  assert.deepEqual(owners1, [], "refused fresh start must leave no .owner record");
+
+  // Case 2 (R11-21): a middle folder inside the worktree (.scratch/agent) links to a folder in temporary HOME.
+  const ws2 = workspace(t);
+  const outsideAgent = join(ws2.home, "outside-agent");
+  mkdirSync(join(outsideAgent, "build-2"), { recursive: true });
+  mkdirSync(join(ws2.worktree, ".scratch"), { recursive: true });
+  const agentLink = join(ws2.worktree, ".scratch/agent");
+  symlinkSync(outsideAgent, agentLink);
+  const realAgentLink = join(realpathSync(ws2.worktree), ".scratch/agent");
+  const state2 = join(agentLink, "build-2/cli-state");
+
+  let err2: Error | null = null;
+  try {
+    keyGuard({ cli: "claude", kind: "build", worktree: ws2.worktree, common: ws2.common, env: ws2.env, state: state2 });
+  } catch (error) {
+    err2 = error as Error;
+  }
+  assert.ok(err2, "fresh start through middle worktree symlink must be refused");
+  assert.match(err2.message, /artifact path passes through a link inside the worktree or Git folder/);
+  assert.ok(err2.message.includes(realAgentLink), `expected link path ${realAgentLink} in: ${err2.message}`);
+  assert.doesNotMatch(err2.message, /saved session/);
+  const fenceDir2 = join(ws2.env.XDG_STATE_HOME, "agent-kit/fence");
+  const owners2 = existsSync(fenceDir2) ? readdirSync(fenceDir2).filter(name => name.endsWith(".owner")) : [];
+  assert.deepEqual(owners2, [], "refused fresh start through middle symlink must leave no .owner record");
+
+  // Resume through the same middle link (when cli-state exists or session is set) keeps the saved-session refusal.
+  assert.throws(
+    () => keyGuard({ cli: "claude", kind: "build", worktree: ws2.worktree, common: ws2.common, env: ws2.env, state: state2, session: "old-session" }),
+    /saved session cannot be used/,
+  );
+  symlinkSync(join(ws2.home, "some-state"), join(outsideAgent, "build-2/cli-state"));
+  assert.throws(
+    () => keyGuard({ cli: "claude", kind: "build", worktree: ws2.worktree, common: ws2.common, env: ws2.env, state: state2 }),
+    /saved session cannot be used/,
+  );
+
+  // Missing artifact folder gives a plain message rather than raw ENOENT.
+  assert.throws(
+    () => keyGuard({ cli: "claude", kind: "build", worktree: ws2.worktree, common: ws2.common, env: ws2.env, state: join(ws2.worktree, "no-such-dir/cli-state") }),
+    /artifact folder .* is missing/,
+  );
 });
