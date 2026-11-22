@@ -1077,7 +1077,8 @@ test("agent.sh hands the builder no KIT_DOCTOR_SKIP, so its own kit doctor sees 
   executable(join(f.commands, "broken"), "exit 1");
   executable(join(f.build, "scripts/agents/kit"), "exit 0");
   const bin = join(f.directory, "bin");
-  const seen = join(f.directory, "seen");
+  const seen = join(f.build, ".scratch/seen");
+  mkdirSync(join(f.build, ".scratch"), { recursive: true });
   mkdirSync(bin);
   executable(join(bin, "claude"), `printf '%s\\n' "\${KIT_DOCTOR_SKIP-unset}" > ${JSON.stringify(seen)}; exit 1`);
   const brief = join(f.directory, "brief.md");
@@ -1280,7 +1281,8 @@ test("a resumed build with a full status.json passes the build gate and really s
   executable(join(f.commands, "broken"), "exit 1");
   executable(join(f.build, "scripts/agents/kit"), "exit 0");
   const bin = join(f.directory, "bin");
-  const seen = join(f.directory, "seen");
+  const seen = join(f.build, ".scratch/seen");
+  mkdirSync(join(f.build, ".scratch"), { recursive: true });
   mkdirSync(bin);
   executable(join(bin, "claude"), `printf '%s\\n' "\${KIT_DOCTOR_SKIP-unset}" "$*" > ${JSON.stringify(seen)}; exit 1`);
   const brief = join(f.directory, "brief.md");

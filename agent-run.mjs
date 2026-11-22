@@ -956,7 +956,7 @@ async function executeRun(options, out, previous, update, brief) {
     try {
       guard = keyGuard({ cli: options.cli, kind: options.kind, common, worktree: options.worktree, model: options.model, apiRoute: options.cli === "claude" && apiRoute(process.env).on,
         env: options.codexHome ? { ...process.env, CODEX_HOME: options.codexHome } : process.env,
-        state: options.kind === "build" ? join(out, "cli-state") : undefined });
+        state: options.kind === "build" && options.cli === "claude" ? join(out, "cli-state") : undefined });
     } catch (error) {
       // The run's log says why it stopped, as the terminal does.
       appendFileSync(log, `problem: ${error.message}\n`);

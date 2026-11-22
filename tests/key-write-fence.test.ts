@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -103,4 +103,56 @@ test("TOOLS-397: replacing the run state after setup cannot turn HOME into a wri
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), "EROFS");
   assert.equal(readFileSync(file, "utf8"), "original\n");
+});
+
+test("TOOLS-397: a saved session survives a resume and a cleared session gives a plain next step", { skip: noBwrap }, t => {
+  const { worktree, common, env } = fixture(t);
+  const state = join(worktree, "cli-state");
+  const first = keyGuard({ cli: "claude", kind: "build", worktree, common, env, state });
+  const saved = realpathSync(state);
+  t.after(() => rmSync(saved, { recursive: true, force: true }));
+  writeFileSync(join(first.env.CLAUDE_CONFIG_DIR, "session"), "saved");
+  first.close();
+  const second = keyGuard({ cli: "claude", kind: "build", worktree, common, env, state });
+  assert.equal(readFileSync(join(second.env.CLAUDE_CONFIG_DIR, "session"), "utf8"), "saved");
+  second.close();
+  rmSync(saved, { recursive: true, force: true });
+  assert.throws(() => keyGuard({ cli: "claude", kind: "build", worktree, common, env, state }), /saved session.*start a new build/);
+  assert.equal(existsSync(saved), false);
+});
+
+test("TOOLS-397: a private cache keeps installed Playwright browsers readable", { skip: noBwrap }, t => {
+  const { home, worktree, common, env } = fixture(t);
+  const browsers = join(home, ".cache/ms-playwright");
+  mkdirSync(browsers, { recursive: true });
+  writeFileSync(join(browsers, "installed"), "browser");
+  const lock = checkLock({ worktree, common, env: { ...env, PLAYWRIGHT_BROWSERS_PATH: undefined } });
+  t.after(() => lock.close?.());
+  assert.equal(lock.env.PLAYWRIGHT_BROWSERS_PATH, browsers);
+  const [command, args] = lock.wrap(process.execPath, ["-e", "console.log(require('node:fs').readFileSync(process.env.PLAYWRIGHT_BROWSERS_PATH + '/installed', 'utf8'))"]);
+  const result = spawnSync(command, args, { env: { ...env, ...lock.env }, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "browser");
+});
+
+test("TOOLS-397: a folder-remote push can write its named destination while its hook stays locked", { skip: noBwrap }, t => {
+  const { dir, home, worktree, common, env } = fixture(t);
+  const remote = join(dir, "remote.git"), key = join(home, ".ssh/key");
+  mkdirSync(resolve(key, ".."), { recursive: true }); writeFileSync(key, "dummy-key");
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", args, { cwd: worktree, env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  git("init", "-q", "-b", "dev");
+  git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "base");
+  git("init", "-q", "--bare", remote);
+  writeFileSync(join(remote, "hooks/pre-receive"), `#!/bin/sh\nif cat '${key}' > '${remote}/leaked' 2>/dev/null; then exit 1; fi\necho locked > '${remote}/hook-ran'\n`, { mode: 0o755 });
+  const lock = checkLock({ worktree, common, env, writable: [remote] });
+  t.after(() => lock.close?.());
+  const [command, args] = lock.wrap("/usr/bin/git", ["push", remote, "HEAD:refs/heads/dev"]);
+  const result = spawnSync(command, args, { cwd: worktree, env: { ...env, ...lock.env }, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(remote, "hook-ran"), "utf8"), "locked\n");
+  assert.equal(readFileSync(join(remote, "leaked"), "utf8"), "");
 });
