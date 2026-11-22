@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapWorks, checkLock, keyGuard } from "../key-guard.mjs";
+import { bwrapWorks, checkLock, keyGuard, openLocalPushTarget } from "../key-guard.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 const noBwrap = bwrapWorks() === null ? false : "bubblewrap cannot run here";
@@ -401,4 +401,112 @@ test("TOOLS-397: coordinated resume swaps before chmod and rename cannot change 
   // Build bubblewrap runs with --die-with-parent so a killed runner cannot leave its build child behind.
   const [, wrapArgs] = firstStaged.wrap(process.execPath, ["-e", "0"]);
   assert.ok(wrapArgs.includes("--die-with-parent"), wrapArgs.join(" "));
+});
+
+test("TOOLS-397: pinned local push targets refuse HOME setup folders and stay pinned across pre-fence and pre-mount swaps", { skip: noBwrap }, t => {
+  const { dir, home, worktree, common, env } = workspace(t);
+  const git = (cwd: string, ...args: string[]) => {
+    const result = spawnSync("git", args, { cwd, env, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git(worktree, "init", "-q", "-b", "dev");
+  git(worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "base");
+
+  // Direct bare repositories inside HOME setup folders are refused.
+  for (const rel of [".local/bin/bare.git", ".config/systemd/user/bare.git", ".ssh/bare.git", "bin/bare.git", ".custom-rc/bare.git"]) {
+    const insideHome = join(home, rel);
+    git(dir, "init", "-q", "--bare", insideHome);
+    assert.throws(() => openLocalPushTarget(insideHome, { env }), /home setup or system folder/, rel);
+    assert.throws(() => checkLock({ worktree, common, env, writable: [insideHome] }), /home setup or system folder/, rel);
+  }
+  const linkToBin = join(worktree, "bin-link");
+  symlinkSync(join(home, ".local/bin"), linkToBin);
+  assert.throws(() => checkLock({ worktree, common, env, writable: [linkToBin] }), /link, not a direct repository folder/);
+
+  // A valid external bare repo pinned by handle succeeds with lock.fds, and does not leak the host fd into the sandbox.
+  const bashrc = join(home, ".bashrc"), sshKey = join(home, ".ssh/id_test");
+  mkdirSync(dirname(sshKey), { recursive: true });
+  writeFileSync(bashrc, "original\n");
+  writeFileSync(sshKey, "secret-key\n");
+  const validRemote = join(dir, "valid.git");
+  git(dir, "init", "-q", "--bare", validRemote);
+  const validPinned = openLocalPushTarget(validRemote, { env });
+  const validLock = checkLock({ worktree, common, env, writable: [validPinned] });
+  t.after(() => validLock.close?.());
+  const [validCmd, validArgs] = validLock.wrap("/usr/bin/git", ["push", validRemote, "HEAD:refs/heads/dev"]);
+  const validPush = spawnSync(validCmd, validArgs, {
+    cwd: worktree,
+    env: { ...env, ...validLock.env },
+    stdio: ["ignore", "pipe", "pipe", ...(validLock.fds ?? [])],
+    encoding: "utf8",
+  });
+  assert.equal(validPush.status, 0, validPush.stderr);
+  const [probeCmd, probeArgs] = validLock.wrap(process.execPath, ["-e", `
+    const fs = require("node:fs");
+    for (const op of [
+      () => fs.writeFileSync("/proc/self/fd/3/../home/.bashrc", "escaped"),
+      () => fs.readFileSync("/proc/self/fd/3/../home/.ssh/id_test", "utf8"),
+    ]) {
+      try { op(); console.log("ESCAPED"); } catch (e) { console.log(e.code); }
+    }
+  `]);
+  const fdProbe = spawnSync(probeCmd, probeArgs, {
+    cwd: worktree,
+    env: { ...env, ...validLock.env },
+    stdio: ["ignore", "pipe", "pipe", ...(validLock.fds ?? [])],
+    encoding: "utf8",
+  });
+  assert.equal(fdProbe.status, 0, fdProbe.stderr);
+  assert.doesNotMatch(fdProbe.stdout, /ESCAPED/);
+  assert.equal(readFileSync(bashrc, "utf8"), "original\n");
+  validLock.close?.();
+
+  // Swapping a pinned external bare repo for a HOME link after checkLock (before wrap) or after wrap (before bwrap mounts)
+  // cannot make ~/.local/bin writable or let a sibling .git hook write HOME.
+  const bin = join(home, ".local/bin/target"), planted = join(bin, "planted");
+  mkdirSync(bin, { recursive: true });
+  const swapped = join(dir, "ext"), sibling = join(dir, "ext.git");
+  git(dir, "init", "-q", "--bare", swapped);
+  git(dir, "init", "-q", "--bare", sibling);
+  writeFileSync(join(sibling, "hooks/pre-receive"), `#!/bin/sh\necho planted > ${JSON.stringify(planted)}\n`, { mode: 0o755 });
+
+  const pinned = openLocalPushTarget(swapped, { env });
+  const lock = checkLock({ worktree, common, env, writable: [pinned] });
+  t.after(() => lock.close?.());
+  const [bwrapCmd, bwrapArgList] = lock.wrap("/usr/bin/git", ["push", swapped, "HEAD:refs/heads/dev"]);
+
+  // Swap after wrap(), right before bwrap executes: wrap() rejects any further call, and bwrap refuses to mount on the link.
+  renameSync(swapped, `${swapped}.aside`);
+  symlinkSync(bin, swapped);
+  assert.throws(() => lock.wrap("/usr/bin/git", ["push", swapped, "HEAD:refs/heads/dev"]), /push destination changed after validation/);
+  const raced = spawnSync(bwrapCmd, bwrapArgList, {
+    cwd: worktree,
+    env: { ...env, ...lock.env },
+    stdio: ["ignore", "pipe", "pipe", ...(lock.fds ?? [])],
+    encoding: "utf8",
+  });
+  assert.notEqual(raced.status, 0, raced.stdout + raced.stderr);
+  assert.equal(existsSync(planted), false);
+  assert.deepEqual(readdirSync(bin), []);
+
+  // Even for an in-worktree remote swapped after wrap() right before bwrap runs, HOME remains read-only if git falls back to sibling .git.
+  const inWork = join(worktree, "r"), inWorkSibling = join(worktree, "r.git");
+  git(worktree, "init", "-q", "--bare", inWork);
+  git(worktree, "init", "-q", "--bare", inWorkSibling);
+  writeFileSync(join(inWorkSibling, "hooks/pre-receive"), `#!/bin/sh\necho planted > ${JSON.stringify(planted)} 2>/dev/null\n`, { mode: 0o755 });
+  const inWorkPinned = openLocalPushTarget(inWork, { env });
+  const inWorkLock = checkLock({ worktree, common, env, writable: [inWorkPinned] });
+  t.after(() => inWorkLock.close?.());
+  const [inWorkCmd, inWorkArgs] = inWorkLock.wrap("/usr/bin/git", ["push", inWork, "HEAD:refs/heads/dev"]);
+  renameSync(inWork, `${inWork}.aside`);
+  symlinkSync(bin, inWork);
+  assert.throws(() => inWorkLock.wrap("/usr/bin/git", ["push", inWork, "HEAD:refs/heads/dev"]), /push destination changed after validation/);
+  spawnSync(inWorkCmd, inWorkArgs, {
+    cwd: worktree,
+    env: { ...env, ...inWorkLock.env },
+    stdio: ["ignore", "pipe", "pipe", ...(inWorkLock.fds ?? [])],
+    encoding: "utf8",
+  });
+  assert.equal(existsSync(planted), false);
+  assert.deepEqual(readdirSync(bin), []);
 });
