@@ -163,6 +163,40 @@ test("a changed line holding a skill line fails with its place and the skill's n
   assert.match(result.stdout, /RESULT: fail skill-guard 3 problem/);
 });
 
+// Standard open-source licence texts, never paid skill content.
+const standardLicences = JSON.parse(readFileSync(new URL("../licence-texts.json", import.meta.url), "utf8")) as Record<string, string>;
+
+for (const [name, text] of Object.entries(standardLicences)) {
+  test(`standard ${name} licence text in a skill index does not flag a vendored licence or header`, (t) => {
+    const f = fixture(t);
+    // Reproduce a skill reference containing a licence, rather than a separately named licence file.
+    f.put(join(f.home, ".claude/skills/crane/references/legal.md"), text);
+    f.put(join(f.repo, "vendor/icons/LICENSE.txt"), text);
+    f.git("add", "."); f.git("commit", "-q", "-m", "vendored licence");
+    f.put(join(f.repo, "src/icons.js"), `/*\n${text.split("\n").map(line => ` * ${line}`).join("\n")}\n */\n`);
+    f.git("add", "src/icons.js");
+    f.put(join(f.repo, "third-party/icons.LICENSE"), text);
+    for (const args of [["--base", "HEAD~1"], ["--history"]]) {
+      const result = f.run(args);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /RESULT: ok skill-guard\n$/);
+    }
+  });
+}
+
+test("standard licence text never hides a copied skill line in the same file", (t) => {
+  const f = fixture(t);
+  const text = standardLicences.MIT;
+  f.put(join(f.home, ".claude/skills/crane/references/legal.md"), `${text}\n${secret}\n`);
+  f.put(join(f.repo, "vendor/icons/LICENSE.txt"), `${text}\n${secret}\n`);
+  f.git("add", "."); f.git("commit", "-q", "-m", "mixed licence and copied skill");
+  const result = f.run(["--base", "HEAD~1"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /vendor\/icons\/LICENSE.txt:\d+: holds a line from the local skill crane/);
+  assert.match(result.stdout, /RESULT: fail skill-guard 1 problem/);
+  assert.doesNotMatch(result.stdout + result.stderr, /paper crane/);
+});
+
 test("a project's own licence passes whatever licence text it holds, and a skill line in any other file still fails", (t) => {
   const f = fixture(t);
   const project = `MIT License\n\nCopyright (c) 2026 Someone\n\n${licenceText}\n`;
