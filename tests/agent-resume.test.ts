@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
 import "./support/kit-env.ts";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapWorks } from "../key-guard.mjs";
+import { bwrapWorks, keyGuard } from "../key-guard.mjs";
 
 // The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
 delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
@@ -28,7 +28,8 @@ interface Call { cli: string; args: string[]; input: string; cwd: string }
 const fake = `#!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { basename } from "node:path";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 const cli = basename(process.argv[1]), args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_CALLS, JSON.stringify({ cli, args, input: readFileSync(0, "utf8"), cwd: process.cwd() }) + "\\n");
 if (process.env.FAKE_EVENTS) appendFileSync(process.env.FAKE_EVENTS, JSON.stringify({ phase: "start", pid: process.pid }) + "\\n");
@@ -57,7 +58,22 @@ else {
   // Like the real CLI, Claude prints its single JSON result (with session_id) only at the end.
   const flag = ["--session-id", "--resume"].find(name => args.includes(name));
   const id = flag ? args[args.indexOf(flag) + 1] : ${JSON.stringify(session)};
-  process.stdout.write(JSON.stringify({ result: ${JSON.stringify(report.trimEnd())}, session_id: id, modelUsage: { [model]: {} } }));
+  let finalText = ${JSON.stringify(report.trimEnd())};
+  if (process.env.FAKE_REQUIRE_TRANSCRIPT && flag === "--resume") {
+    const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+    const projectKey = process.cwd().replace(/[^A-Za-z0-9-]/g, "-");
+    const transcript = join(configDir, "projects", projectKey, id + ".jsonl");
+    if (!existsSync(transcript)) {
+      console.error("No conversation found with session ID: " + id);
+      process.exit(1);
+    }
+    const history = readFileSync(transcript, "utf8").trim();
+    const toolOut = join(configDir, "projects", projectKey, id, "tool-results", "out.txt");
+    const extra = existsSync(toolOut) ? " | " + readFileSync(toolOut, "utf8").trim() : "";
+    finalText = finalText + " | " + history + extra;
+    if (process.env.FAKE_APPEND_TRANSCRIPT) appendFileSync(transcript, process.env.FAKE_APPEND_TRANSCRIPT + "\\n");
+  }
+  process.stdout.write(JSON.stringify({ result: finalText, session_id: id, modelUsage: { [model]: {} } }));
 }
 if (process.env.FAKE_EVENTS) appendFileSync(process.env.FAKE_EVENTS, JSON.stringify({ phase: "end", pid: process.pid }) + "\\n");
 process.exit(Number(process.env.FAKE_EXIT || 0));
@@ -562,4 +578,83 @@ for (const code of ["EPIPE", "EIO"]) test(`${code} output failures happen after 
   assert.ok(recorded.length >= 2, "both problem and report writes were attempted");
   assert.ok(recorded.every(status => status.state === "failed" && status.exitCode === 7));
   assert.equal(f.status().state, "failed"); assert.equal(f.status().exitCode, 7);
+});
+
+test("TOOLS-397: upgrading a legacy Claude build migrates only its transcript into private cli-state on resume", { skip: bwrapWorks() === null ? false : "bubblewrap cannot run here" }, async t => {
+  const f = fixture(t);
+  const home = join(f.dir, "legacy-home");
+  const claudeHome = join(home, ".claude");
+  const projectKey = realpathSync(f.root).replace(/[^A-Za-z0-9-]/g, "-");
+  const projectDir = join(claudeHome, "projects", projectKey);
+  const sessionDir = join(projectDir, session, "tool-results");
+  const otherProjectDir = join(claudeHome, "projects", "-other-project");
+  for (const folder of [join(home, ".config"), join(home, ".cache"), join(home, ".local/share"), join(home, ".local/state"), sessionDir, otherProjectDir]) {
+    mkdirSync(folder, { recursive: true });
+  }
+  const transcriptText = '{"type":"user","message":"earlier build turn"}\n';
+  writeFileSync(join(claudeHome, "settings.json"), '{"theme":"dark"}');
+  writeFileSync(join(claudeHome, ".credentials.json"), '{"token":"home-login"}');
+  writeFileSync(join(claudeHome, ".claude.json"), '{"mcpServers":{"orbit":{"headers":{"Authorization":"Bearer secret"}}}}');
+  writeFileSync(join(claudeHome, "history.jsonl"), '{"project":"other"}\n');
+  writeFileSync(join(projectDir, `${session}.jsonl`), transcriptText);
+  writeFileSync(join(sessionDir, "out.txt"), "earlier tool output\n");
+  symlinkSync(join(claudeHome, ".claude.json"), join(projectDir, session, "mcp-link.json"));
+  writeFileSync(join(projectDir, "other-session.jsonl"), '{"type":"user","message":"other session"}\n');
+  writeFileSync(join(otherProjectDir, "secret-session.jsonl"), '{"type":"user","message":"other project secret"}\n');
+
+  // Legacy build record created before TOOLS-397: status.json has session id, no cli-state link exists.
+  f.seed({ cli: "claude", model: "claude-opus-5-5", state: "interrupted", exitCode: 129, session });
+  assert.equal(existsSync(join(f.out, "cli-state")), false);
+
+  const legacyEnv = {
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_CACHE_HOME: join(home, ".cache"),
+    XDG_DATA_HOME: join(home, ".local/share"),
+    XDG_STATE_HOME: join(home, ".local/state"),
+    FAKE_REQUIRE_TRANSCRIPT: "1",
+    FAKE_APPEND_TRANSCRIPT: '{"type":"assistant","message":"resumed turn"}',
+  };
+  const first = await f.start(["--resume", f.out], legacyEnv).done;
+  assert.equal(first.code, 0, first.stderr);
+  assert.ok(first.stdout.includes("earlier build turn"), first.stdout);
+  assert.ok(first.stdout.includes("earlier tool output"), first.stdout);
+
+  const stateLink = join(f.out, "cli-state");
+  assert.equal(lstatSync(stateLink).isSymbolicLink(), true);
+  const saved = realpathSync(stateLink);
+  t.after(() => {
+    rmSync(saved, { recursive: true, force: true });
+    rmSync(`${saved}.owner`, { force: true });
+  });
+  const privateClaude = join(saved, "claude");
+  assert.equal(existsSync(join(privateClaude, "projects", projectKey, `${session}.jsonl`)), true);
+  assert.equal(readFileSync(join(privateClaude, "projects", projectKey, session, "tool-results", "out.txt"), "utf8"), "earlier tool output\n");
+  // Never copy symlinks, other sessions in the same project, other projects' sessions, or MCP configs/history.
+  assert.equal(existsSync(join(privateClaude, "projects", projectKey, session, "mcp-link.json")), false);
+  assert.equal(existsSync(join(privateClaude, "projects", projectKey, "other-session.jsonl")), false);
+  assert.equal(existsSync(join(privateClaude, "projects", "-other-project")), false);
+  assert.equal(existsSync(join(privateClaude, "history.jsonl")), false);
+  assert.equal(existsSync(join(privateClaude, ".claude.json")), false);
+  // Original home transcript stays untouched.
+  assert.equal(readFileSync(join(projectDir, `${session}.jsonl`), "utf8"), transcriptText);
+
+  // A later resume reuses the private migrated transcript (including turns added on first resume).
+  const brief2 = join(f.dir, "follow-up.md");
+  writeFileSync(brief2, "Second resume.\n");
+  const second = await f.start(["--resume", f.out, "--brief", brief2], { ...legacyEnv, FAKE_APPEND_TRANSCRIPT: "" }).done;
+  assert.equal(second.code, 0, second.stderr);
+  assert.ok(second.stdout.includes("resumed turn"), second.stdout);
+
+  // A crafted traversal session id never copies anything from another project or parent folder.
+  const badState = join(f.out, "bad-cli-state");
+  const common = f.git("rev-parse", "--path-format=absolute", "--git-common-dir");
+  const badGuard = keyGuard({ cli: "claude", kind: "build", worktree: f.root, common, env: { ...process.env, ...legacyEnv }, state: badState, session: "../-other-project/secret-session" });
+  const badSaved = realpathSync(badState);
+  t.after(() => {
+    badGuard.close();
+    rmSync(badSaved, { recursive: true, force: true });
+    rmSync(`${badSaved}.owner`, { force: true });
+  });
+  assert.equal(existsSync(join(badSaved, "claude", "projects")), false);
 });

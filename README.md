@@ -301,8 +301,9 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   The parent fence folder is masked and read-only inside locked runs, and each session has an owner record tied to its
   `cli-state` path and worktree, so sibling sessions and their login copies stay hidden from other builds, reviews and
   checks, another build cannot claim a session, and a build cannot rename its own state root. That folder may contain
-  the CLI's refreshed login; on resume, a newer home login is copied into the private folder, while an untrusted build's
-  copy is never written back to HOME. `worktrees.sh --prune` removes saved fence folders belonging to pruned worktrees;
+  the CLI's refreshed login; on resume, a newer home login is copied into the private folder inside the write fence, while an untrusted build's
+  copy is never written back to HOME. Resuming a pre-fence Claude build with no `cli-state` migrates only that session's
+  transcript from the original Claude folder into its new private state. `worktrees.sh --prune` removes saved fence folders belonging to pruned worktrees;
   when removing artifacts by hand, read the `cli-state` link and remove that state folder too. A removed session gives a message to start a new build. The lead must check a real Claude login refresh
   before merging a change to this isolation. Checks' private temporary folders are removed when `kit pr` exits.
   A push to a folder remote allows writes only when the destination is a direct bare Git repository folder with no links

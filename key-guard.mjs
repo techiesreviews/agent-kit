@@ -195,6 +195,58 @@ function fenceStateDir(env) {
 }
 
 const fenceFolderPattern = /^ase-write-fence-[A-Za-z0-9]{6}$/;
+const sessionIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function claudeProjectKey(folder) {
+  return resolve(folder).replace(/[^A-Za-z0-9-]/g, "-");
+}
+
+function copyRegularTree(from, to, depth = 0) {
+  if (depth > 8) return;
+  let entries;
+  try { entries = readdirSync(from, { withFileTypes: true }); } catch { return; }
+  mkdirSync(to, { recursive: true, mode: 0o700 });
+  for (const entry of entries) {
+    const src = join(from, entry.name), dst = join(to, entry.name);
+    let info;
+    try { info = lstatSync(src); } catch { continue; }
+    if (info.isSymbolicLink()) continue;
+    if (info.isFile()) {
+      copyFileSync(src, dst, constants.COPYFILE_EXCL);
+      chmodSync(dst, 0o600);
+    } else if (info.isDirectory()) copyRegularTree(src, dst, depth + 1);
+  }
+}
+
+// On first resume of a Claude build started before the write fence (no cli-state yet), copy only the requested
+// session's transcript (and its session subdirectory, e.g. tool-results) from the original Claude folder into the new
+// private state. Never copy other sessions, other projects, symlinks or unrelated config files.
+function migrateClaudeSession(source, target, worktree, session) {
+  if (typeof session !== "string" || !sessionIdPattern.test(session) || session.includes("..")) return;
+  const sourceProjects = join(source, "projects");
+  try { if (!statSync(sourceProjects).isDirectory()) return; } catch { return; }
+  const keys = [...new Set([resolve(worktree), real(worktree)].filter(Boolean).map(claudeProjectKey))];
+  for (const key of keys) {
+    const srcProject = join(sourceProjects, key);
+    let projectInfo;
+    try { projectInfo = lstatSync(srcProject); } catch { continue; }
+    if (!projectInfo.isDirectory()) continue;
+    const srcTranscript = join(srcProject, `${session}.jsonl`);
+    const srcSessionDir = join(srcProject, session);
+    let hasTranscript = false, hasSessionDir = false;
+    try { hasTranscript = lstatSync(srcTranscript).isFile(); } catch { /* Missing. */ }
+    try { hasSessionDir = lstatSync(srcSessionDir).isDirectory(); } catch { /* Missing. */ }
+    if (!hasTranscript && !hasSessionDir) continue;
+    const destProject = join(target, "projects", key);
+    mkdirSync(destProject, { recursive: true, mode: 0o700 });
+    if (hasTranscript) {
+      const dstTranscript = join(destProject, `${session}.jsonl`);
+      copyFileSync(srcTranscript, dstTranscript, constants.COPYFILE_EXCL);
+      chmodSync(dstTranscript, 0o600);
+    }
+    if (hasSessionDir) copyRegularTree(srcSessionDir, join(destProject, session));
+  }
+}
 
 function canonicalStatePointer(state) {
   return join(real(dirname(state)), basename(state));
@@ -1329,7 +1381,7 @@ function refreshClaudeCredentials(dir, target, sourceMtime, sourceBytes, env) {
 // builds keep their session under the kit's state folder (surviving reboots). Direct callers get a private temporary
 // folder, removed by close(). CLI resources remain readable through links; settings and the CLI's own login are private
 // copies so an atomic refresh changes no home file.
-function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
+function writeFence(cli, env, { worktree, common, state, writable = [], session } = {}) {
   const work = [worktree, common].filter(Boolean).map(real), destinations = writable.filter(Boolean).map(real), base = real(home(env));
   if (work.some(root => inside(base, root))) throw new Error("the write fence cannot make HOME or one of its parents writable; use a worktree and Git folder of their own");
   if (destinations.some(root => inside(base, root))) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own");
@@ -1384,12 +1436,15 @@ function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
       : [];
     for (const [source, target, variable] of sources) {
       folderAt(target);
-      if (fresh && existingPaths([source]).length) for (const name of readdirSync(source)) {
-        const from = join(source, name), to = join(target, name);
-        // Session logs and caches can be huge. Copy Claude settings and credentials; link instructions and resources
-        // read-only so global instructions and skills keep working without exposing home files to writes.
-        if (/^(?:settings(?:\.local)?\.json|\.credentials\.json)$/.test(name) && statSync(from).isFile()) copyFileSync(from, to, constants.COPYFILE_EXCL);
-        else if (["CLAUDE.md", "output-styles", "skills", "plugins", "commands", "agents", "hooks"].includes(name)) symlinkSync(resolve(from), to);
+      if (fresh && existingPaths([source]).length) {
+        for (const name of readdirSync(source)) {
+          const from = join(source, name), to = join(target, name);
+          // Session logs and caches can be huge. Copy Claude settings and credentials; link instructions and resources
+          // read-only so global instructions and skills keep working without exposing home files to writes.
+          if (/^(?:settings(?:\.local)?\.json|\.credentials\.json)$/.test(name) && statSync(from).isFile()) copyFileSync(from, to, constants.COPYFILE_EXCL);
+          else if (["CLAUDE.md", "output-styles", "skills", "plugins", "commands", "agents", "hooks"].includes(name)) symlinkSync(resolve(from), to);
+        }
+        if (session && worktree) migrateClaudeSession(source, target, worktree, session);
       } else if (!fresh) {
         // On resume, pull in a newer home login inside the write fence so no replaced link can touch HOME.
         const from = join(source, ".credentials.json");
@@ -1431,7 +1486,7 @@ function writeFence(cli, env, { worktree, common, state, writable = [] } = {}) {
  *  - claudeGuard: for the API route, a script the wrapper runs claude through once it has read its key;
  *  - bwrap: true when bubblewrap stands between the runner and the CLI (it reports a killed CLI as exit 128 + signal).
  */
-export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRoute = false, model = "", state }) {
+export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRoute = false, model = "", state, session }) {
   const plain = (command, args) => [command, args];
   const unlocked = { off: true, env: {}, wrap: plain, helper: plain, close() {} };
   const shut = buildFolders(worktree, common);
@@ -1492,7 +1547,7 @@ export function keyGuard({ cli, kind, common, worktree, env = process.env, apiRo
   // Grok's own read-only sandbox cannot start inside this one (agent-run turns it off), so a Grok review gets a read-only
   // lock instead: it writes only its own state folder and the temp folders.
   // The machine's kit stays read-only to the run (kitFolders).
-  const fence = kind === "build" ? writeFence(cli, env, { worktree, common, state }) : null;
+  const fence = kind === "build" ? writeFence(cli, env, { worktree, common, state, session }) : null;
   Object.assign(scrub, fence?.env);
   const maskedPaths = fence?.parent && !paths.includes(fence.parent) ? [...paths, fence.parent] : paths;
   const outer = bwrapArgs(maskedPaths, { readOnly: kitFolders(env, { worktree, common }), ...(fence ? { writable: fence.writable, writableAfter: fence.writableAfter, fence: true } : cli === "grok" && kind === "review"
