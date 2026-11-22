@@ -8,6 +8,7 @@ import test from "node:test";
 import { gitCommonDir } from "../git-safety.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { bwrapWorks, checkLock, outerLock, resetBwrapProbe } from "../key-guard.mjs";
+import { kitEnv } from "./support/kit-env.ts";
 import { kitFiles } from "./support/kit-files.ts";
 
 const update = resolve("kit.d/update");
@@ -613,17 +614,18 @@ test("both kit update --install-timer tests pass under node --test inside kit pr
   const common = gitCommonDir(root) ?? undefined;
   const home = temp(t);
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...kitEnv(),
     HOME: home,
     XDG_CONFIG_HOME: join(home, "config"),
     XDG_CACHE_HOME: join(home, "cache"),
     XDG_DATA_HOME: join(home, "data"),
     XDG_STATE_HOME: join(home, "state"),
   };
-  for (const name of ["ASE_KEY_GUARD", "KIT_KEY_PATHS", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL", "KIT_OUTER_LOCK", "NODE_TEST_CONTEXT", "NODE_OPTIONS"]) {
+  for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL", "KIT_OUTER_LOCK", "NODE_TEST_CONTEXT", "NODE_OPTIONS"]) {
     delete env[name];
   }
   resetBwrapProbe();
+  t.after(resetBwrapProbe);
   if (bwrapWorks(env, [root, ...(common ? [common] : [])]) !== null) { t.skip("bubblewrap cannot run here"); return; }
   const lock = checkLock({ worktree: root, common, env });
   try {
