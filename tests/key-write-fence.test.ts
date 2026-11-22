@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -277,4 +277,128 @@ test("TOOLS-397: PLAYWRIGHT_BROWSERS_PATH is not forced to a Linux cache path on
   `], { env: childEnv, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout.trim()).pw, null);
+});
+
+test("TOOLS-397: coordinated resume swaps before chmod and rename cannot change HOME contents or permissions", { skip: noBwrap }, t => {
+  const { dir, home, worktree, common, env } = workspace(t);
+  const claudeHome = join(home, ".claude"), creds = join(claudeHome, ".credentials.json");
+  const homeProfile = join(home, ".profile"), homeCreds = join(home, ".credentials.json");
+  mkdirSync(claudeHome, { recursive: true });
+  writeFileSync(creds, '{"token":"v1"}');
+  const older = new Date(Date.now() - 10_000);
+  utimesSync(creds, older, older);
+  writeFileSync(homeProfile, "original profile\n");
+  chmodSync(homeProfile, 0o644);
+  writeFileSync(homeCreds, "original home creds\n");
+  chmodSync(homeCreds, 0o644);
+
+  const stateStaged = join(worktree, "cli-state-staged"), stateClaude = join(worktree, "cli-state-claude");
+  const firstStaged = keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateStaged });
+  const firstClaude = keyGuard({ cli: "claude", kind: "build", worktree, common, env, state: stateClaude });
+  const savedStaged = realpathSync(stateStaged), savedClaude = realpathSync(stateClaude);
+  t.after(() => {
+    for (const saved of [savedStaged, savedClaude]) {
+      rmSync(saved, { recursive: true, force: true });
+      rmSync(`${saved}.owner`, { force: true });
+    }
+  });
+  firstStaged.close();
+  firstClaude.close();
+
+  writeFileSync(creds, '{"token":"v2"}');
+  const newer = new Date(Date.now() + 10_000);
+  utimesSync(creds, newer, newer);
+
+  const loader = join(dir, "swap-loader.mjs");
+  writeFileSync(loader, `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    import { basename, dirname } from "node:path";
+    const mode = process.env.SWAP_MODE;
+    const log = process.env.SWAP_LOG;
+    const homeProfile = process.env.SWAP_PROFILE;
+    const homeDir = process.env.SWAP_HOME;
+    const targetCreds = process.env.SWAP_TARGET_CREDS;
+    let swapped = false;
+    const origCopy = fs.copyFileSync;
+    const origOpen = fs.openSync;
+    const origRename = fs.renameSync;
+    const origUnlink = fs.unlinkSync;
+    const origSymlink = fs.symlinkSync;
+    const origAppend = fs.appendFileSync;
+    const swapStaged = path => {
+      if (swapped || mode !== "staged" || typeof path !== "string") return;
+      const name = basename(path);
+      if (!name.startsWith(".credentials-") || !name.endsWith(".tmp")) return;
+      swapped = true;
+      origUnlink(path);
+      origSymlink(homeProfile, path);
+      origAppend(log, "swapped-staged\\n");
+    };
+    fs.copyFileSync = function (src, dest, ...rest) {
+      const result = origCopy.call(fs, src, dest, ...rest);
+      swapStaged(dest);
+      return result;
+    };
+    fs.openSync = function (path, ...rest) {
+      const fd = origOpen.call(fs, path, ...rest);
+      swapStaged(path);
+      return fd;
+    };
+    fs.renameSync = function (from, to) {
+      if (!swapped && mode === "claude" && to === targetCreds) {
+        swapped = true;
+        const claudeDir = dirname(to);
+        origRename(claudeDir, claudeDir + ".aside");
+        origSymlink(homeDir, claudeDir);
+        origAppend(log, "swapped-claude\\n");
+      }
+      return origRename.call(fs, from, to);
+    };
+    syncBuiltinESMExports();
+  `);
+
+  const runResume = (state: string, saved: string, mode: "staged" | "claude") => {
+    const swapLog = join(saved, "swap.log");
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      const { keyGuard } = await import(${JSON.stringify(resolve("key-guard.mjs"))});
+      const guard = keyGuard({ cli: "claude", kind: "build", worktree: ${JSON.stringify(worktree)}, common: ${JSON.stringify(common)}, env: process.env, state: ${JSON.stringify(state)} });
+      guard.close();
+    `], {
+      env: {
+        ...env,
+        NODE_OPTIONS: `--import=${loader}`,
+        SWAP_MODE: mode,
+        SWAP_LOG: swapLog,
+        SWAP_PROFILE: homeProfile,
+        SWAP_HOME: home,
+        SWAP_TARGET_CREDS: join(saved, "claude", ".credentials.json"),
+      },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    return { result, swapLog };
+  };
+
+  // Case 1: staged file replaced with a symlink to HOME/.profile right before chmod.
+  const stagedRun = runResume(stateStaged, savedStaged, "staged");
+  assert.equal(existsSync(stagedRun.swapLog), true, "staged swap hook must fire");
+  assert.match(readFileSync(stagedRun.swapLog, "utf8"), /swapped-staged/);
+  assert.notEqual(stagedRun.result.status, 0, "resuming with a swapped staged file must fail");
+  assert.match(stagedRun.result.stderr, /saved session has a changed folder/);
+  assert.equal(readFileSync(homeProfile, "utf8"), "original profile\n");
+  assert.equal(statSync(homeProfile).mode & 0o777, 0o644);
+
+  // Case 2: claude/ swapped to HOME immediately after directory validation, right before rename.
+  const claudeRun = runResume(stateClaude, savedClaude, "claude");
+  assert.equal(existsSync(claudeRun.swapLog), true, "claude/ swap hook must fire");
+  assert.match(readFileSync(claudeRun.swapLog, "utf8"), /swapped-claude/);
+  assert.notEqual(claudeRun.result.status, 0, "resuming with a swapped claude/ folder must fail");
+  assert.match(claudeRun.result.stderr, /saved session has a changed folder/);
+  assert.equal(readFileSync(homeCreds, "utf8"), "original home creds\n");
+  assert.equal(statSync(homeCreds).mode & 0o777, 0o644);
+
+  // Build bubblewrap runs with --die-with-parent so a killed runner cannot leave its build child behind.
+  const [, wrapArgs] = firstStaged.wrap(process.execPath, ["-e", "0"]);
+  assert.ok(wrapArgs.includes("--die-with-parent"), wrapArgs.join(" "));
 });
