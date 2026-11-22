@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { kitSettingsFile } from "./kit-lib.mjs";
+import licenceTexts from "./licence-texts.json" with { type: "json" };
 
 const usage = "Usage: skill-guard.mjs [--base REF | --history] [--paths-only]";
 const minimum = 60, window = 32, largest = 1 << 20;
@@ -41,6 +42,15 @@ export const boilerplate = [
   /^<meta (?:name="viewport"|charset=|http-equiv=)[^<>]*>$/i,
   /^<link rel="(?:preconnect|dns-prefetch|preload|stylesheet|icon)" href="https?:\/\/[^"<>]*"[^<>]*>$/i,
 ];
+
+// Compare content, not filenames: licences also occur inside skill references and source headers.
+// Only exact standard text is shared; a licence title or filename cannot hide another skill line.
+const standardLicences = Object.values(licenceTexts).map(text => normalLine(text).toLowerCase());
+const licenceLine = (line) => normalLine(line.replace(/^\s*(?:\/\*+|\/\/|\*|<!--)\s?/, "").replace(/\s*(?:\*\/|-->)\s*$/, "")).toLowerCase();
+const isStandardLicenceLine = (line) => {
+  const text = licenceLine(line);
+  return text.length >= minimum && standardLicences.some(licence => licence.includes(text));
+};
 
 /** A normalised line that is shared web boilerplate, never left in the index. */
 export const isBoilerplate = (line) => boilerplate.some(pattern => pattern.test(line));
@@ -138,7 +148,7 @@ export function skillIndex(files) {
     if (text.includes("\0")) continue;
     for (const raw of text.split(/\r?\n/)) {
       const line = normalLine(raw);
-      if (line.length < minimum || isBoilerplate(line)) continue;
+      if (line.length < minimum || isBoilerplate(line) || isStandardLicenceLine(line)) continue;
       const key = line.slice(0, window), list = index.get(key) || [];
       if (!list.some(item => item.line === line)) { list.push({ line, skill }); count++; }
       index.set(key, list);
