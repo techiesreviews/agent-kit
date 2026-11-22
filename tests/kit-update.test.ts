@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+// @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+import { gitCommonDir } from "../git-safety.mjs";
+// @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+import { bwrapWorks, checkLock, outerLock } from "../key-guard.mjs";
 import { kitFiles } from "./support/kit-files.ts";
 
 const update = resolve("kit.d/update");
@@ -470,11 +474,26 @@ const restartCalls = ["--user is-enabled --quiet agent-kit-update.timer", "--use
 const installed = "RESULT: ok update timer installed: kit update runs every 15 minutes\n";
 const already = "RESULT: ok update timer already installed: kit update runs every 15 minutes\n";
 
+function tmpReadOnly() {
+  try { accessSync("/tmp", constants.W_OK); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EROFS"; }
+}
+
 // Both unit files verified by systemd's own reader, where it is installed (it checks ExecStart exists too).
+// systemd-analyze verify hardcodes /tmp/systemd-analyze-XXXXXX (ignoring TMPDIR), so inside a read-only
+// sandbox such as kit pr's write fence it cannot create its working directory; skip only that failure there.
 function verifyUnits(t: { diagnostic: (message: string) => void }, k: { directory: string; env: NodeJS.ProcessEnv }) {
   if (spawnSync("sh", ["-c", "command -v systemd-analyze"]).status !== 0) { t.diagnostic("no systemd-analyze: unit files not verified by systemd"); return; }
   const files = ["timer", "service"].map((kind) => join(units(k), `agent-kit-update.${kind}`));
-  const verify = spawnSync("systemd-analyze", ["verify", ...files], { env: k.env, encoding: "utf8", timeout: 30_000 });
+  const env = { ...k.env, LC_MESSAGES: "C" };
+  delete env.LC_ALL;
+  delete env.LANGUAGE;
+  const verify = spawnSync("systemd-analyze", ["verify", ...files], { env, encoding: "utf8", timeout: 30_000 });
+  if (typeof verify.status === "number" && verify.status !== 0 && tmpReadOnly() && !verify.stdout.trim()
+    && /^Failed to set ?up working directory: Read-only file system\s*$/.test(verify.stderr)) {
+    t.diagnostic("read-only /tmp: unit files not verified by systemd-analyze");
+    return;
+  }
   assert.equal(verify.status, 0, verify.stdout + verify.stderr);
 }
 
@@ -568,6 +587,41 @@ test("kit update --install-timer writes %, $ and @ in its paths and repo the way
         XDG_DATA_HOME: dataHome, KIT_REPO: k.env.KIT_REPO } });
     assert.equal(run.status, 0, run.stdout + run.stderr);
     assert.equal(readlinkSync(join(dataHome, "agent-kit/current")), sha);
+  }
+});
+
+test("both kit update --install-timer tests pass inside kit pr's key lock", {
+  skip: outerLock() ? "already inside kit pr's key lock" : bwrapWorks() !== null ? "bubblewrap cannot run here" : false,
+}, (t) => {
+  const root = resolve(".");
+  const home = temp(t);
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, "config"),
+    XDG_CACHE_HOME: join(home, "cache"),
+    XDG_DATA_HOME: join(home, "data"),
+    XDG_STATE_HOME: join(home, "state"),
+  };
+  for (const name of ["ASE_KEY_GUARD", "KIT_KEY_PATHS", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL", "KIT_OUTER_LOCK", "NODE_TEST_CONTEXT", "NODE_OPTIONS"]) {
+    delete env[name];
+  }
+  const lock = checkLock({ worktree: root, common: gitCommonDir(root) ?? undefined, env });
+  try {
+    const childEnv: NodeJS.ProcessEnv = { ...env, ...lock.env };
+    for (const key of Object.keys(childEnv)) if (childEnv[key] === undefined) delete childEnv[key];
+    const [program, args] = lock.wrap(process.execPath, [
+      "--test",
+      "--test-reporter=tap",
+      "--test-name-pattern=^kit update --install-timer (writes both unit files|writes %, \\$ and @)",
+      resolve("tests/kit-update.test.ts"),
+    ]);
+    const run = spawnSync(program, args, { cwd: root, env: childEnv, encoding: "utf8", timeout: 60_000 });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /^# pass 2$/m, run.stdout);
+    assert.match(run.stdout, /^# fail 0$/m, run.stdout);
+  } finally {
+    lock.close?.();
   }
 });
 
