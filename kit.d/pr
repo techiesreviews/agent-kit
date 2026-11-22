@@ -20,7 +20,7 @@ const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineL
 const { runSpecs } = await import(pathToFileURL(resolve(import.meta.dirname, "../spec-runner.mjs")).href);
 const { checkSteps, classify, docsOnly, doneHeading, featureListGuard, featureListProblem, focusedUnitFiles, lookFamily, parseChanges, secondLookPick, unitTestFile } = await import(pathToFileURL(resolve(import.meta.dirname, "../pr-tier.mjs")).href);
 const { coverageHash, readUxResult, uxGuard, visibleFiles } = await import(pathToFileURL(resolve(import.meta.dirname, "../ux-gate.mjs")).href);
-const { checkLock, keyGuardOn, runPath, runProgram, startCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../key-guard.mjs")).href);
+const { checkLock, keyGuardOn, openLocalPushTarget, runPath, runProgram, startCommand } = await import(pathToFileURL(resolve(import.meta.dirname, "../key-guard.mjs")).href);
 const { folderRemote, gitCommonDir, gitNetworkCall, gitSafety, gitTop, loopbackRemote } = await import(pathToFileURL(resolve(import.meta.dirname, "../git-safety.mjs")).href);
 const usage = 'Usage: kit pr [--base <land>] [--title T] [--ticket FILE] [--no-merge] [--dry-run] [--release | --sync-main] [--full] [--waive "<reason>"] [--not-visible "<reason>"]\nBranches come from scripts/agents/kit.json: --base defaults to branches.land; --release needs --base branches.release and first runs kit release-check --land (nothing unsaved, HEAD exactly origin/<land>).\nA release joins origin/<release> into the cut by one merge (keeping <land>\'s files when every commit origin/<release> holds outside <land>\'s history is an exact copy of one of <land>\'s or already in its files, and its files are <land>\'s at a commit made since <land> and <release> were last joined) and lands, once CI passes, as a merge commit: never a rebase or squash (--no-merge only opens it).\n--sync-main, from a branch cut at origin/<land>, merges origin/<release> into it and lands that merge into <land> as a merge commit, never rebased; it refuses when its own merge would change any file on <land>.\nWhere kit cannot prove what such a merge keeps and drops (a squashed copy of work <land> has changed since, a rollback beside copies, a merge there that changes files itself, a conflict), a release or a sync stops, with nothing merged, and names the steps to make the merge by hand.\n--sync-main on a branch whose tip is a merge of origin/<land> and <release> made by hand lands that merge as it was made, through review, the second look and CI, once it drops no change of <release>\'s that <land> does not already hold; otherwise it names the changes it leaves out.\n--waive requires a *-lead owner and may be given more than once (ids count in any reason, counts add up; once any reason names an id, the counts are not read); records the reason for merging with open findings or without a feature-list update;\na waiver for the findings that stop the landing (above P3; once the fix rounds are used up, P0 and P1) must name each one by id in its text (--waive \"R1-2, SL-1: <reason>\") or start with the number of them (--waive \"2 findings: <reason>\", which must match both looks together);\na finding it leaves out stops kit pr with a plain reason that lists it, and so does one that is new at a head a rebase brought, at the start of the run too (the lead sees it and runs kit pr again); P3 findings, test gaps and docs wording need no names;\nwith --release it also passes the release check, which names the reason (kit pr still needs a clean tree).\nA visible change (paths.visible) lands only with a fresh kit ux result: one that passed, with the review, for the visible files and the listed features that cover the change as they are now (kit ux saves it for the branch; a later change to a visible file or to one of those features, a rebase\'s too, needs kit ux again; a list edit about other features does not).\n--not-visible "<reason>" lands a change that matches those paths but shows a person nothing new, with the reason in the PR text (refused when kit ux tried this very change and it did not pass, and with --release; a run whose reviewer did not finish is no such verdict); --waive does not cover the UX check.\nWhen no feature in the list covers the changed files, kit ux has nothing to try and the PR says "UX check: nothing to try".\nA project with no feature list for kit ux (docs/agents/features.md) says "UX check: skipped"; a release carries what each PR already passed.\nAfter the Claude review (none in the docs tier), every change gets a second look (kit review --second-look), whose findings block the same way;\nwhen no model can take it, the PR lands and says "second look: skipped (<reason>)".\nOn Orbit ("tickets": "orbit"), --ticket takes a card KEY or a saved brief of it (.scratch/kit-tickets/KEY.md); when the PR\nlands the card goes to Done with a dated comment naming the PR and its merge SHA (ORBIT_ROLE=lead); a card that cannot be closed is named on the RESULT line.\nA PR a merge queue takes leaves the card open, its follow-ups on the card, and says to close it once the PR lands.\n';
 const kit = process.env.KIT_PR_KIT || resolve(import.meta.dirname, "../kit");
@@ -358,15 +358,14 @@ async function main(args) {
         let path;
         try { path = resolve(/^file:/i.test(url) ? fileURLToPath(url) : resolve(root, url)); }
         catch { throw new Error(`${remote} pushes to an unusable local address (${url}); push to a bare repository folder directly, or set ASE_KEY_GUARD=off to run without the lock`); }
-        let real;
-        try { real = realpathSync(path); } catch { real = null; }
-        const entry = (name, check) => { try { return check(lstatSync(join(path, name))); } catch { return false; } };
-        const isGit = real === path && !entry(".git", () => true)
-          && entry("HEAD", info => info.isFile()) && entry("objects", info => info.isDirectory()) && entry("refs", info => info.isDirectory());
-        if (!isGit) throw new Error(`${remote} pushes to ${url}, which is not a direct Git repository folder (links and non-repository paths are refused under the key lock); push to a bare repository folder directly, or set ASE_KEY_GUARD=off to run without the lock`);
-        return real;
+        return openLocalPushTarget(path, { env, remote, url, cwd: root });
       };
-      return { local: folders.length > 0, writable: push ? folders.map(localPushTarget) : [] };
+      const writable = [];
+      if (push) {
+        try { for (const url of folders) writable.push(localPushTarget(url)); }
+        catch (error) { for (const target of writable) target.close(); throw error; }
+      }
+      return { local: folders.length > 0, writable };
     };
     // The checks' lock, made when the first check starts; a note says where they run unlocked. A push to a folder remote
     // takes the plain lock (it starts no sandbox of its own).
@@ -374,7 +373,18 @@ async function main(args) {
     const lockNotes = [];
     const lockFor = (writable = []) => {
       const lock = checkLock({ worktree: root, common, env: { ...env, ...startupFiles }, readOnly: programs ? [programs] : [], writable });
-      if (lock.close) process.once("exit", lock.close);
+      if (lock.close) {
+        const orig = lock.close;
+        let closed = false;
+        const cleanup = () => {
+          if (closed) return;
+          closed = true;
+          process.removeListener("exit", cleanup);
+          orig();
+        };
+        process.once("exit", cleanup);
+        lock.close = cleanup;
+      }
       return lock;
     };
     const checksLock = () => {
@@ -399,32 +409,40 @@ async function main(args) {
       // check, the review and the second look run in this process (inProcess) and take the same settings there.
       // node is this process's own, never a bare name PATH may resolve to a link into the worktree.
       let program = command === "node" ? process.execPath : command === "gh" && linked.gh ? linked.gh : command, args = argv, childEnv = { ...(command === "gh" ? ghEnv : env), ...extraEnv };
-      if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
-      else if (command === "git") {
-        [program, args] = gitArgs(argv);
-        const network = gitNetworkCall(argv);
-        Object.assign(childEnv, safety(childEnv, network));
-        // A push to a folder remote runs that folder's own hooks with this call's variables (git clears the settings
-        // above for it); it needs no credentials, so it runs inside the key lock.
-        if (network && guarded) {
-          const remote = await lockedRemote(argv);
-          if (remote.local) { const lock = lockFor(remote.writable); [program, args] = lock.wrap(gitBin, argv); Object.assign(childEnv, lock.env); }
-        }
-      }
-      else {
-        Object.assign(childEnv, safety(childEnv));
-        if (guarded) [program, args] = startCommand(program, argv, childEnv, { worktree: root, common, kind: "kit pr" });
-      }
-      const log = join(directory, `${name}.log`);
-      const fd = openSync(log, "a");
+      let pushLock = null, pushTargets = [];
+      let fd = null, logged = null;
       let stdout = "", stderr = "", failure;
       const chunks = [];
       let status;
-      // Logs get any url's user-info hidden, so a token in a remote's url never reaches .scratch.
-      const logged = kitHidingLog(text => appendFileSync(fd, text));
       try {
+        if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
+        else if (command === "git") {
+          [program, args] = gitArgs(argv);
+          const network = gitNetworkCall(argv);
+          Object.assign(childEnv, safety(childEnv, network));
+          // A push to a folder remote runs that folder's own hooks with this call's variables (git clears the settings
+          // above for it); it needs no credentials, so it runs inside the key lock.
+          if (network && guarded) {
+            const remote = await lockedRemote(argv);
+            pushTargets = remote.writable;
+            if (remote.local) {
+              pushLock = lockFor(remote.writable);
+              [program, args] = pushLock.wrap(gitBin, argv);
+              Object.assign(childEnv, pushLock.env);
+            }
+          }
+        }
+        else {
+          Object.assign(childEnv, safety(childEnv));
+          if (guarded) [program, args] = startCommand(program, argv, childEnv, { worktree: root, common, kind: "kit pr" });
+        }
+        const log = join(directory, `${name}.log`);
+        fd = openSync(log, "a");
+        // Logs get any url's user-info hidden, so a token in a remote's url never reaches .scratch.
+        logged = kitHidingLog(text => appendFileSync(fd, text));
+        const extraFds = pushLock?.fds ?? [];
         status = await new Promise(accept => {
-          const child = spawn(program, args, { cwd: root, env: childEnv, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+          const child = spawn(program, args, { cwd: root, env: childEnv, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe", ...extraFds] });
           if (child.stdin) {
             child.stdin.on("error", () => { /* An early child exit is handled by its status. */ });
             child.stdin.end(input);
@@ -447,8 +465,10 @@ async function main(args) {
           });
         });
       } finally {
-        logged.end();
-        closeSync(fd);
+        logged?.end();
+        if (fd !== null) closeSync(fd);
+        pushLock?.close?.();
+        for (const target of pushTargets) target.close?.();
         if (checkNames.has(name)) shieldProcess();
       }
       return { status, stderr, text: stdout, failure, bytes: bytes ? Buffer.concat(chunks) : undefined };

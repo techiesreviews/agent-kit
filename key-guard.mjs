@@ -30,9 +30,9 @@
 // one does: it installs with one command.
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, copyFileSync, globSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, copyFileSync, fstatSync, globSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 // Key files and folders under HOME, whichever CLI runs.
 export const homeKeyPaths = [
@@ -462,13 +462,14 @@ function inside(path, folder) {
  * it is refused. A path inside an already masked folder is left out. With `writable` (a list), the file system is
  * read-only but for those folders.
  */
-export function bwrapArgs(paths, { writable = null, writableAfter = [], readOnly = [], readOnlyAfter = [], fence = false } = {}) {
+export function bwrapArgs(paths, { writable = null, writableFds = [], writableAfter = [], readOnly = [], readOnlyAfter = [], fence = false } = {}) {
   // Read-only: the whole file system read-only with devices as they are, and writes only to the folders named. The
   // `readOnly` folders come next, before the masks, so a key path inside one stays hidden; `readOnlyAfter` and
   // `writableAfter` come after them, so a folder inside a masked one (kit pr's links in the runtime folder, or a
   // build's own session inside the masked fence-state root) is still there while siblings stay hidden.
   const args = [...(fence ? ["--die-with-parent"] : []), ...(writable === null ? ["--dev-bind", "/", "/"] : ["--ro-bind", "/", "/", ...(fence ? ["--dev", "/dev"] : ["--dev-bind", "/dev", "/dev"]),
-    ...existingPaths(writable).flatMap(path => ["--bind", path, path])]), ...existingPaths(readOnly).flatMap(path => ["--ro-bind", path, path])];
+    ...existingPaths(writable).flatMap(path => ["--bind", path, path]),
+    ...writableFds.flatMap(({ childFd, path }) => ["--bind-fd", String(childFd), path])]), ...existingPaths(readOnly).flatMap(path => ["--ro-bind", path, path])];
   const masked = [];
   for (const path of [...paths].sort((a, b) => a.length - b.length)) {
     if (masked.some(folder => inside(path, folder))) continue;
@@ -1264,7 +1265,7 @@ function probeLock(env) {
 }
 
 const lockAsked = "this system has no bubblewrap (it is Linux only), and ASE_KEY_GUARD=on asks for the lock or no run; unset it to start Claude, Grok and OpenCode unwrapped";
-let probed, displayWarning = null, absent = false, bwrap = null;
+let probed, displayWarning = null, absent = false, bwrap = null, bindFdSupported = false;
 /**
  * Whether bubblewrap runs and holds here: null, or the problem in plain words. Checked once per process; bwrap is
  * looked up in PATH's full-path folders outside `shut` (the worktree and the Git folder, see buildFolders).
@@ -1272,6 +1273,7 @@ let probed, displayWarning = null, absent = false, bwrap = null;
 export function bwrapWorks(env = process.env, shut = []) {
   if (probed === undefined) {
     displayWarning = null;
+    bindFdSupported = false;
     bwrap = programFor("bwrap", env, shut);
     absent = bwrap === null;
     // Linux installs it with one command; another system has none, and only ASE_KEY_GUARD=on makes that a problem.
@@ -1283,8 +1285,13 @@ export function bwrapWorks(env = process.env, shut = []) {
       const said = String(result.stderr ?? result.error?.message ?? "").trim().split("\n").at(-1) || `exit ${result.status}`;
       // The usual refusal: the system does not let ordinary users make the namespaces a sandbox needs.
       const blocked = /namespace|uid map|Operation not permitted|Permission denied/i.test(said);
-      if (result.status === 0) ({ problem: probed, warning: displayWarning } = probeLock(env));
-      else probed = blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); give /usr/bin/bwrap an AppArmor profile that allows user namespaces (Ubuntu's bubblewrap package brings one), or on Ubuntu allow them until the next restart with sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
+      if (result.status === 0) {
+        ({ problem: probed, warning: displayWarning } = probeLock(env));
+        if (probed === null) {
+          const help = spawnSync(bwrap, ["--help"], { env, stdio: ["ignore", "pipe", "ignore"], encoding: "utf8", timeout: 10_000 });
+          bindFdSupported = String(help.stdout ?? "").includes("--bind-fd ");
+        }
+      } else probed = blocked ? `the system blocks the sandboxes bubblewrap makes (${said}); give /usr/bin/bwrap an AppArmor profile that allows user namespaces (Ubuntu's bubblewrap package brings one), or on Ubuntu allow them until the next restart with sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
         : `bubblewrap (bwrap) cannot start here (${said}); run bwrap --dev-bind / / -- true to see why`;
     }
   }
@@ -1377,16 +1384,140 @@ function refreshClaudeCredentials(dir, target, sourceMtime, sourceBytes, env) {
   throw new Error(`this build's saved session could not refresh credentials (${why}); start a new build`);
 }
 
+// Home setup and system folders a local push destination may never resolve into.
+const homeSetupNames = [...new Set([".local", ".config", ".cache", ".ssh", ".gnupg", ".claude", ".codex", ".grok", "bin",
+  ...homeKeyPaths.map(entry => entry.split("/")[0])])];
+const systemMountRoots = ["/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/proc", "/run", "/sbin", "/sys", "/usr"];
+const noFollowDirFlags = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0);
+
+function isHomeSetup(target, env, cwd = process.cwd()) {
+  const base = real(home(env));
+  const folders = [
+    ...homeSetupNames.map(name => join(base, name)),
+    ...[env.XDG_CONFIG_HOME, env.XDG_DATA_HOME, env.XDG_STATE_HOME, env.XDG_CACHE_HOME]
+      .filter(value => isAbsolute(value ?? "")),
+    ...[env.CLAUDE_CONFIG_DIR, env.CODEX_HOME, env.GROK_HOME, env.ZDOTDIR, env.GNUPGHOME]
+      .filter(Boolean).flatMap(value => [resolve(cwd, value), resolve(process.cwd(), value)]),
+    fenceStateDir(env),
+  ].map(real);
+  if (folders.some(folder => inside(target, folder))) return true;
+  if (inside(target, base) && target !== base) {
+    const first = relative(base, target).split(sep)[0];
+    const tempRoot = real(tmpdir());
+    const inHostTemp = inside(tempRoot, base) && tempRoot !== base && inside(target, tempRoot);
+    if (first.startsWith(".") && !inHostTemp) return true;
+  }
+  return false;
+}
+
+function isSystemFolder(target) {
+  const checkouts = ["/usr/local/src", "/usr/src"].map(real);
+  if (checkouts.some(root => target !== root && inside(target, root))) return false;
+  return systemMountRoots.map(real).some(root => inside(target, root));
+}
+
+function isPinnedTarget(entry) {
+  return Boolean(entry && typeof entry === "object" && typeof entry.path === "string" && typeof entry.dev === "number" && typeof entry.ino === "number");
+}
+
+function verifyPinnedTarget(target) {
+  const { path, fd, dev, ino } = target;
+  if (typeof fd !== "number") return false;
+  try {
+    const fdInfo = fstatSync(fd);
+    if (!fdInfo.isDirectory() || fdInfo.dev !== dev || fdInfo.ino !== ino) return false;
+    if (process.platform === "linux" && readlinkSync(`/proc/self/fd/${fd}`) !== path) return false;
+    const now = lstatSync(path);
+    if (now.isSymbolicLink() || !now.isDirectory() || now.dev !== dev || now.ino !== ino) return false;
+    return realpathSync(path) === path;
+  } catch { return false; }
+}
+
+/**
+ * Validate and pin a local bare Git push target with an open directory handle so a concurrent process cannot swap it
+ * for a link into HOME between validation and mounting. Call `close()` when done (or pass to `checkLock`, whose
+ * `close()` also releases it).
+ */
+export function openLocalPushTarget(path, { env = process.env, remote = "origin", url = path, cwd = process.cwd() } = {}) {
+  const full = resolve(path);
+  let handle = null;
+  const close = () => {
+    if (handle !== null) {
+      const toClose = handle;
+      handle = null;
+      try { closeSync(toClose); } catch { /* Already closed. */ }
+    }
+  };
+  const badRepo = () => new Error(`${remote} pushes to ${url}, which is not a direct Git repository folder (links and non-repository paths are refused under the key lock); push to a bare repository folder directly, or set ASE_KEY_GUARD=off to run without the lock`);
+  try {
+    handle = openSync(full, noFollowDirFlags);
+    const info = fstatSync(handle);
+    if (!info.isDirectory()) throw badRepo();
+    const pinned = { path: full, get fd() { return handle; }, dev: info.dev, ino: info.ino, close };
+    if (!verifyPinnedTarget(pinned)) throw badRepo();
+    // Validate bare repository entries directly through the pinned directory handle on Linux so a swap mid-check
+    // cannot substitute another folder.
+    const at = process.platform === "linux" ? `/proc/self/fd/${handle}` : full;
+    const entry = (name, check) => { try { return check(lstatSync(join(at, name))); } catch { return false; } };
+    const isGit = !entry(".git", () => true)
+      && entry("HEAD", stat => stat.isFile())
+      && entry("objects", stat => stat.isDirectory())
+      && entry("refs", stat => stat.isDirectory());
+    if (!isGit) throw badRepo();
+    const base = real(home(env));
+    if (inside(base, full)) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own");
+    if (isHomeSetup(full, env, cwd) || isSystemFolder(full)) throw new Error("this push goes to a home setup or system folder; push to a repository folder of its own");
+    return pinned;
+  } catch (error) {
+    close();
+    if (error.message.includes("not a direct Git repository folder") || error.message.startsWith("this push goes to ")) throw error;
+    throw badRepo();
+  }
+}
+
 // Run state is writable, but never in a home setup folder. A runner supplies a pointer in its artifacts so resumed
 // builds keep their session under the kit's state folder (surviving reboots). Direct callers get a private temporary
 // folder, removed by close(). CLI resources remain readable through links; settings and the CLI's own login are private
 // copies so an atomic refresh changes no home file.
 function writeFence(cli, env, { worktree, common, state, writable = [], session } = {}) {
-  const work = [worktree, common].filter(Boolean).map(real), destinations = writable.filter(Boolean).map(real), base = real(home(env));
+  const work = [worktree, common].filter(Boolean).map(real), base = real(home(env));
   if (work.some(root => inside(base, root))) throw new Error("the write fence cannot make HOME or one of its parents writable; use a worktree and Git folder of their own");
-  if (destinations.some(root => inside(base, root))) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own");
-  const named = [...work, ...destinations];
+  const pinnedDestinations = [], stringDestinations = [];
+  for (const entry of writable) {
+    if (!entry) continue;
+    if (isPinnedTarget(entry)) {
+      if (!verifyPinnedTarget(entry)) throw new Error("this push destination changed after validation; push to a repository folder of its own");
+      if (inside(base, entry.path)) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own");
+      if (isHomeSetup(entry.path, env, worktree) || isSystemFolder(entry.path)) throw new Error("this push goes to a home setup or system folder; push to a repository folder of its own");
+      pinnedDestinations.push(entry);
+    } else {
+      const raw = resolve(entry);
+      let info = null;
+      try { info = lstatSync(raw); } catch { /* Missing path is ignored by bwrapArgs. */ }
+      if (info?.isSymbolicLink()) throw new Error("this push goes to a link, not a direct repository folder; push to a repository folder of its own");
+      const resolved = real(raw);
+      if (inside(base, resolved)) throw new Error("this push goes to a folder that holds your home folder; push to a repository folder of its own");
+      if (isHomeSetup(resolved, env, worktree) || isSystemFolder(resolved)) throw new Error("this push goes to a home setup or system folder; push to a repository folder of its own");
+      if (info && resolved !== raw) throw new Error("this push goes to a link, not a direct repository folder; push to a repository folder of its own");
+      stringDestinations.push(resolved);
+    }
+  }
+  const named = [...work, ...stringDestinations];
   const roots = named.filter((root, index) => named.indexOf(root) === index && !named.some(other => other !== root && inside(root, other)));
+  // Pinned destinations already inside the worktree or Git common folder need no separate bind mount. External pinned
+  // destinations bind through --bind-fd when bubblewrap supports it (which closes the host directory handle before
+  // execing the child; passing /proc/self/fd/N with --bind would leak a host-namespace fd into the sandbox). On older
+  // bubblewrap without --bind-fd, the handle stays open only in the parent for verification through wrap() and is never
+  // inherited by the sandboxed child.
+  const externalRaw = pinnedDestinations.filter(target => !roots.some(root => inside(target.path, root)));
+  const externalPinned = externalRaw.filter((target, index) =>
+    externalRaw.findIndex(other => other.path === target.path) === index
+    && !externalRaw.some(other => other.path !== target.path && inside(target.path, other.path)));
+  const allRoots = [...roots, ...externalPinned.map(target => target.path)];
+  const useBindFd = process.platform === "linux" && bindFdSupported;
+  const writableFds = useBindFd ? externalPinned.map((target, index) => ({ childFd: 3 + index, path: target.path })) : [];
+  const fds = useBindFd ? externalPinned.map(target => target.fd) : [];
+  const extraRoots = useBindFd ? [] : externalPinned.map(target => target.path);
   // A persistent artifact is only a pointer. Its writable mount lives directly under the kit's state folder
   // (`${XDG_STATE_HOME:-~/.local/state}/agent-kit/fence`): the locked run can write inside its own folder but cannot
   // rename its root (its parent is masked and read-only). A sibling `<name>.owner` record ties each session to the
@@ -1408,18 +1539,21 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
       const owner = readFenceOwner(`${dir}.owner`);
       if (!fenceFolderPattern.test(basename(dir)) || realpathSync(dir) !== dir || dirname(dir) !== parent
         || !saved.isDirectory() || (saved.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && saved.uid !== process.getuid())
-        || inside(base, dir) || roots.some(root => inside(parent, root))
+        || inside(base, dir) || allRoots.some(root => inside(parent, root))
         || !owner || owner.state !== expectedState || owner.worktree !== expectedWorktree) throw invalid();
       fresh = false;
     } else {
       mkdirSync(fenceRoot, { recursive: true, mode: 0o700 });
       parent = real(fenceRoot);
-      if (inside(base, parent) || roots.some(root => inside(parent, root))) throw new Error("the write fence state folder cannot hold HOME or sit inside the worktree or Git folder; set XDG_STATE_HOME to a folder of its own");
+      if (inside(base, parent) || allRoots.some(root => inside(parent, root))) throw new Error("the write fence state folder cannot hold HOME or sit inside the worktree or Git folder; set XDG_STATE_HOME to a folder of its own");
       dir = mkdtempSync(join(parent, "ase-write-fence-"));
       ownerFile = `${dir}.owner`;
     }
   } else dir = mkdtempSync(join(real(tmpdir()), "ase-write-fence-"));
-  const close = () => { if (!state) rmSync(dir, { recursive: true, force: true }); };
+  const close = () => {
+    for (const target of pinnedDestinations) target.close?.();
+    if (!state) rmSync(dir, { recursive: true, force: true });
+  };
   try {
     const folderAt = path => {
       if (fresh) mkdirSync(path, { recursive: true });
@@ -1461,7 +1595,7 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
       writeFileSync(ownerFile, JSON.stringify({ state: expectedState, worktree: expectedWorktree }), { mode: 0o600 });
       symlinkSync(dir, state);
     }
-    return { env: extra, dir, writable: parent ? roots : [...roots, dir], writableAfter: parent ? [dir] : [], parent, close };
+    return { env: extra, dir, writable: parent ? [...roots, ...extraRoots] : [...roots, ...extraRoots, dir], writableFds, fds, pinned: pinnedDestinations, writableAfter: parent ? [dir] : [], parent, close };
   } catch (error) {
     if (fresh) {
       rmSync(dir, { recursive: true, force: true });
@@ -1859,13 +1993,17 @@ export function cleanRoomReport(env = process.env, { worktree = process.cwd(), c
  */
 export function checkLock({ worktree, common, env = process.env, readOnly = [], writable = [] }) {
   const plain = (command, args) => [command, args];
-  if (!keyGuardOn(env)) return { env: {}, wrap: plain, note: "not locked (ASE_KEY_GUARD=off)" };
+  if (!keyGuardOn(env)) return { env: {}, fds: [], wrap: plain, note: "not locked (ASE_KEY_GUARD=off)" };
   const shut = buildFolders(worktree, common);
   const path = runPath(env, { worktree, common });
   const scrub = { ...scrubbedEnv("", env), ...(path === undefined ? {} : { PATH: path }) };
-  if (runsUnwrapped(env, shut)) return { env: scrub, wrap: plain, note: "not locked (no bubblewrap on this machine; token variables are still dropped)" };
+  if (runsUnwrapped(env, shut)) return { env: scrub, fds: [], wrap: plain, note: "not locked (no bubblewrap on this machine; token variables are still dropped)" };
   // Inside kit pr's own lock for its checks the checks are locked already: no second sandbox, and nothing to note.
-  if (bwrapWorks(env, shut) && outerLock(env)) return { env: scrub, wrap: plain, note: null };
+  if (bwrapWorks(env, shut) && outerLock(env)) {
+    const pinned = writable.filter(isPinnedTarget);
+    for (const target of pinned) if (!verifyPinnedTarget(target)) throw new Error("this push destination changed after validation; push to a repository folder of its own");
+    return { env: scrub, fds: [], wrap: plain, note: null, close() { for (const target of pinned) target.close?.(); } };
+  }
   const refuse = problem => { throw new Error(`cannot lock the key files for kit pr's checks: ${problem}`); };
   const problem = bwrapWorks(env, shut);
   if (problem) refuse(`${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
@@ -1873,10 +2011,16 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [], 
   if (refusal) refuse(`${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
   const fence = writeFence("", env, { worktree, common, writable });
   Object.assign(scrub, fence.env);
-  const outer = bwrapArgs(paths, { writable: fence.writable, fence: true, readOnly: kitFolders(env, { worktree, common }), readOnlyAfter: readOnly });
+  const outer = bwrapArgs(paths, { writable: fence.writable, writableFds: fence.writableFds, fence: true, readOnly: kitFolders(env, { worktree, common }), readOnlyAfter: readOnly });
   const mark = outerMark(env, outer);
   // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
-  return { env: { ...scrub, ...mark.env }, wrap: (command, args) => [bwrap, [...outer, ...mark.args, "--", command, ...args]], note: null, warning: keyGuardWarning(env, shut),
+  const wrap = (command, args) => {
+    for (const target of fence.pinned) {
+      if (!verifyPinnedTarget(target)) throw new Error("this push destination changed after validation; push to a repository folder of its own");
+    }
+    return [bwrap, [...outer, ...mark.args, "--", command, ...args]];
+  };
+  return { env: { ...scrub, ...mark.env }, fds: fence.fds, wrap, note: null, warning: keyGuardWarning(env, shut),
     close() { mark.close(); fence.close(); } };
 }
 
@@ -1908,4 +2052,5 @@ export function resetBwrapProbe() {
   roomProbed = undefined;
   absent = false;
   bwrap = null;
+  bindFdSupported = false;
 }

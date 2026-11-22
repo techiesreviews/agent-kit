@@ -5694,6 +5694,59 @@ test("TOOLS-397: a local push link cannot grant home setup writes to a different
   assert.match(result.stdout, /not a direct Git repository folder/);
 });
 
+test("TOOLS-397: swapping a validated local push folder for a home-folder link before fence creation cannot let sibling .git hook write HOME", { skip: noBwrap }, t => {
+  const f = fixture(t), home = join(f.dir, "home"), bin = join(home, ".local/bin"), planted = join(bin, "planted");
+  const target = join(f.root, "r"), swapLog = join(f.dir, "swap.log"), loader = join(f.dir, "swap-loader.mjs");
+  mkdirSync(bin, { recursive: true });
+  f.gitAt(f.root, "init", "-q", "--bare", "r");
+  f.gitAt(f.root, "init", "-q", "--bare", "r.git");
+  writeFileSync(join(f.root, "r.git/hooks/pre-receive"), `#!/bin/sh\necho planted > ${JSON.stringify(planted)}\n`, { mode: 0o755 });
+  appendFileSync(join(f.root, ".git/info/exclude"), "r/\nr.git/\n");
+  f.git("config", "remote.origin.pushurl", target);
+  writeFileSync(loader, `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    import { join } from "node:path";
+    const target = process.env.SWAP_TARGET;
+    const homeBin = process.env.SWAP_BIN;
+    const log = process.env.SWAP_LOG;
+    let swapped = false, targetFd = null;
+    const origOpen = fs.openSync;
+    const origLstat = fs.lstatSync;
+    const origRename = fs.renameSync;
+    const origSymlink = fs.symlinkSync;
+    const origAppend = fs.appendFileSync;
+    fs.openSync = function (path, ...rest) {
+      const fd = origOpen.call(fs, path, ...rest);
+      if (path === target) targetFd = fd;
+      return fd;
+    };
+    fs.lstatSync = function (path, ...rest) {
+      const info = origLstat.call(fs, path, ...rest);
+      if (!swapped && (path === join(target, "refs") || (targetFd !== null && path === join("/proc/self/fd/" + targetFd, "refs")))) {
+        swapped = true;
+        origRename(target, target + ".aside");
+        origSymlink(homeBin, target);
+        origAppend(log, "swapped\\n");
+      }
+      return info;
+    };
+    syncBuiltinESMExports();
+  `);
+  const result = f.run([], {
+    HOME: home,
+    NODE_OPTIONS: `--import=${loader}`,
+    SWAP_TARGET: target,
+    SWAP_BIN: bin,
+    SWAP_LOG: swapLog,
+  });
+  assert.equal(existsSync(swapLog), true, "swap hook must fire after localPushTarget validates refs");
+  assert.match(readFileSync(swapLog, "utf8"), /swapped/);
+  assert.equal(existsSync(planted), false, `home setup file was planted: ${result.stdout}${result.stderr}`);
+  assert.deepEqual(readdirSync(bin), []);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+});
+
 test("TOOLS-397: kit pr pushes to a file:// and a relative bare folder remote inside the lock", { skip: noBwrap }, t => {
   for (const kind of ["file", "relative"] as const) {
     const f = fixture(t);
