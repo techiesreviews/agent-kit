@@ -296,7 +296,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   git's ssh keeps the keys and loses access to the build. No string filter decides where a write may go. The kernel
   also refuses writes through a worktree link into HOME. Codex keeps its own profile, with only the run's private
   folder writable rather than all of `/tmp`, on every platform Codex supports. Claude's build state starts with copies of its own login and settings;
-  `CLAUDE.md`, `output-styles`, skills and other resources are read-only links. A build's artifact folder holds a `cli-state` link to its private
+  `CLAUDE.md`, `output-styles`, skills and other resources are read-only links. A locked build refuses a `CLAUDE_CONFIG_DIR`
+  (or a linked login or settings file) that leads into the worktree or Git folder; move `CLAUDE_CONFIG_DIR` outside them. A build's artifact folder holds a `cli-state` link to its private
   state folder under `${XDG_STATE_HOME:-~/.local/state}/agent-kit/fence/`, so a resume keeps its session across reboots.
   The parent fence folder is masked and read-only inside locked runs, and each session has an owner record tied to its
   `cli-state` path and worktree, so sibling sessions and their login copies stay hidden from other builds, reviews and
