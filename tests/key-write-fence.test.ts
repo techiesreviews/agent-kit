@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapWorks, checkLock, keyGuard, openLocalPushTarget, resetBwrapProbe } from "../key-guard.mjs";
+import { bwrapWorks, checkLock, keyGuard, openLocalPushTarget, resetBwrapProbe, runProgram } from "../key-guard.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 const noBwrap = bwrapWorks() === null ? false : "bubblewrap cannot run here";
@@ -475,9 +475,10 @@ test("TOOLS-397: pinned local push targets refuse HOME setup folders and stay pi
   t.after(() => lock.close?.());
   const [bwrapCmd, bwrapArgList] = lock.wrap("/usr/bin/git", ["push", swapped, "HEAD:refs/heads/dev"]);
 
-  // Swap after wrap(), right before bwrap executes: wrap() rejects any further call, and bwrap refuses to mount on the link.
+  // Swap after wrap(), right before bwrap executes: wrap() rejects any further call, and --bind-fd refuses even a
+  // relative-link swap to HOME at mount time.
   renameSync(swapped, `${swapped}.aside`);
-  symlinkSync(bin, swapped);
+  symlinkSync(relative(dirname(swapped), bin), swapped);
   assert.throws(() => lock.wrap("/usr/bin/git", ["push", swapped, "HEAD:refs/heads/dev"]), /push destination changed after validation/);
   const raced = spawnSync(bwrapCmd, bwrapArgList, {
     cwd: worktree,
@@ -489,7 +490,7 @@ test("TOOLS-397: pinned local push targets refuse HOME setup folders and stay pi
   assert.equal(existsSync(planted), false);
   assert.deepEqual(readdirSync(bin), []);
 
-  // Even for an in-worktree remote swapped after wrap() right before bwrap runs, HOME remains read-only if git falls back to sibling .git.
+  // Even for an in-worktree remote swapped for a relative HOME link after wrap(), HOME remains read-only if git falls back to sibling .git.
   const inWork = join(worktree, "r"), inWorkSibling = join(worktree, "r.git");
   git(worktree, "init", "-q", "--bare", inWork);
   git(worktree, "init", "-q", "--bare", inWorkSibling);
@@ -499,7 +500,7 @@ test("TOOLS-397: pinned local push targets refuse HOME setup folders and stay pi
   t.after(() => inWorkLock.close?.());
   const [inWorkCmd, inWorkArgs] = inWorkLock.wrap("/usr/bin/git", ["push", inWork, "HEAD:refs/heads/dev"]);
   renameSync(inWork, `${inWork}.aside`);
-  symlinkSync(bin, inWork);
+  symlinkSync(relative(dirname(inWork), bin), inWork);
   assert.throws(() => inWorkLock.wrap("/usr/bin/git", ["push", inWork, "HEAD:refs/heads/dev"]), /push destination changed after validation/);
   spawnSync(inWorkCmd, inWorkArgs, {
     cwd: worktree,
@@ -522,29 +523,39 @@ test("TOOLS-397: pinned local push targets refuse HOME setup folders and stay pi
   const inHomeTmp = openLocalPushTarget(homeTmpRepo, { env: { ...env, TMPDIR: homeTmp } });
   inHomeTmp.close();
 
-  // Older bubblewrap without --bind-fd falls back to --bind <path> <path> with empty lock.fds and still refuses a swapped link at mount time.
+  // Older bubblewrap without --bind-fd falls back to --bind <path> <path> with empty lock.fds (no host fd leaked);
+  // in-worktree destinations are still never bound separately so a relative-link swap inside the worktree cannot write HOME.
   const shimDir = join(dir, "old-bwrap-bin"), shim = join(shimDir, "bwrap");
   mkdirSync(shimDir, { recursive: true });
-  const realBwrap = spawnSync("which", ["bwrap"], { env, encoding: "utf8" }).stdout.trim();
+  const realBwrap = runProgram("bwrap", env, { worktree, common });
+  assert.ok(realBwrap.includes("/"), `expected full path to bwrap, got ${realBwrap}`);
   writeFileSync(shim, `#!/bin/sh\nif [ "$1" = "--help" ]; then echo "usage: bwrap [OPTIONS...]"; exit 0; fi\nexec ${JSON.stringify(realBwrap)} "$@"\n`, { mode: 0o755 });
   const oldEnv = { ...env, PATH: `${shimDir}:${env.PATH}` };
   t.after(() => resetBwrapProbe());
   resetBwrapProbe();
-  const oldRemote = join(dir, "old-ext"), oldSibling = join(dir, "old-ext.git");
+  const oldRemote = join(dir, "old-ext");
   git(dir, "init", "-q", "--bare", oldRemote);
-  git(dir, "init", "-q", "--bare", oldSibling);
-  writeFileSync(join(oldSibling, "hooks/pre-receive"), `#!/bin/sh\necho planted > ${JSON.stringify(planted)}\n`, { mode: 0o755 });
   const oldPinned = openLocalPushTarget(oldRemote, { env: oldEnv });
   const oldLock = checkLock({ worktree, common, env: oldEnv, writable: [oldPinned] });
   t.after(() => oldLock.close?.());
   assert.deepEqual(oldLock.fds, []);
   const [oldCmd, oldArgs] = oldLock.wrap("/usr/bin/git", ["push", oldRemote, "HEAD:refs/heads/dev"]);
-  const bindIdx = oldArgs.indexOf("--bind");
-  assert.ok(oldArgs.some((arg: string, i: number) => arg === "--bind" && oldArgs[i + 1] === oldRemote && oldArgs[i + 2] === oldRemote), `expected --bind ${oldRemote} ${oldRemote} in ${oldArgs.join(" ")} (first --bind at ${bindIdx})`);
-  renameSync(oldRemote, `${oldRemote}.aside`);
-  symlinkSync(bin, oldRemote);
-  const oldRaced = spawnSync(oldCmd, oldArgs, { cwd: worktree, env: { ...oldEnv, ...oldLock.env }, encoding: "utf8" });
-  assert.notEqual(oldRaced.status, 0, oldRaced.stdout + oldRaced.stderr);
+  assert.ok(oldArgs.some((arg: string, i: number) => arg === "--bind" && oldArgs[i + 1] === oldRemote && oldArgs[i + 2] === oldRemote), `expected --bind ${oldRemote} ${oldRemote} in ${oldArgs.join(" ")}`);
+  const oldPush = spawnSync(oldCmd, oldArgs, { cwd: worktree, env: { ...oldEnv, ...oldLock.env }, encoding: "utf8" });
+  assert.equal(oldPush.status, 0, oldPush.stderr);
+
+  const oldInWork = join(worktree, "old-r"), oldInWorkSibling = join(worktree, "old-r.git");
+  git(worktree, "init", "-q", "--bare", oldInWork);
+  git(worktree, "init", "-q", "--bare", oldInWorkSibling);
+  writeFileSync(join(oldInWorkSibling, "hooks/pre-receive"), `#!/bin/sh\necho planted > ${JSON.stringify(planted)} 2>/dev/null\n`, { mode: 0o755 });
+  const oldInWorkPinned = openLocalPushTarget(oldInWork, { env: oldEnv });
+  const oldInWorkLock = checkLock({ worktree, common, env: oldEnv, writable: [oldInWorkPinned] });
+  t.after(() => oldInWorkLock.close?.());
+  const [oldInWorkCmd, oldInWorkArgs] = oldInWorkLock.wrap("/usr/bin/git", ["push", oldInWork, "HEAD:refs/heads/dev"]);
+  renameSync(oldInWork, `${oldInWork}.aside`);
+  symlinkSync(relative(dirname(oldInWork), bin), oldInWork);
+  assert.throws(() => oldInWorkLock.wrap("/usr/bin/git", ["push", oldInWork, "HEAD:refs/heads/dev"]), /push destination changed after validation/);
+  spawnSync(oldInWorkCmd, oldInWorkArgs, { cwd: worktree, env: { ...oldEnv, ...oldInWorkLock.env }, encoding: "utf8" });
   assert.equal(existsSync(planted), false);
   assert.deepEqual(readdirSync(bin), []);
 });

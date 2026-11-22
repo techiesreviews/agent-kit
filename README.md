@@ -308,8 +308,11 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   before merging a change to this isolation. Checks' private temporary folders are removed when `kit pr` exits.
   A push to a folder remote allows writes only when the destination is a direct bare Git repository folder outside home
   setup and system folders with no links on the way, validated through an open directory handle and re-checked up to
-  launch (and mounted by handle via `--bind-fd` on bubblewrap 0.10 or newer; older bubblewrap falls back to binding the
-  verified path); its hooks still see no keys. Tools that
+  launch. A destination already inside the worktree or Git common folder needs no separate mount. For an outside folder,
+  bubblewrap 0.10 or newer mounts it by handle (`--bind-fd`), blocking replacement through mounting; older bubblewrap
+  (such as Ubuntu 24.04's 0.9) falls back to mounting the verified path, so an unlocked process swapping that outside
+  folder for a relative link in the short gap between the launch check and mount is not blocked (a locked build still
+  cannot write outside its worktree to make that swap). Its hooks still see no keys. Tools that
   insist on writing to a fixed home path fail; use their cache or state setting to put those writes in the worktree or
   `$TMPDIR`. On Linux, installed Playwright browsers remain readable at their original cache path when `PLAYWRIGHT_BROWSERS_PATH`
   is unset. There is no bubblewrap fence where the lock is off or runs unwrapped (macOS and Windows); Codex keeps its native profile there.
