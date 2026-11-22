@@ -57,7 +57,8 @@ function bash(script: string, env: NodeJS.ProcessEnv) {
 function repo(t: TestContext, settings?: object | string) {
   const dir = temp(t), origin = join(dir, "origin.git"), root = join(dir, "work"), main = join(dir, "main"), bin = join(dir, "bin");
   for (const path of [root, main, bin]) mkdirSync(path);
-  const calls = join(dir, "calls");
+  mkdirSync(join(root, ".scratch"));
+  const calls = join(root, ".scratch/calls");
   executable(join(bin, "gh"), `#!/bin/bash
 printf 'gh %s\\n' "$*" >> ${JSON.stringify(calls)}
 case "$1 $2" in

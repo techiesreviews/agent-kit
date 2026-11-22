@@ -54,7 +54,7 @@ process.once("exit", () => rmSync(testTemporary, { recursive: true, force: true 
 Object.assign(process.env, { TMPDIR: testTemporary, TMP: testTemporary, TEMP: testTemporary });
 export const testHomeFolder = testHome();
 Object.assign(process.env, { HOME: testHomeFolder, XDG_CONFIG_HOME: join(testHomeFolder, ".config"), XDG_CACHE_HOME: join(testHomeFolder, ".cache"),
-  XDG_DATA_HOME: join(testHomeFolder, ".local/share"), TMPDIR: testTemporary, TMP: testTemporary, TEMP: testTemporary });
+  XDG_DATA_HOME: join(testHomeFolder, ".local/share"), XDG_STATE_HOME: testState(), TMPDIR: testTemporary, TMP: testTemporary, TEMP: testTemporary });
 // ASE_KEY_GUARD and KIT_KEY_PATHS from the shell that started the tests would change what the lock does in every
 // fixture (off: no lock is tested at all; a path: one more folder to search), so they are dropped; a test of either
 // sets it itself.

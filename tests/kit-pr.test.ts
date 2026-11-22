@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import { checkSteps, classify, docsOnly, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
@@ -5678,6 +5678,31 @@ test("kit pr refuses a push whose remote lists a folder after another push addre
   const folders = f.run();
   assert.equal(folders.status, 0, folders.stdout + folders.stderr);
   assert.match(readFileSync(noted, "utf8"), /^ran$/m);
+});
+
+test("TOOLS-397: a local push link cannot grant home setup writes to a different repository's hook", { skip: noBwrap }, t => {
+  const f = fixture(t), home = join(f.dir, "home"), bin = join(home, ".local/bin"), planted = join(bin, "planted");
+  mkdirSync(bin, { recursive: true });
+  symlinkSync(bin, join(f.root, "r"));
+  f.gitAt(f.root, "init", "-q", "--bare", "r.git");
+  writeFileSync(join(f.root, "r.git/hooks/pre-receive"), `#!/bin/sh\necho planted > ${JSON.stringify(planted)}\n`, { mode: 0o755 });
+  appendFileSync(join(f.root, ".git/info/exclude"), "r\nr.git/\n");
+  f.git("config", "remote.origin.pushurl", join(f.root, "r"));
+  const result = f.run([], { HOME: home });
+  assert.equal(existsSync(planted), false, result.stdout + result.stderr);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /not a direct Git repository folder/);
+});
+
+test("TOOLS-397: kit pr pushes to a file:// and a relative bare folder remote inside the lock", { skip: noBwrap }, t => {
+  for (const kind of ["file", "relative"] as const) {
+    const f = fixture(t);
+    const address = kind === "file" ? pathToFileURL(f.origin).href : relative(f.root, f.origin);
+    f.git("config", "remote.origin.pushurl", address);
+    const result = f.run();
+    assert.equal(result.status, 0, `${kind}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, /^RESULT: ok merged #73/m, kind);
+  }
 });
 
 // TOOLS-329 (SL-3): the push reads the global and system Git config, so their URL rewrites count in kit pr's check of
