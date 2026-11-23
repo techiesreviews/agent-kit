@@ -559,17 +559,15 @@ test("Node lookup clears inherited cache in nodeEnv, matches hard links in shell
   const found = bash("kit_node_find", { ...env, PATH: pathWithBroken });
   assert.equal(found.status, 0, found.stderr);
   assert.equal(found.stdout, `${supported}\n`);
-  // nodeEnv clears any inherited KIT_NODE_FOUND_FOR and re-checks PATH fresh.
+  // nodeEnv clears KIT_NODE_FOUND_FOR inherited from process.env and re-checks PATH fresh.
   const downgraded = join(directory, "current/node");
-  const cacheEnv = {
-    ...env,
-    PATH: pathWithBroken,
-    KIT_NODE: downgraded,
-    KIT_NODE_FOUND_FOR: `${downgraded}\x1f${pathWithBroken}\x1f${directory}`,
-  };
-  const resolved = nodeEnv(cacheEnv);
+  const staleCache = `${downgraded}\x1f${pathWithBroken}\x1f${directory}`;
+  environment(t, { KIT_NODE: downgraded, KIT_NODE_FOUND_FOR: staleCache });
+  const resolved = nodeEnv({ ...env, PATH: pathWithBroken });
   assert.equal(resolved.KIT_NODE, supported);
   assert.equal(resolved.PATH, `${dirname(supported)}:${pathWithBroken}`);
+  // Shell kit_node_find reuses the matching KIT_NODE_FOUND_FOR shortcut without rescanning PATH.
+  assert.equal(bash("kit_node_find", { ...env, PATH: pathWithBroken, KIT_NODE: downgraded, KIT_NODE_FOUND_FOR: staleCache }).stdout, `${downgraded}\n`);
   // Hard link in the first PATH folder agrees between shell kit_node and JS nodeEnv.
   const hardDir = join(directory, "hard");
   mkdirSync(hardDir);
