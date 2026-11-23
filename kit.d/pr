@@ -268,7 +268,8 @@ async function main(args) {
     // The project's checks (check, unit, lint, specs...), the build's own code, run inside the key lock (checkLock).
     // The programs this process and the kit commands it starts find by their bare names (git, node, gh, bash, sh) are
     // found once, past any link a PATH folder elsewhere holds into the worktree or its Git folder, and stand first on
-    // PATH through a private folder of links; KIT_NODE is this very Node.
+    // PATH through a private folder of links; KIT_NODE and KIT_NODE_PIN are this very Node so kit_node_find never runs
+    // another node on PATH.
     const guarded = keyGuardOn(process.env);
     const top = gitTop(process.env.KIT_ROOT || process.cwd());
     // The start-up files they name are still locked for the checks (checkLock reads these).
@@ -288,6 +289,8 @@ async function main(args) {
       for (const [name, target] of Object.entries(linked)) symlinkSync(target, join(programs, name));
       process.env.PATH = `${programs}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
       process.env.KIT_NODE = process.execPath;
+      process.env.KIT_NODE_PIN = process.execPath;
+      delete process.env.KIT_NODE_FOUND_FOR;
     }
     const root = resolve(kitRoot()), common = gitCommonDir(root) ?? undefined;
     // The real git, never the link in the private folder: kit pr starts it by that path, and a git script by its

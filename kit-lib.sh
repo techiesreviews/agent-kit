@@ -100,9 +100,29 @@ kit_node_version() {
   printf '%s\n' "${version%$'\r'}"
 }
 
+# The newest Node >=24 on PATH, else in the npx or nvm caches. When KIT_NODE_PIN is set (by a guarded
+# kit pr to its own trusted Node), only that path is checked so later PATH entries are never executed.
 kit_node_find() (
   local candidate version root best='' major=0 minor=0 patch=0
-  local next_major next_minor next_patch tier
+  local next_major next_minor next_patch tier dir prev
+  local -a tried=()
+  if [[ -n ${KIT_NODE_PIN:-} ]]; then
+    candidate=$KIT_NODE_PIN
+    [[ $candidate == [A-Za-z]:\\* ]] && candidate=${candidate//\\//}
+    [[ ( $candidate == /* || $candidate == [A-Za-z]:/* ) && -f $candidate && -x $candidate ]] || return 1
+    version=$(kit_node_version "$candidate") || return 1
+    [[ $version =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] && (( 10#${BASH_REMATCH[1]} >= 24 )) || return 1
+    dir=${candidate%/*}
+    dir=$(cd -- "${dir:-/}" && pwd -P) || return 1
+    printf '%s/%s\n' "${dir%/}" "${candidate##*/}"
+    return 0
+  fi
+  if [[ -n ${KIT_NODE:-} && -n ${KIT_NODE_FOUND_FOR:-} &&
+    $KIT_NODE_FOUND_FOR == "${KIT_NODE}"$'\x1f'"${PATH-}"$'\x1f'"${CLAUDE_NODE_SEARCH_ROOT:-${HOME:-}}" &&
+    -f $KIT_NODE && -x $KIT_NODE ]]; then
+    printf '%s\n' "$KIT_NODE"
+    return 0
+  fi
   shopt -s nullglob
   for tier in path cache; do
     if [[ $tier == cache ]]; then
@@ -111,6 +131,8 @@ kit_node_find() (
     fi
     while IFS= read -r candidate; do
       [[ -f $candidate && -x $candidate ]] || continue
+      for prev in "${tried[@]}"; do [[ $candidate -ef $prev ]] && continue 2; done
+      tried+=("$candidate")
       version=$(kit_node_version "$candidate") || continue
       [[ $version =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || continue
       next_major=$((10#${BASH_REMATCH[1]})) next_minor=$((10#${BASH_REMATCH[2]})) next_patch=$((10#${BASH_REMATCH[3]}))
@@ -130,18 +152,24 @@ kit_node_find() (
 )
 
 kit_node() {
-  local node directory path=${PATH-}
+  local node directory path=${PATH-} first
   if ! node=$(kit_node_find); then
     printf '%s\n' 'kit: no Node >=24 found (system, npx cache or nvm)' >&2
     # A KIT_NODE a parent left behind names a Node this lookup just failed to find.
-    unset KIT_NODE
+    unset KIT_NODE KIT_NODE_FOUND_FOR
     return 1
   fi
   directory=${node%/*}
-  if [[ ${path%%:*} != "$directory" ]]; then
+  first=${path%%:*}
+  if [[ $first != "$directory" && ! ( $first == /* && -f "$first/node" && -x "$first/node" && "$first/node" -ef "$node" ) ]]; then
     export PATH="$directory${path:+:$path}"
   fi
   export KIT_NODE=$node
+  if [[ -z ${KIT_NODE_PIN:-} ]]; then
+    export KIT_NODE_FOUND_FOR="${KIT_NODE}"$'\x1f'"${PATH-}"$'\x1f'"${CLAUDE_NODE_SEARCH_ROOT:-${HOME:-}}"
+  else
+    unset KIT_NODE_FOUND_FOR
+  fi
 }
 
 # The front door's RESULT line when it finds no Node >=24 (kit_node says so on stderr): fixed words, so nothing in it

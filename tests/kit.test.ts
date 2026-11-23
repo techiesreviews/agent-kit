@@ -478,6 +478,68 @@ test("Node lookup picks the newest supported PATH Node before npm and nvm", (t) 
   assert.equal(nodeFound(env), nodes[3]);
 });
 
+test("KIT_NODE_PIN uses only that Node without running later PATH or cache entries, and keeps a matching first PATH link ahead", (t) => {
+  const directory = join(temp(t), "space $dollar `tick` quote");
+  const env = fixtureEnv(directory);
+  const pinned = join(directory, "trusted/node");
+  fakeNode(pinned, "v24.0.0");
+  const marker = join(directory, "ran-other-node");
+  const later = join(directory, "later/node");
+  mkdirSync(dirname(later), { recursive: true });
+  writeFileSync(later, `#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\necho v25.0.0\n`);
+  chmodSync(later, 0o755);
+  const cached = join(directory, ".nvm/versions/node/v26.0.0/bin/node");
+  mkdirSync(dirname(cached), { recursive: true });
+  writeFileSync(cached, `#!/bin/sh\necho cached >> ${JSON.stringify(marker)}\necho v26.0.0\n`);
+  chmodSync(cached, 0o755);
+  const programs = join(directory, "programs");
+  mkdirSync(programs);
+  symlinkSync(pinned, join(programs, "node"));
+  const pinnedEnv = { ...env, PATH: `${programs}:${dirname(later)}:${env.PATH}`, KIT_NODE_PIN: pinned };
+  const found = bash("kit_node_find", pinnedEnv);
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(found.stdout, `${pinned}\n`);
+  assert.equal(nodeFound(pinnedEnv), pinned);
+  const selected = bash('kit_node; printf "%s\\n%s\\n" "$KIT_NODE" "$PATH"', pinnedEnv);
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.equal(selected.stdout, `${pinned}\n${pinnedEnv.PATH}\n`);
+  assert.equal(nodeEnv(pinnedEnv).PATH, pinnedEnv.PATH);
+  // Without a matching first PATH link, the pinned Node's folder goes first on PATH.
+  const withoutLink = { ...env, PATH: `${dirname(later)}:${env.PATH}`, KIT_NODE_PIN: pinned };
+  assert.equal(nodeEnv(withoutLink).PATH, `${dirname(pinned)}:${withoutLink.PATH}`);
+  assert.equal(bash('kit_node; printf "%s\\n" "$PATH"', withoutLink).stdout, `${dirname(pinned)}:${withoutLink.PATH}\n`);
+  assert.equal(existsSync(marker), false, "no other Node ran while KIT_NODE_PIN was set");
+  // An unusable pin fails instead of falling back to PATH or cache.
+  const old = join(directory, "old/node");
+  fakeNode(old, "v22.0.0");
+  for (const bad of ["node", "./trusted/node", join(directory, "missing/node"), old]) {
+    const badEnv = { ...withoutLink, KIT_NODE_PIN: bad };
+    assert.equal(bash("kit_node_find", badEnv).status, 1, bad);
+    assert.throws(() => nodeEnv(badEnv), { message: nodeError });
+  }
+  assert.equal(existsSync(marker), false, "a bad KIT_NODE_PIN never falls back to scanning PATH or cache");
+});
+
+test("Node lookup deduplicates symlinked PATH entries and invalidates its cache when PATH changes", (t) => {
+  const directory = temp(t);
+  const env = fixtureEnv(directory);
+  const count = join(directory, "count.txt");
+  const real = join(directory, "real/node");
+  mkdirSync(dirname(real), { recursive: true });
+  writeFileSync(real, `#!/bin/sh\necho x >> ${JSON.stringify(count)}\necho v24.0.0\n`);
+  chmodSync(real, 0o755);
+  const alias = join(directory, "alias");
+  mkdirSync(alias);
+  symlinkSync(real, join(alias, "node"));
+  const newer = join(directory, "newer/node");
+  fakeNode(newer, "v25.0.0");
+  const dupEnv = { ...env, PATH: `${alias}:${dirname(real)}:${alias}:${env.PATH}` };
+  const result = bash(`kit_node; kit_node_find; mapfile -t lines < ${JSON.stringify(count)}; printf 'probes=%s\\n' "\${#lines[@]}"; PATH="${dirname(newer)}:$PATH" kit_node_find`, dupEnv);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `${join(alias, "node")}\nprobes=1\n${newer}\n`);
+  assert.equal(readFileSync(count, "utf8").trim().split("\n").length, 2, "symlinked and duplicate PATH entries probed once per distinct PATH");
+});
+
 test("Node lookup handles npm alone, absent system node, and unsupported installations", (t) => {
   const directory = temp(t);
   const env = fixtureEnv(directory);

@@ -5559,6 +5559,31 @@ exit 0
   assert.equal(f.gitAt(f.origin, "log", "-1", "--format=%s", "refs/heads/feature/kit-pr"), "docs: ticket commits by subject");
 });
 
+test("kit pr pins its trusted Node for the front door it starts outside the key lock, never running a later PATH node", t => {
+  const f = fixture(t);
+  const noted = join(f.root, ".scratch/front-door-node.txt");
+  const tools = join(f.root, "node_modules/.bin"), links = join(f.dir, "links"), commands = join(f.dir, "commands"), tmp = join(f.dir, "tmp");
+  mkdirSync(tools, { recursive: true }); mkdirSync(links); mkdirSync(commands); mkdirSync(tmp);
+  writeFileSync(join(tools, "node"), `#!/bin/sh\necho planted >> ${JSON.stringify(noted)}\necho v99.0.0\n`, { mode: 0o755 });
+  symlinkSync(join(tools, "node"), join(links, "node"));
+  appendFileSync(join(f.root, ".git/info/exclude"), "node_modules/\n");
+  const waitLog = join(f.dir, "wait-env.txt");
+  writeFileSync(join(commands, "deps"), "#!/bin/sh\n# kit: stub deps\necho 'RESULT: ok deps'\n", { mode: 0o755 });
+  writeFileSync(join(commands, "specs"), "#!/bin/sh\n# kit: stub specs\necho 'RESULT: ok specs'\n", { mode: 0o755 });
+  writeFileSync(join(commands, "wait"), `#!/bin/sh\n# kit: stub wait\nprintf 'KIT_NODE=%s\\nPATH=%s\\n' "$KIT_NODE" "$PATH" > ${JSON.stringify(waitLog)}\necho 'RESULT: ok wait ci'\n`, { mode: 0o755 });
+  const result = spawnSync(process.execPath, [pr], {
+    cwd: f.root,
+    env: { ...f.env, PATH: `${links}:${f.env.PATH}`, TMPDIR: tmp, KIT_PR_KIT: kit, KIT_COMMANDS_DIR: commands, GH_TOKEN: "dummy-token" },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  assert.equal(existsSync(noted), false, "kit pr and its front door never ran the planted PATH node");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: ok merged #73/m);
+  const seen = readFileSync(waitLog, "utf8");
+  assert.match(seen, /^PATH=.*\/kit-pr-programs-[^:/]+:/m, `kit pr's program links stayed first on PATH:\n${seen}`);
+});
+
 test("kit pr refuses a fetch while the repository's own Git config holds http or credential settings, stops on Git LFS, and says where its checks run unlocked", t => {
   const f = fixture(t);
   f.git("config", "http.proxy", "http://127.0.0.1:1");
