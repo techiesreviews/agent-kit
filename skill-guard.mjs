@@ -46,10 +46,23 @@ export const boilerplate = [
   /^<meta (?:name=(?:"viewport"|'viewport'|viewport(?=[\s/>]))|charset=|http-equiv=)[^<>]*>$/i,
   /^<link rel="(?:preconnect|dns-prefetch|preload|stylesheet|icon)" href="https?:\/\/[^"<>]*"[^<>]*>$/i,
 ];
-// Reuse the shared meta and link rules for a header minified onto one line. Body content, scripts and prose
-// remain indexed; a title long enough to hold a skill line does too.
+// A header minified onto one line may use either quote style, omit quotes or reorder its attributes.
+// Body content, scripts and prose remain indexed; a title long enough to hold a skill line does too.
 const headerTags = String.raw`<!doctype html>|<html(?: lang=(?:"[a-z0-9-]+"|'[a-z0-9-]+'|[a-z0-9-]+))?\s*>|<\/?head\s*>|<title>[^<>]{0,${minimum - 1}}<\/title>`;
-const pageHeader = new RegExp(`^(?:${headerTags}|${boilerplate.map(pattern => pattern.source.slice(1, -1)).join("|")}|\\s+)+$`, "i");
+const pageHeader = new RegExp(`^(?:${headerTags}|<(?:meta|link)\\s+[^<>]*>|\\s+)+$`, "i");
+
+function sharedSetupTag(tag, source) {
+  source = source.trim();
+  const attributes = [...source.matchAll(/(?:^|\s+)([a-z][\w:-]*)(?:\s*=\s*(?:"([^"<>]*)"|'([^'<>]*)'|([^\s"'=<>`]+)))?/gi)];
+  // Consume every attribute, so text inside a quoted value cannot masquerade as another attribute.
+  if (attributes.map(match => match[0]).join("") !== source) return false;
+  const values = new Map(attributes.map(match => [match[1].toLowerCase(), match[2] ?? match[3] ?? match[4] ?? ""]));
+  if (values.size !== attributes.length) return false;
+  if (tag.toLowerCase() === "meta")
+    return values.has("charset") || values.has("http-equiv") || values.get("name")?.toLowerCase() === "viewport";
+  return /^(?:preconnect|dns-prefetch|preload|stylesheet|icon)$/i.test(values.get("rel") || "") &&
+    /^https?:\/\//i.test(values.get("href") || "");
+}
 
 // Compare content, not filenames: licences also occur inside skill references and source headers.
 // Only exact standard text is shared; a licence title or filename cannot hide another skill line.
@@ -61,7 +74,8 @@ const isStandardLicenceLine = (line) => {
 };
 
 /** A normalised line that is shared web boilerplate, never left in the index. */
-export const isBoilerplate = (line) => boilerplate.some(pattern => pattern.test(line)) || pageHeader.test(line);
+export const isBoilerplate = (line) => boilerplate.some(pattern => pattern.test(line)) ||
+  (pageHeader.test(line) && [...line.matchAll(/<(meta|link)\s+([^<>]*?)\/?>/gi)].every(([, tag, source]) => sharedSetupTag(tag, source)));
 
 /** A tracked path that is a skill: a SKILL.md anywhere, or anything under a folder named skills. */
 export const skillPath = (path) => /(^|\/)SKILL\.md$/i.test(path) || /(^|\/)skills\//i.test(path);

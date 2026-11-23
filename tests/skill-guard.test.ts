@@ -135,11 +135,18 @@ test("combined page headers pass but copied skill lines inside minified pages st
   const spaced = '<html> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> <title>Folded jars</title>';
   const linked = '<!doctype html><html lang="en"><head><meta http-equiv="X-UA-Compatible" content="IE=edge"><link rel="stylesheet" href="https://fonts.example.com/crane.css"><title>Crane links</title></head>';
   const unquoted = '<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Crane</title></head>';
-  f.put(join(f.home, ".claude/skills/crane/templates/header.html"), `${header}\n${spaced}\n${linked}\n${unquoted}\n`);
+  const variants = [
+    "<!doctype html><html lang='en'><head><link href='https://fonts.example.com/crane.css' rel='stylesheet'></head>",
+    '<!doctype html><html lang=en><head><link rel=stylesheet href=https://fonts.example.com/crane.css></head>',
+    '<html><head><meta content="width=device-width, initial-scale=1" name="viewport"><title>Folded jars</title></head>',
+  ];
+  f.put(join(f.home, ".claude/skills/crane/templates/header.html"), [header, spaced, linked, unquoted, ...variants].join("\n"));
   f.put(join(f.repo, "plate.html"), `${header}<body><p>Welcome</p></body></html>`);
   f.put(join(f.repo, "gallery.mjs"), `const page = '${spaced}<body>Hello</body></html>';`);
   f.put(join(f.repo, "linked.html"), `${linked}<body>Welcome</body></html>`);
   f.put(join(f.repo, "unquoted.html"), `${unquoted}<body>Welcome</body></html>`);
+  for (const [index, variant] of variants.entries())
+    f.put(join(f.repo, `variant-${index}.html`), `${variant}<body>Welcome</body></html>`);
   f.git("add", "."); f.git("commit", "-q", "-m", "pages");
   const clean = f.run(["--base", "HEAD~1"]);
   assert.equal(clean.status, 0, clean.stderr);
@@ -155,12 +162,25 @@ test("combined page headers pass but copied skill lines inside minified pages st
   const title = '<html><head><title>Carry the painted teapot across the moonlit bridge and leave it beside the sleeping lantern</title></head>';
   f.put(join(f.home, ".claude/skills/crane/templates/title.html"), `${title}\n`);
   f.put(join(f.repo, "title.html"), `${title}<body>Welcome</body></html>`);
+  for (const [index, variant] of variants.entries())
+    f.put(join(f.repo, `variant-${index}.html`), `${variant}<body><p>${secret}</p></body></html>`);
+  const meaningful = [
+    '<html><head><meta name="description" content="name=viewport describes the crane gallery beside the moonlit bridge"></head>',
+    '<html><head><link rel="stylesheet" href="/crane-gallery/styles/folded-lantern-pattern.css"></head>',
+  ];
+  f.put(join(f.home, ".claude/skills/crane/templates/meaningful.html"), meaningful.join("\n"));
+  for (const [index, line] of meaningful.entries())
+    f.put(join(f.repo, `meaningful-${index}.html`), `${line}<body>Welcome</body></html>`);
   const copied = f.run(["--base", "HEAD~1"]);
   assert.equal(copied.status, 1, copied.stderr);
   assert.match(copied.stderr, /problem: plate\.html:1: holds a line from the local skill crane/);
   assert.match(copied.stderr, /problem: gallery\.mjs:1: holds a line from the local skill crane/);
   assert.match(copied.stderr, /problem: title\.html:1: holds a line from the local skill crane/);
-  assert.match(copied.stdout, /RESULT: fail skill-guard 3 problem/);
+  for (const index of variants.keys())
+    assert.ok(copied.stderr.includes(`problem: variant-${index}.html:1: holds a line from the local skill crane`), copied.stderr);
+  for (const index of meaningful.keys())
+    assert.ok(copied.stderr.includes(`problem: meaningful-${index}.html:1: holds a line from the local skill crane`), copied.stderr);
+  assert.match(copied.stdout, /RESULT: fail skill-guard 8 problem/);
   assert.doesNotMatch(copied.stdout + copied.stderr, /paper crane|marbles/);
 });
 

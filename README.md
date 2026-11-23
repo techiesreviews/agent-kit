@@ -737,7 +737,7 @@ index, including comment headers and different line wrapping. `licence-texts.jso
 are excluded; outside the whole-file exceptions, a copied skill line alongside a licence still fails, including
 in a vendored `LICENSE.txt`. Generic HTML headers (doctype, html, head, charset, viewport and http-equiv meta tags,
 outside font, stylesheet and icon links, and short titles) give no skill lines, even when combined on one line
-or when `lang` and `name=viewport` are unquoted. Other content on that line remains skill text; a copied skill line inside a
+with either quote style, unquoted attributes or reordered meta/link attributes. Other content on that line remains skill text; a copied skill line inside a
 longer or minified page still fails. Tests use made-up skill text only.
 
 A private project may keep its own skill (not a paid one): list each such folder by its repo path in
