@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
@@ -21,11 +22,12 @@ function testState() {
   process.once("exit", () => rmSync(folder, { recursive: true, force: true }));
   return state = folder;
 }
-// The kit puts the folder of the first Node 24+ on PATH ahead of everything else. Where that folder also holds a real
+// The kit puts the folder of the newest Node 24+ on PATH ahead of everything else. Where that folder also holds a real
 // claude, codex, grok or opencode (a machine keeping them in ~/.local/bin), it would hide a test's fake of that tool.
-// One folder holding only node, first on PATH, is the folder the kit puts first, so a fixture's own fake folder, put
-// before the rest of PATH, still wins. Fixtures build their PATH from process.env.PATH, so this process's own PATH
-// gets the folder once, when this file is first loaded: only test files that import this file are covered.
+// One folder holding only node, first on PATH, is the folder the kit puts first, and any later PATH folder holding a
+// different Node >=24 is replaced with a shadow folder carrying all its other tools so no newer host Node can steal
+// the front of PATH. Fixtures build their PATH from process.env.PATH, so this process's own PATH is cleaned once, when
+// this file is first loaded: only test files that import this file are covered.
 let nodeOnly: string | undefined;
 function testNode() {
   if (nodeOnly) return nodeOnly;
@@ -34,7 +36,46 @@ function testNode() {
   process.once("exit", () => rmSync(folder, { recursive: true, force: true }));
   return nodeOnly = folder;
 }
-process.env.PATH = `${testNode()}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
+let shadowRoot: string | undefined;
+function cleanTestPath(rawPath: string | undefined) {
+  const own = realpathSync(process.execPath);
+  const seen = new Map<string, boolean>();
+  const folders: string[] = [];
+  let index = 0;
+  for (const folder of (rawPath ?? "").split(":").filter(Boolean)) {
+    const candidate = join(folder, "node");
+    let other = false;
+    try {
+      const resolved = realpathSync(candidate);
+      if (resolved !== own) {
+        let supported = seen.get(resolved);
+        if (supported === undefined) {
+          const out = spawnSync(resolved, ["--version"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+          const match = /^v(\d+)\.\d+\.\d+\r?$/.exec((out.stdout ?? "").trim());
+          supported = out.status === 0 && Boolean(match) && Number(match![1]) >= 24;
+          seen.set(resolved, supported);
+        }
+        other = supported;
+      }
+    } catch { /* No node here. */ }
+    if (!other) { folders.push(folder); continue; }
+    if (!shadowRoot) {
+      shadowRoot = mkdtempSync(join(tmpdir(), "kit-test-path-"));
+      process.once("exit", () => rmSync(shadowRoot!, { recursive: true, force: true }));
+    }
+    const copy = join(shadowRoot, String(index++));
+    mkdirSync(copy);
+    let names: string[] = [];
+    try { names = readdirSync(folder); } catch { /* Unreadable folder. */ }
+    for (const name of names) {
+      if (name === "node") continue;
+      try { symlinkSync(join(folder, name), join(copy, name)); } catch { /* Skip unreadable or race entry. */ }
+    }
+    folders.push(copy);
+  }
+  return [testNode(), ...folders].join(":");
+}
+process.env.PATH = cleanTestPath(process.env.PATH);
 // HOME and the XDG config, cache and data folders are one temporary folder per test process as well. The key lock
 // (key-guard.mjs) searches the key folders under HOME before every agent run, so a fixture with the real HOME would
 // list the developer's own key folders and read their git config and shell start-up files, and a dotfiles link there
@@ -66,8 +107,9 @@ export const testHomeFolder = testHome();
 Object.assign(process.env, { HOME: testHomeFolder, XDG_CONFIG_HOME: join(testHomeFolder, ".config"), XDG_CACHE_HOME: join(testHomeFolder, ".cache"),
   XDG_DATA_HOME: join(testHomeFolder, ".local/share"), XDG_STATE_HOME: testState() });
 // ASE_KEY_GUARD and KIT_KEY_PATHS from the shell that started the tests would change what the lock does in every
-// fixture (off: no lock is tested at all; a path: one more folder to search), so they are dropped; a test of either
-// sets it itself.
+// fixture (off: no lock is tested at all; a path: one more folder to search), and KIT_NODE_PIN and KIT_NODE_FOUND_FOR
+// from a guarded kit pr or front door would pin or cache Node lookup across fixtures, so they are dropped; a test of
+// any of them sets it itself.
 for (const name of ["ASE_KEY_GUARD", "KIT_KEY_PATHS", "KIT_NODE_PIN", "KIT_NODE_FOUND_FOR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL"]) delete process.env[name];
 // KIT_SKILL_HOME names a folder that never exists, so kit doctor's skills map note reads no real skill folder.
 const noSkills = resolve(import.meta.dirname, "../fixtures/no-skill-home");

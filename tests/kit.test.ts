@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, globSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -524,20 +524,59 @@ test("Node lookup deduplicates symlinked PATH entries and invalidates its cache 
   const directory = temp(t);
   const env = fixtureEnv(directory);
   const count = join(directory, "count.txt");
+  const otherCount = join(directory, "other-count.txt");
   const real = join(directory, "real/node");
   mkdirSync(dirname(real), { recursive: true });
   writeFileSync(real, `#!/bin/sh\necho x >> ${JSON.stringify(count)}\necho v24.0.0\n`);
   chmodSync(real, 0o755);
+  const other = join(directory, "other/node");
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, `#!/bin/sh\necho x >> ${JSON.stringify(otherCount)}\necho v22.0.0\n`);
+  chmodSync(other, 0o755);
   const alias = join(directory, "alias");
   mkdirSync(alias);
   symlinkSync(real, join(alias, "node"));
   const newer = join(directory, "newer/node");
   fakeNode(newer, "v25.0.0");
-  const dupEnv = { ...env, PATH: `${alias}:${dirname(real)}:${alias}:${env.PATH}` };
-  const result = bash(`kit_node; kit_node_find; mapfile -t lines < ${JSON.stringify(count)}; printf 'probes=%s\\n' "\${#lines[@]}"; PATH="${dirname(newer)}:$PATH" kit_node_find`, dupEnv);
+  const dupEnv = { ...env, PATH: `${alias}:${dirname(real)}:${alias}:${dirname(other)}:${env.PATH}` };
+  const result = bash(`kit_node; mapfile -t a < ${JSON.stringify(count)}; kit_node_find; mapfile -t b < ${JSON.stringify(otherCount)}; printf 'dedup=%s cached=%s\\n' "\${#a[@]}" "\${#b[@]}"; PATH="${dirname(newer)}:$PATH" kit_node_find`, dupEnv);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, `${join(alias, "node")}\nprobes=1\n${newer}\n`);
-  assert.equal(readFileSync(count, "utf8").trim().split("\n").length, 2, "symlinked and duplicate PATH entries probed once per distinct PATH");
+  assert.equal(result.stdout, `${join(alias, "node")}\ndedup=1 cached=1\n${newer}\n`);
+  assert.equal(readFileSync(otherCount, "utf8").trim().split("\n").length, 2, "PATH change invalidated the cache and rescanned other PATH entries");
+});
+
+test("Node lookup clears inherited cache in nodeEnv, matches hard links in shell and JS, and skips broken PATH nodes", (t) => {
+  const directory = temp(t);
+  const env = fixtureEnv(directory);
+  const broken = join(directory, "broken/node");
+  mkdirSync(dirname(broken), { recursive: true });
+  writeFileSync(broken, "#!/bin/sh\nexit 1\n");
+  chmodSync(broken, 0o755);
+  const supported = join(directory, "good/node");
+  fakeNode(supported, "v24.1.0");
+  const pathWithBroken = `${dirname(broken)}:${dirname(supported)}:${env.PATH}`;
+  // Broken node ahead on PATH is skipped for the supported node after it.
+  const found = bash("kit_node_find", { ...env, PATH: pathWithBroken });
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(found.stdout, `${supported}\n`);
+  // nodeEnv clears any inherited KIT_NODE_FOUND_FOR and re-checks PATH fresh.
+  const downgraded = join(directory, "current/node");
+  const cacheEnv = {
+    ...env,
+    PATH: pathWithBroken,
+    KIT_NODE: downgraded,
+    KIT_NODE_FOUND_FOR: `${downgraded}\x1f${pathWithBroken}\x1f${directory}`,
+  };
+  const resolved = nodeEnv(cacheEnv);
+  assert.equal(resolved.KIT_NODE, supported);
+  assert.equal(resolved.PATH, `${dirname(supported)}:${pathWithBroken}`);
+  // Hard link in the first PATH folder agrees between shell kit_node and JS nodeEnv.
+  const hardDir = join(directory, "hard");
+  mkdirSync(hardDir);
+  linkSync(supported, join(hardDir, "node"));
+  const hardEnv = { ...env, PATH: `${hardDir}:${env.PATH}`, KIT_NODE_PIN: supported };
+  assert.equal(bash('kit_node; printf "%s\\n" "$PATH"', hardEnv).stdout, `${hardEnv.PATH}\n`);
+  assert.equal(nodeEnv(hardEnv).PATH, hardEnv.PATH);
 });
 
 test("Node lookup handles npm alone, absent system node, and unsupported installations", (t) => {

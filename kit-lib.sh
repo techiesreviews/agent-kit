@@ -102,6 +102,9 @@ kit_node_version() {
 
 # The newest Node >=24 on PATH, else in the npx or nvm caches. When KIT_NODE_PIN is set (by a guarded
 # kit pr to its own trusted Node), only that path is checked so later PATH entries are never executed.
+# When KIT_NODE_FOUND_FOR matches the current KIT_NODE, PATH and search root, that already-verified Node
+# is reused without spawning node --version again so nested kit calls stay fast (an in-place Node swap
+# or a newer Node added to an already-listed PATH folder waits until the variables change).
 kit_node_find() (
   local candidate version root best='' major=0 minor=0 patch=0
   local next_major next_minor next_patch tier dir prev
@@ -131,7 +134,7 @@ kit_node_find() (
     fi
     while IFS= read -r candidate; do
       [[ -f $candidate && -x $candidate ]] || continue
-      for prev in "${tried[@]}"; do [[ $candidate -ef $prev ]] && continue 2; done
+      for prev in ${tried[@]+"${tried[@]}"}; do [[ $candidate -ef $prev ]] && continue 2; done
       tried+=("$candidate")
       version=$(kit_node_version "$candidate") || continue
       [[ $version =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || continue

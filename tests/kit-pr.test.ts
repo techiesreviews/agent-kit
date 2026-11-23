@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -5570,7 +5570,7 @@ test("kit pr pins its trusted Node for the front door it starts outside the key 
   const waitLog = join(f.dir, "wait-env.txt");
   writeFileSync(join(commands, "deps"), "#!/bin/sh\n# kit: stub deps\necho 'RESULT: ok deps'\n", { mode: 0o755 });
   writeFileSync(join(commands, "specs"), "#!/bin/sh\n# kit: stub specs\necho 'RESULT: ok specs'\n", { mode: 0o755 });
-  writeFileSync(join(commands, "wait"), `#!/bin/sh\n# kit: stub wait\nprintf 'KIT_NODE=%s\\nPATH=%s\\n' "$KIT_NODE" "$PATH" > ${JSON.stringify(waitLog)}\necho 'RESULT: ok wait ci'\n`, { mode: 0o755 });
+  writeFileSync(join(commands, "wait"), `#!/bin/sh\n# kit: stub wait\nprintf 'KIT_NODE=%s\\nKIT_NODE_PIN=%s\\nPATH=%s\\n' "$KIT_NODE" "$KIT_NODE_PIN" "$PATH" > ${JSON.stringify(waitLog)}\necho 'RESULT: ok wait ci'\n`, { mode: 0o755 });
   const result = spawnSync(process.execPath, [pr], {
     cwd: f.root,
     env: { ...f.env, PATH: `${links}:${f.env.PATH}`, TMPDIR: tmp, KIT_PR_KIT: kit, KIT_COMMANDS_DIR: commands, GH_TOKEN: "dummy-token" },
@@ -5581,6 +5581,10 @@ test("kit pr pins its trusted Node for the front door it starts outside the key 
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /^RESULT: ok merged #73/m);
   const seen = readFileSync(waitLog, "utf8");
+  const kitNode = /^KIT_NODE=(.+)$/m.exec(seen)?.[1];
+  const kitNodePin = /^KIT_NODE_PIN=(.+)$/m.exec(seen)?.[1];
+  assert.ok(kitNode && realpathSync(kitNode) === realpathSync(process.execPath), `expected KIT_NODE to resolve to trusted Node:\n${seen}`);
+  assert.ok(kitNodePin && realpathSync(kitNodePin) === realpathSync(process.execPath), `expected KIT_NODE_PIN to resolve to trusted Node:\n${seen}`);
   assert.match(seen, /^PATH=.*\/kit-pr-programs-[^:/]+:/m, `kit pr's program links stayed first on PATH:\n${seen}`);
 });
 
