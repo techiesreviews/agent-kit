@@ -433,6 +433,39 @@ test("bash and mjs select the same highest numeric Node and prefer a supported s
   assertLookup(join(directory, "current/node"));
 });
 
+test("Node lookup finds Node 24 later on PATH when an older Node comes first", (t) => {
+  const directory = join(temp(t), "space $dollar `tick` quote");
+  const env = fixtureEnv(directory);
+  const supported = join(directory, "later/node");
+  fakeNode(supported, "v24.0.0");
+  env.PATH += `:${dirname(supported)}`;
+  const found = bash("kit_node_find", env);
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(found.stdout, `${supported}\n`);
+  assert.equal(nodeFound(env), supported);
+  const selected = bash('kit_node; printf "%s\\n%s\\n" "$KIT_NODE" "$PATH"', env);
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.equal(selected.stdout, `${supported}\n${dirname(supported)}:${env.PATH}\n`);
+});
+
+test("Node lookup picks the newest supported PATH Node before npm and nvm", (t) => {
+  const directory = temp(t);
+  const env = fixtureEnv(directory);
+  const versions = ["v24.2.9", "v25.1.100", "v25.2.9", "v25.2.10\r", "v25.2.10", "v25.1.999", "bad"];
+  const nodes = versions.map((version, index) => {
+    const node = join(directory, `path-${index}/node`);
+    fakeNode(node, version);
+    return node;
+  });
+  fakeNode(join(directory, ".npm/_npx/install/node_modules/node/bin/node"), "v99.0.0");
+  fakeNode(join(directory, ".nvm/versions/node/v99.0.1/bin/node"), "v99.0.1");
+  env.PATH += `:${nodes.map(dirname).join(":")}`;
+  const found = bash("kit_node_find", env);
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(found.stdout, `${nodes[3]}\n`);
+  assert.equal(nodeFound(env), nodes[3]);
+});
+
 test("Node lookup handles npm alone, absent system node, and unsupported installations", (t) => {
   const directory = temp(t);
   const env = fixtureEnv(directory);
