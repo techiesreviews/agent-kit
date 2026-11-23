@@ -729,13 +729,15 @@ matches a line from the local skill files. Licence texts are shared word for wor
 a skill's licence files (`LICENSE`, `UNLICENSE`, `COPYING`, `NOTICE`, a longer name ending in `LICENSE` such as
 `x-1.0.LICENSE.md`, or a font's `OFL.txt` / `Font-OFL.txt`) give no skill lines, and a project's own licence in its
 top folder (a licence name on its own, such as `LICENSE`, `LICENSE.md`, `LICENSE-MIT`, `COPYING` or `UNLICENSE`),
-or a font's `OFL.txt` / `Font-OFL.txt` in any folder, is left out of the changed lines `kit pr` checks (`--history` still
-reads them). Standard MIT, Apache-2.0, BSD-3-Clause and ISC text in any skill file is also left out of the
+or a font's `OFL.txt` / `Font-OFL.txt` in any folder, is left out of the changed lines `kit pr` checks.
+Those whole-file exceptions skip all content in those files; `--history` still reads them, and the skill path
+check still applies. Standard MIT, Apache-2.0, BSD-3-Clause and ISC text in any skill file is also left out of the
 index, including comment headers and different line wrapping. `licence-texts.json` holds the standard texts
 (MIT from tsx, Apache-2.0 and Regents BSD from Debian's common licences, generic BSD-3-Clause and ISC). Only lines contained in those texts
-are excluded; a copied skill line alongside a licence still fails, including in a vendored `LICENSE.txt`.
-Generic HTML headers (doctype, html, head, charset and viewport meta tags, and short titles) give no skill lines,
-even when combined on one line. Other content on that line remains skill text; a copied skill line inside a
+are excluded; outside the whole-file exceptions, a copied skill line alongside a licence still fails, including
+in a vendored `LICENSE.txt`. Generic HTML headers (doctype, html, head, charset, viewport and http-equiv meta tags,
+outside font, stylesheet and icon links, and short titles) give no skill lines, even when combined on one line
+or when `lang` and `name=viewport` are unquoted. Other content on that line remains skill text; a copied skill line inside a
 longer or minified page still fails. Tests use made-up skill text only.
 
 A private project may keep its own skill (not a paid one): list each such folder by its repo path in

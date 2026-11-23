@@ -110,17 +110,18 @@ test("project font licences pass in every change state without exempting other p
   f.git("add", ".");
   f.put(join(f.repo, "public/fonts/OFL.txt"), `${licenceText}\n${licenceText}\n`);
   f.put(join(f.repo, "OFL.txt"), `${licenceText}\n`);
+  f.put(join(f.repo, "fonts/ofl.txt"), `${licenceText}\n`);
   const clean = f.run(["--base", "HEAD~1"]);
   assert.equal(clean.status, 0, clean.stderr);
   assert.match(clean.stdout, /RESULT: ok skill-guard\n$/);
   // Only font licence filenames are exempt. The path guard and history check remain active.
-  for (const path of ["fonts/OFL.md", "fonts/OFL.txt.js", "fonts/Crane-OFL-notes.txt", "fonts/OFL.txt/notes.md", "notes.md"])
+  for (const path of ["fonts/OFL.md", "fonts/OFL.txt.js", "fonts/Crane-OFL-notes.txt", "fonts/Crane.OFL.txt", "fonts/Font-OFL-1.1.txt", "fonts/OFL.txt/notes.md", "notes.md"])
     f.put(join(f.repo, path), `${licenceText}\n`);
   f.put(join(f.repo, "skills/crane/OFL.txt"), `${licenceText}\n`);
   f.git("add", "-f", ".");
   const copied = f.run(["--base", "HEAD~1"]);
   assert.equal(copied.status, 1, copied.stderr);
-  for (const path of ["fonts/OFL.md", "fonts/OFL.txt.js", "fonts/Crane-OFL-notes.txt", "fonts/OFL.txt/notes.md", "notes.md"])
+  for (const path of ["fonts/OFL.md", "fonts/OFL.txt.js", "fonts/Crane-OFL-notes.txt", "fonts/Crane.OFL.txt", "fonts/Font-OFL-1.1.txt", "fonts/OFL.txt/notes.md", "notes.md"])
     assert.ok(copied.stderr.includes(`problem: ${path}:1: holds a line from the local skill crane`), copied.stderr);
   assert.match(copied.stderr, /problem: skills\/crane\/OFL\.txt: a skill file or skills\/ folder is tracked/);
   const history = f.run(["--history"]);
@@ -132,9 +133,13 @@ test("combined page headers pass but copied skill lines inside minified pages st
   const f = fixture(t);
   const header = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Crane gallery</title></head>';
   const spaced = '<html> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> <title>Folded jars</title>';
-  f.put(join(f.home, ".claude/skills/crane/templates/header.html"), `${header}\n${spaced}\n`);
+  const linked = '<!doctype html><html lang="en"><head><meta http-equiv="X-UA-Compatible" content="IE=edge"><link rel="stylesheet" href="https://fonts.example.com/crane.css"><title>Crane links</title></head>';
+  const unquoted = '<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Crane</title></head>';
+  f.put(join(f.home, ".claude/skills/crane/templates/header.html"), `${header}\n${spaced}\n${linked}\n${unquoted}\n`);
   f.put(join(f.repo, "plate.html"), `${header}<body><p>Welcome</p></body></html>`);
   f.put(join(f.repo, "gallery.mjs"), `const page = '${spaced}<body>Hello</body></html>';`);
+  f.put(join(f.repo, "linked.html"), `${linked}<body>Welcome</body></html>`);
+  f.put(join(f.repo, "unquoted.html"), `${unquoted}<body>Welcome</body></html>`);
   f.git("add", "."); f.git("commit", "-q", "-m", "pages");
   const clean = f.run(["--base", "HEAD~1"]);
   assert.equal(clean.status, 0, clean.stderr);
