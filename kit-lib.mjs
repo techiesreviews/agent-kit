@@ -275,16 +275,19 @@ export function kitRegisterProject(name, root, env = process.env, during = () =>
 function sameExecutable(a, b) {
   try {
     accessSync(a, constants.X_OK);
-    return statSync(a).isFile() && realpathSync(a) === realpathSync(b);
+    const first = statSync(a), second = statSync(b);
+    return first.isFile() && second.isFile() && (
+      (Boolean(first.ino) && first.dev === second.dev && first.ino === second.ino) ||
+      realpathSync(a) === realpathSync(b)
+    );
   } catch { return false; }
 }
 
 /**
- * Copy env with a supported Node first on PATH, or throw when unavailable. The Node is the one kit_node_find in
- * kit-lib.sh picks for env's PATH and search folder (CLAUDE_NODE_SEARCH_ROOT, else HOME): KIT_NODE_PIN alone when
- * set (used by a guarded kit pr so later PATH entries are never executed), else the highest Node >=24 on PATH, then
- * the highest installed npx/nvm version. That rule has one copy, in the shell, as the front door must run it before
- * there is a Node.
+ * Copy env with a supported Node first on PATH, or throw when unavailable. Node selection has one copy, in
+ * kit-lib.sh's kit_node_find (KIT_NODE_PIN alone when set by a guarded kit pr, else the highest Node >=24 on PATH,
+ * then the highest installed npx/nvm version); PATH stays unchanged when its first absolute folder already holds
+ * the same node executable (matching kit_node's -ef check).
  */
 export function nodeEnv(env = process.env) {
   const root = env.CLAUDE_NODE_SEARCH_ROOT || env.HOME || "";
