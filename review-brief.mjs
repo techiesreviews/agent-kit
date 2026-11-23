@@ -140,9 +140,7 @@ Report validation gaps only for missing coverage or evidence in the change, with
 ${skills.length ? `Skills for this UI change (house rules beat skill advice):\n${skills.join("\n")}\n` : ""}${declined.length ? `\nDeclined by the author (with reasons):\n${declined.map(item => `- ${item}`).join("\n")}\nReport a declined finding again only if the reason is wrong, and say why.\n` : ""}`;
 }
 
-// The declined list comes through the child environment (ASE_REVIEW_DECLINED; the cut kit fix set it, nothing does
-// now), so kit review needs no additional flags and its ordinary evidence/permission handling stays shared.
-export function ticketReviewBrief(path, scope, worktree = process.cwd(), declined = JSON.parse(process.env.ASE_REVIEW_DECLINED || "[]"), withSkills = true, model) {
+export function ticketReviewBrief(path, scope, worktree = process.cwd(), declined = [], withSkills = true, model) {
   const absolute = resolve(worktree, path);
   let ticket = readFileSync(absolute, "utf8");
   // Build-map tickets often omit a link to their sibling ../spec.md.

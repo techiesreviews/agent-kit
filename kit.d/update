@@ -14,8 +14,8 @@ then stays there until main moves on (the normal way back is a revert in the kit
 --install-timer writes the kit's systemd/agent-kit-update.timer and .service into
 ~/.config/systemd/user/ (where a user manager without its own XDG_CONFIG_HOME looks) and starts
 the timer: the machine copy's kit update then runs every 15 minutes while you are logged in. The
-timer keeps its files, KIT_REPO and XDG_DATA_HOME as installed: run --install-timer again after a
-kit change to systemd/ or a change to either setting.
+timer keeps its files, KIT_REPO, XDG_DATA_HOME and the folder of the Node it runs on as installed:
+run --install-timer again after a kit change to systemd/ or a change to any of them.
 --remove-timer stops it and takes both files out. Both are safe to run again; neither fetches.
 EOF
 }
@@ -60,11 +60,19 @@ if [[ $mode == install-timer ]]; then
     exit 1
   fi
   source_units=$(dirname -- "${BASH_SOURCE[0]}")/../systemd
+  # The front door needs Node 24 or newer: the service's PATH starts with the folder of the one the front door found
+  # (KIT_NODE, or found here when this runs on its own), which a user service's own PATH may not reach.
+  node=${KIT_NODE:-}
+  if [[ -z $node ]] && ! node=$(kit_node_find); then
+    kit_node_missing
+    exit 2
+  fi
+  path=${node%/*}:/usr/local/bin:/usr/bin:/bin
   # Quoted unit values cannot hold a quote, a backslash or a control character, and a placeholder's name would
   # be filled in again by the next one.
-  for value in "$data" "$repo"; do
-    if [[ $value == *[\\\"[:cntrl:]]* || $value == *@KIT@* || $value == *@DATA_HOME@* || $value == *@KIT_REPO@* ]]; then
-      kit_result fail "update cannot write the timer's service, because $value holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@ or @KIT_REPO@"
+  for value in "$data" "$repo" "$path"; do
+    if [[ $value == *[\\\"[:cntrl:]]* || $value == *@KIT@* || $value == *@DATA_HOME@* || $value == *@KIT_REPO@* || $value == *@PATH@* ]]; then
+      kit_result fail "update cannot write the timer's service, because $value holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@, @KIT_REPO@ or @PATH@"
       exit 1
     fi
   done
@@ -82,6 +90,7 @@ if [[ $mode == install-timer ]]; then
     content=${content//@KIT@/"$(escape "$data/current/kit")"}
     content=${content//@DATA_HOME@/"$(escape "${data%/agent-kit}")"}
     content=${content//@KIT_REPO@/"$(escape "$repo")"}
+    content=${content//@PATH@/"$(escape "$path")"}
     file=$units/$timer.$kind
     if [[ -f $file && $(< "$file") == "$content" ]]; then continue; fi
     if ! { printf '%s\n' "$content" > "$file.$$" && mv -fT -- "$file.$$" "$file"; }; then

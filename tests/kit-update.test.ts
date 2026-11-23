@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+// @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+import { gitCommonDir } from "../git-safety.mjs";
+// @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+import { bwrapWorks, checkLock, outerLock, resetBwrapProbe } from "../key-guard.mjs";
+import { kitEnv } from "./support/kit-env.ts";
 import { kitFiles } from "./support/kit-files.ts";
 
 const update = resolve("kit.d/update");
@@ -470,11 +475,31 @@ const restartCalls = ["--user is-enabled --quiet agent-kit-update.timer", "--use
 const installed = "RESULT: ok update timer installed: kit update runs every 15 minutes\n";
 const already = "RESULT: ok update timer already installed: kit update runs every 15 minutes\n";
 
+function tmpReadOnly() {
+  try { accessSync("/tmp", constants.W_OK); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EROFS"; }
+}
+
+function readOnlyTmpFailure(verify: { status: number | null; stdout: string; stderr: string }, readOnly = tmpReadOnly()) {
+  return typeof verify.status === "number" && verify.status !== 0 && readOnly && !verify.stdout.trim()
+    && /^Failed to set ?up working directory: Read-only file system\s*$/.test(verify.stderr);
+}
+
 // Both unit files verified by systemd's own reader, where it is installed (it checks ExecStart exists too).
+// systemd-analyze verify hardcodes /tmp/systemd-analyze-XXXXXX (ignoring TMPDIR), so inside a read-only
+// sandbox such as kit pr's write fence it cannot create its working directory; skip only that failure there.
 function verifyUnits(t: { diagnostic: (message: string) => void }, k: { directory: string; env: NodeJS.ProcessEnv }) {
   if (spawnSync("sh", ["-c", "command -v systemd-analyze"]).status !== 0) { t.diagnostic("no systemd-analyze: unit files not verified by systemd"); return; }
   const files = ["timer", "service"].map((kind) => join(units(k), `agent-kit-update.${kind}`));
-  const verify = spawnSync("systemd-analyze", ["verify", ...files], { env: k.env, encoding: "utf8", timeout: 30_000 });
+  // Force English strerror(EROFS) text so the read-only /tmp check stays locale-independent.
+  const env = { ...k.env, LC_MESSAGES: "C" };
+  delete env.LC_ALL;
+  delete env.LANGUAGE;
+  const verify = spawnSync("systemd-analyze", ["verify", ...files], { env, encoding: "utf8", timeout: 30_000 });
+  if (readOnlyTmpFailure(verify)) {
+    t.diagnostic("read-only /tmp: unit files not verified by systemd-analyze");
+    return;
+  }
   assert.equal(verify.status, 0, verify.stdout + verify.stderr);
 }
 
@@ -494,9 +519,14 @@ test("kit update --install-timer writes both unit files, starts the timer and is
   assert.equal(readFileSync(timer, "utf8"), readFileSync("systemd/agent-kit-update.timer", "utf8"));
   assert.match(readFileSync(timer, "utf8"), /^\[Timer\]\n(?:#.*\n)*OnCalendar=\*:0\/15\nPersistent=true\n\n\[Install\]\nWantedBy=timers\.target\n$/m);
   const written = readFileSync(service, "utf8");
+  // The service's plain PATH starts with the folder of the front door's Node (KIT_NODE, set when the tests run through
+  // kit unit), or of the one update finds itself when run on its own.
+  const node = k.env.KIT_NODE
+    || spawnSync("bash", ["-c", "source kit-lib.sh && kit_node_find"], { env: k.env, encoding: "utf8" }).stdout.trim();
+  assert.ok(node, "the test machine has a Node 24 or newer");
   assert.equal(written, readFileSync("systemd/agent-kit-update.service", "utf8")
     .replace("@DATA_HOME@", join(k.directory, "data")).replace("@KIT_REPO@", k.env.KIT_REPO!)
-    .replace("@KIT@", join(k.data, "current/kit")));
+    .replace("@KIT@", join(k.data, "current/kit")).replace("@PATH@", `${dirname(node)}:/usr/local/bin:/usr/bin:/bin`));
   assert.match(written, /^Type=oneshot$/m);
   assert.doesNotMatch(written, /@[A-Z_]+@/);
   verifyUnits(t, k);
@@ -556,12 +586,64 @@ test("kit update --install-timer writes %, $ and @ in its paths and repo the way
     // Read back as systemd does (%% is %, $ stays: systemd-analyze verify above resolves the command the way the
     // manager does, and found it), the service updates the copy in that folder. The real user manager is not used.
     const exec = /^ExecStart="([^"]+)" update$/m.exec(written)![1].replaceAll("%%", "%");
+    const path = / "PATH=([^"]+)"$/m.exec(written)![1].replaceAll("%%", "%");
     const sha = k.publish(folder);
     const run = spawnSync(exec, ["update"], { cwd: k.directory, encoding: "utf8", timeout: 30_000,
-      env: { HOME: k.directory, PATH: "/usr/local/bin:/usr/bin:/bin", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+      env: { HOME: k.directory, PATH: path, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
         XDG_DATA_HOME: dataHome, KIT_REPO: k.env.KIT_REPO } });
     assert.equal(run.status, 0, run.stdout + run.stderr);
     assert.equal(readlinkSync(join(dataHome, "agent-kit/current")), sha);
+  }
+});
+
+test("readOnlyTmpFailure matches only systemd-analyze's working-directory EROFS failure on a read-only /tmp", () => {
+  for (const stderr of ["Failed to setup working directory: Read-only file system\n", "Failed to set up working directory: Read-only file system\n"]) {
+    assert.equal(readOnlyTmpFailure({ status: 1, stdout: "", stderr }, true), true);
+    assert.equal(readOnlyTmpFailure({ status: 1, stdout: "", stderr }, false), false);
+  }
+  assert.equal(readOnlyTmpFailure({ status: 0, stdout: "", stderr: "Failed to setup working directory: Read-only file system\n" }, true), false);
+  assert.equal(readOnlyTmpFailure({ status: null, stdout: "", stderr: "Failed to setup working directory: Read-only file system\n" }, true), false);
+  assert.equal(readOnlyTmpFailure({ status: 1, stdout: "warning\n", stderr: "Failed to setup working directory: Read-only file system\n" }, true), false);
+  assert.equal(readOnlyTmpFailure({ status: 1, stdout: "", stderr: "Failed to setup working directory: Read-only file system\nextra\n" }, true), false);
+  assert.equal(readOnlyTmpFailure({ status: 1, stdout: "", stderr: "agent-kit-update.service: Command not found\n" }, true), false);
+});
+
+test("both kit update --install-timer tests pass under node --test inside kit pr's key lock", (t) => {
+  if (outerLock()) { t.skip("already inside kit pr's key lock"); return; }
+  const root = resolve(".");
+  const common = gitCommonDir(root) ?? undefined;
+  const home = temp(t);
+  const env: NodeJS.ProcessEnv = {
+    ...kitEnv(),
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, "config"),
+    XDG_CACHE_HOME: join(home, "cache"),
+    XDG_DATA_HOME: join(home, "data"),
+    XDG_STATE_HOME: join(home, "state"),
+  };
+  for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL", "KIT_OUTER_LOCK", "NODE_TEST_CONTEXT", "NODE_OPTIONS"]) {
+    delete env[name];
+  }
+  resetBwrapProbe();
+  t.after(resetBwrapProbe);
+  if (bwrapWorks(env, [root, ...(common ? [common] : [])]) !== null) { t.skip("bubblewrap cannot run here"); return; }
+  const lock = checkLock({ worktree: root, common, env });
+  try {
+    const [program, args] = lock.wrap(process.execPath, [
+      "--test",
+      "--test-reporter=tap",
+      "--test-name-pattern=^kit update --install-timer (writes both unit files|writes %, \\$ and @)",
+      resolve("tests/kit-update.test.ts"),
+    ]);
+    const run = spawnSync(program, args, { cwd: root, env: { ...env, ...lock.env }, encoding: "utf8", timeout: 120_000 });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /^# pass 2$/m, run.stdout);
+    assert.match(run.stdout, /^# fail 0$/m, run.stdout);
+    if (spawnSync("sh", ["-c", "command -v systemd-analyze"]).status === 0) {
+      assert.match(run.stdout, /^# read-only \/tmp: unit files not verified by systemd-analyze$/m, run.stdout);
+    }
+  } finally {
+    lock.close?.();
   }
 });
 
@@ -686,8 +768,16 @@ test("kit update --install-timer fails plainly without a machine copy, without s
   for (const repo of ['file:///tmp/a"b', "file:///tmp/a\\b", "file:///tmp/a\nb", "file:///tmp/a\tb", "file:///tmp/@DATA_HOME@"]) {
     const refused = k.run(["--install-timer"], { PATH: systemctl.PATH, KIT_REPO: repo });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-    assert.equal(refused.stdout, `RESULT: fail update cannot write the timer's service, because ${repo.replace("\n", " ")} holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@ or @KIT_REPO@\n`);
+    assert.equal(refused.stdout, `RESULT: fail update cannot write the timer's service, because ${repo.replace("\n", " ")} holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@, @KIT_REPO@ or @PATH@\n`);
   }
+  // So is a Node folder it cannot hold, and run on its own without Node it writes nothing.
+  const quoted = k.run(["--install-timer"], { PATH: systemctl.PATH, KIT_NODE: '/tmp/a"b/node' });
+  assert.equal(quoted.status, 1, quoted.stdout + quoted.stderr);
+  assert.equal(quoted.stdout, `RESULT: fail update cannot write the timer's service, because /tmp/a"b:/usr/local/bin:/usr/bin:/bin holds a quote, backslash, control character or the text @KIT@, @DATA_HOME@, @KIT_REPO@ or @PATH@\n`);
+  const noNode = k.run(["--install-timer"], { PATH: `${join(k.directory, "systemctl-bin")}:${pathWithout(k, "node")}`, KIT_NODE: undefined, CLAUDE_NODE_SEARCH_ROOT: join(k.directory, "empty") });
+  assert.equal(noNode.status, 2, noNode.stdout + noNode.stderr);
+  assert.equal(noNode.stdout, "RESULT: fail no Node >=24 found (system, npx cache or nvm)\n");
+  rmSync(join(k.directory, "without-node"), { recursive: true });
   assert.equal(existsSync(units(k)), false);
   // A kit without its unit files fails before writing the one it lacks.
   const partial = join(k.directory, "partial");
@@ -725,4 +815,86 @@ test("kit update --install-timer fails plainly without a machine copy, without s
   }
   // The same flag twice is one request.
   assert.equal(k.run(["--install-timer", "--install-timer"], { PATH: systemctl.PATH }).stdout, already);
+});
+
+test("without Node 24 the front door still runs kit update, and ends with one RESULT line", (t) => {
+  // A timer installed before its service carried a PATH may not reach Node 24: it still brings the next kit.
+  const k = kitRepo(t);
+  const sha = k.publish("one");
+  // A relative playwright module from the caller needs a project root, which this run has not looked for.
+  const env = { ...k.env, PATH: pathWithout(k, "node"), KIT_NODE: undefined, CLAUDE_NODE_SEARCH_ROOT: join(k.directory, "empty"), KIT_ROOT: undefined, KIT_PLAYWRIGHT_MODULE: "node_modules/playwright" };
+  const frontDoor = (extra: NodeJS.ProcessEnv = {}) => spawnSync(resolve("kit"), ["update"], { cwd: k.directory, encoding: "utf8", timeout: 30_000, env: { ...env, ...extra } });
+  const updated = frontDoor();
+  assert.equal(updated.status, 0, updated.stdout + updated.stderr);
+  assert.equal(readlinkSync(join(k.data, "current")), sha);
+  assert.equal(updated.stdout.trimEnd().split("\n").at(-1), `RESULT: ok update ${sha.slice(0, 7)} (was none)`);
+  assert.match(updated.stderr, /no Node >=24 found/);
+  // A fetch that fails still says what failed, holding back the URL it cannot hide.
+  const offline = frontDoor({ KIT_REPO: "https://u:fake-token@kit.invalid/kit.git", GIT_TERMINAL_PROMPT: "0" });
+  assert.notEqual(offline.status, 0);
+  const lines = offline.stdout.trimEnd().split("\n");
+  assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
+  assert.match(lines.at(-1)!, /^RESULT: fail update .*\(URL held back\)/);
+  assert.equal(offline.stdout.includes("fake-token"), false);
+  // An update that stops without a RESULT line (its data folder cannot be made) gets one from the front door.
+  writeFileSync(join(k.directory, "a-file"), "");
+  const stopped = frontDoor({ XDG_DATA_HOME: join(k.directory, "a-file/data") });
+  assert.notEqual(stopped.status, 0);
+  assert.equal(stopped.stdout.trimEnd().split("\n").filter(line => line.startsWith("RESULT: ")).length, 1);
+  assert.match(stopped.stdout, new RegExp(`RESULT: fail update exited ${stopped.status} without a RESULT line\\n$`));
+  // Installing the timer bakes in no Node the front door could not find, even one a parent left in KIT_NODE.
+  fakeSystemctl(k);
+  const timer = spawnSync(resolve("kit"), ["update", "--install-timer"], { cwd: k.directory, encoding: "utf8", timeout: 30_000,
+    env: { ...env, PATH: `${join(k.directory, "systemctl-bin")}:${env.PATH}`, KIT_NODE: "/nowhere/node" } });
+  assert.equal(timer.status, 2, timer.stdout + timer.stderr);
+  assert.equal(timer.stdout, "RESULT: fail no Node >=24 found (system, npx cache or nvm)\n");
+  assert.equal(existsSync(units(k)), false);
+});
+
+test("a kit whose kit-lib.mjs does not load still runs kit update and --previous, the way to repair it", (t) => {
+  const k = kitRepo(t);
+  const broken = join(k.directory, "broken-kit");
+  cpSync(resolve("."), broken, { recursive: true, filter: kitFiles });
+  writeFileSync(join(broken, "kit-lib.mjs"), 'throw new Error("boom");\n');
+  const frontDoor = (...args: string[]) => spawnSync(join(broken, "kit"), args, { cwd: k.directory, encoding: "utf8", timeout: 30_000, env: k.env });
+  const last = (stdout: string) => stdout.trimEnd().split("\n").at(-1);
+  const one = k.publish("one");
+  const first = frontDoor("update");
+  assert.equal(first.status, 0, first.stdout + first.stderr);
+  assert.equal(last(first.stdout), `RESULT: ok update ${short(one)} (was none)`);
+  assert.equal(k.link("current"), one);
+  assert.match(first.stderr, /boom/);
+  const two = k.publish("two");
+  assert.equal(frontDoor("update").status, 0);
+  const back = frontDoor("update", "--previous");
+  assert.equal(back.status, 0, back.stdout + back.stderr);
+  assert.equal(last(back.stdout), `RESULT: ok update --previous ${short(one)} (was ${short(two)})`);
+  assert.equal(k.link("current"), one);
+  // Every other command still says the library did not run, and runs nothing.
+  const unit = frontDoor("unit");
+  assert.equal(unit.status, 2);
+  assert.equal(unit.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
+  // So does a run that already knows its root (the launcher outside git, or a nested kit call).
+  const known = spawnSync(join(broken, "kit"), ["unit"], { cwd: k.directory, encoding: "utf8", timeout: 30_000, env: { ...k.env, KIT_ROOT: k.directory } });
+  assert.equal(known.status, 2, known.stdout + known.stderr);
+  assert.equal(known.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
+});
+
+test("without Node 24 a kit update stopped by SIGTERM ends with the front door's interrupted line", async (t) => {
+  // systemd stops the timer's service with SIGTERM: the run still ends with one RESULT line, as it does with Node.
+  const k = kitRepo(t);
+  k.publish("one");
+  const bin = join(k.directory, "slow-git"), mark = join(k.directory, "git-started");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git"), `#!/bin/sh\ntouch '${mark}'\nexec sleep 10 > /dev/null 2>&1\n`, { mode: 0o755 });
+  const env = { ...k.env, PATH: `${bin}:${pathWithout(k, "node")}`, KIT_NODE: undefined, CLAUDE_NODE_SEARCH_ROOT: join(k.directory, "empty") };
+  const update = spawn(resolve("kit"), ["update"], { cwd: k.directory, env });
+  let stdout = "";
+  update.stdout.setEncoding("utf8").on("data", (text) => { stdout += text; });
+  const closed = new Promise((accept) => update.once("close", (status) => accept(status)));
+  for (let i = 0; i < 250 && !existsSync(mark); i++) await new Promise((accept) => setTimeout(accept, 20));
+  assert.ok(existsSync(mark), "update reached git");
+  update.kill("SIGTERM");
+  assert.equal(await closed, 143);
+  assert.equal(stdout, "RESULT: fail update interrupted\n");
 });

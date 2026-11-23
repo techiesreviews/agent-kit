@@ -78,15 +78,17 @@ function fixture(t: { after: (fn: () => void) => void }) {
   return { directory, main, dev, build, commands, run };
 }
 
-function failure(result: ReturnType<typeof spawnSync<string>>, name: string) {
+// Without Node the RESULT line keeps its words (kit_result holds back only a URL it cannot hide, TOOLS-395), and
+// kit-lib.sh says on stderr that Node is missing.
+function failure(result: ReturnType<typeof spawnSync<string>>, name: string, noNode = false) {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
   assert.equal(lines.filter(line => line.startsWith("RESULT: ")).length, 1);
   // The kit note shows whenever the kit's own version runs; the PR target, skills and API route notes always show.
-  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ") && !/^[✓✗] skills map: /.test(line) && !line.startsWith("api route: ") && !/^(✗ )?key lock: /.test(line)).length, 13, result.stdout);
+  assert.equal(lines.filter(line => !line.startsWith("✓ kit: ") && !line.startsWith("✗ PR target: ") && !/^[✓✗] skills map: /.test(line) && !line.startsWith("api route: ") && !/^(✗ )?(key lock|keyed steps): /.test(line)).length, 13, result.stdout);
   assert.ok(lines.some(line => line.startsWith(`✗ ${name}: `) && line.includes("; fix: ")), result.stdout);
   assert.equal(lines.at(-1), `RESULT: fail doctor 1 failed: ${name}`);
-  assert.equal(result.stderr, "");
+  assert.equal(result.stderr, noNode ? "kit: no Node >=24 found (system, npx cache or nvm)\n" : "");
 }
 
 test("doctor checks all eleven conditions quickly, notes Grok, and quiet success prints only RESULT", (t) => {
@@ -119,8 +121,10 @@ test("doctor checks all eleven conditions quickly, notes Grok, and quiet success
   assert.equal(lines[15], "api route: off (headless Claude calls use the subscription; KIT_API_KEY_FILE turns the API route on)");
   // The key lock: one note, on where bubblewrap runs, else a ✗ note (never a counted check).
   assert.match(lines[16], /^(key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)|key lock: on \(inside kit pr's key lock for its checks: .*\)|✗ key lock: .*)$/);
-  assert.equal(lines.length, 18);
-  assert.match(lines[17], /^RESULT: ok doctor 11\/11 checks passed(; warning: key lock (cannot start|has a gap|is off) \(see the ✗ key lock line\))?$/);
+  // Keyed steps (TOOLS-390): whether git's ssh runs in the clean room here, one note under the key lock's.
+  assert.match(lines[17], /^(keyed steps: clean room on \(git's ssh starts where the worktrees and the Git folder are empty\)|keyed steps: inside kit pr's key lock for its checks: .*|keyed steps: not on this machine .*|✗ keyed steps: .*)$/);
+  assert.equal(lines.length, 19);
+  assert.match(lines[18], /^RESULT: ok doctor 11\/11 checks passed(; warning: (key lock (cannot start|has a gap|is off) \(see the ✗ key lock line\)|keyed steps cannot start their clean room \(see the ✗ keyed steps line\)))?$/);
   assert.equal(result.stderr, "");
   const quiet = f.run(["--quiet"]);
   assert.equal(quiet.status, 0, quiet.stderr);
@@ -178,6 +182,25 @@ test("doctor rejects an unrelated branch", (t) => {
   const result = f.run();
   failure(result, "base");
   assert.match(result.stdout, /not based on origin\/dev \(merge-base none\)/);
+});
+
+test("doctor's worktree hints name the shared kit's worktree.sh, which exists, not a scripts/agents/worktree.sh the project lacks (TOOLS-380)", (t) => {
+  const f = fixture(t);
+  assert.ok(statSync(join(repo, "worktree.sh")).isFile(), "the kit's own worktree.sh is the file the hint names");
+  const hint = '"$(scripts/agents/kit --home)/worktree.sh"';
+  // The dev worktree is the wrong place to build: doctor says how to make a build worktree.
+  const place = f.run([], f.dev);
+  failure(place, "place");
+  const placeLine = place.stdout.split("\n").find(line => line.startsWith("✗ place: "));
+  assert.ok(placeLine?.includes(`create a worktree with ${hint} <branch> origin/dev`), placeLine);
+  // A branch with no common history with origin/dev gets the same hint when it is recreated.
+  git(f.build, "checkout", "--orphan", "unrelated");
+  git(f.build, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "unrelated");
+  const base = f.run();
+  failure(base, "base");
+  const baseLine = base.stdout.split("\n").find(line => line.startsWith("✗ base: "));
+  assert.ok(baseLine?.includes(`recreate with ${hint} <branch> origin/dev`), baseLine);
+  for (const line of [placeLine, baseLine]) assert.ok(!line?.includes("scripts/agents/worktree.sh"), line);
 });
 
 test("doctor reports missing origin/dev", (t) => {
@@ -480,12 +503,46 @@ test("doctor reports Node below 24 without searching the user's installations", 
   const empty = join(f.directory, "empty");
   mkdirSync(bin); mkdirSync(empty);
   executable(join(bin, "node"), "printf 'v22.0.0\\n'");
-  failure(f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true), "node");
+  failure(f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true), "node", true);
+  // Run on its own with no root given, doctor needs Node to find the project, and says so in one RESULT line.
+  const rootless = f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty, KIT_ROOT: undefined, KIT_MAIN_ROOT: undefined }, true);
+  assert.equal(rootless.status, 1, rootless.stderr);
+  assert.equal(rootless.stdout, "RESULT: fail doctor cannot find the project without Node >=24 (system, npx cache or nvm); install Node 24 (nvm) or fix PATH\n");
   // Without Node the skill guard cannot run: a project's skills check says it skipped.
   const settings = JSON.parse(readFileSync(join(f.build, "scripts/agents/kit.json"), "utf8"));
   writeFileSync(join(f.build, "scripts/agents/kit.json"), JSON.stringify({ ...settings, skillGuard: { allow: [".claude/skills/heron"] } }));
   const skipped = f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true);
   assert.ok(skipped.stdout.includes("✓ skills: skipped (Node not found)\n"), skipped.stdout);
+  // Node checks the settings file, so without it a file that is there goes unchecked; a missing one is still named.
+  assert.ok(skipped.stdout.includes("✓ settings: skipped (Node >=24 not found)\n"), skipped.stdout);
+  rmSync(join(f.build, "scripts/agents/kit.json"));
+  const missing = f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true);
+  assert.ok(missing.stdout.includes('✗ settings: no scripts/agents/kit.json; fix: add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }\n'), missing.stdout);
+});
+
+test("doctor shows the Node version without the carriage return Node on Windows ends it with", (t) => {
+  const f = fixture(t);
+  const bin = join(f.directory, "bin");
+  mkdirSync(bin);
+  executable(join(bin, "node"), `if [ "$1" = --version ]; then printf '${process.version}\\r\\n'; exit; fi\nexec '${process.execPath}' "$@"`);
+  const result = f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, KIT_NODE: undefined }, true);
+  assert.ok(result.stdout.includes(`✓ node: ${process.version}\n`), result.stdout);
+  assert.equal(result.stdout.includes("\r"), false);
+});
+
+test("doctor says the kit needs repair, not the settings, when Node runs but kit-lib.mjs does not load", (t) => {
+  const f = fixture(t);
+  // A kit library without review-findings.mjs, which kit-lib.mjs imports.
+  const broken = join(f.directory, "broken-kit");
+  mkdirSync(broken);
+  for (const name of ["kit-lib.sh", "kit-lib.mjs"]) copyFileSync(join(repo, name), join(broken, name));
+  const result = f.run([], f.build, { KIT_LIB: join(broken, "kit-lib.sh") }, true);
+  assert.ok(result.stdout.includes("✗ settings: scripts/agents/kit.json was not checked (kit-lib.mjs did not run); fix: repair the kit: run scripts/agents/kit update, or restore kit-lib.mjs and the files beside it\n"), result.stdout);
+  assert.doesNotMatch(result.stdout, /edit scripts\/agents\/kit\.json/);
+  // Run on its own with no root given, it cannot find the project, and says the kit needs repair, not Node.
+  const rootless = f.run([], f.build, { KIT_LIB: join(broken, "kit-lib.sh"), KIT_ROOT: undefined, KIT_MAIN_ROOT: undefined }, true);
+  assert.equal(rootless.status, 1, rootless.stderr);
+  assert.equal(rootless.stdout, "RESULT: fail doctor cannot find the project: kit-lib.mjs did not load (its error is above); run scripts/agents/kit update to repair the kit\n");
 });
 
 for (const kind of ["missing", "real directory", "dangling link", "different shared directory", "shared missing", "shared dangling"]) {
@@ -657,7 +714,8 @@ test("the kit home check moves a commands folder inside the kit out of the copy 
   const home = join(f.build, "scripts/agents");
   mkdirSync(join(home, "kit.d"));
   mkdirSync(join(home, "project.d"));
-  copyFileSync(library, join(home, "kit-lib.sh"));
+  // The shell library asks kit-lib.mjs (which imports review-findings.mjs) for the settings check.
+  for (const name of ["kit-lib.sh", "kit-lib.mjs", "review-findings.mjs"]) copyFileSync(join(repo, name), join(home, name));
   executable(join(home, "kit.d/doctor"), readFileSync(doctor, "utf8"));
   executable(join(home, "kit.d/version"), 'printf "Usage: kit version\\n"');
   writeFileSync(join(home, "project.d/marker"), "");
@@ -1019,7 +1077,8 @@ test("agent.sh hands the builder no KIT_DOCTOR_SKIP, so its own kit doctor sees 
   executable(join(f.commands, "broken"), "exit 1");
   executable(join(f.build, "scripts/agents/kit"), "exit 0");
   const bin = join(f.directory, "bin");
-  const seen = join(f.directory, "seen");
+  const seen = join(f.build, ".scratch/seen");
+  mkdirSync(join(f.build, ".scratch"), { recursive: true });
   mkdirSync(bin);
   executable(join(bin, "claude"), `printf '%s\\n' "\${KIT_DOCTOR_SKIP-unset}" > ${JSON.stringify(seen)}; exit 1`);
   const brief = join(f.directory, "brief.md");
@@ -1040,7 +1099,7 @@ test("a broken version command, which the kit home check runs, does not stop age
   // The kit home check copies KIT_HOME and runs its version; this home's version fails as the broken one does.
   const home = join(f.directory, "kit-home");
   mkdirSync(home);
-  copyFileSync(library, join(home, "kit-lib.sh"));
+  for (const name of ["kit-lib.sh", "kit-lib.mjs", "review-findings.mjs"]) copyFileSync(join(repo, name), join(home, name));
   executable(join(home, "kit"), 'printf "SyntaxError: missing import\\n" >&2; exit 1');
   const env = { ...kitEnv(), KIT_MAIN_ROOT: f.main, KIT_LIB: library, KIT_COMMANDS_DIR: f.commands, KIT_HOME: home,
     KIT_GROK: join(f.directory, "no-grok"), KIT_HELP_TIMEOUT: "0.3", ASE_SKIP_DOCTOR: "", KIT_DOCTOR_SKIP: "" };
@@ -1143,7 +1202,7 @@ test("through the real front door, a copy's version failing as its help did is s
   // A kit home with the real front door, its library and a version that fails naming its own path.
   const home = join(f.directory, "kit-home");
   mkdirSync(join(home, "kit.d"), { recursive: true });
-  for (const name of ["kit", "kit-lib.sh", "kit-lib.mjs"]) copyFileSync(join(repo, name), join(home, name));
+  for (const name of ["kit", "kit-lib.sh", "kit-lib.mjs", "review-findings.mjs"]) copyFileSync(join(repo, name), join(home, name));
   chmodSync(join(home, "kit"), 0o755);
   symlinkSync(doctor, join(home, "kit.d/doctor"));
   executable(join(home, "kit.d/version"), 'printf "%s: Cannot find module kit-lib.mjs\\n" "$0" >&2; exit 1');
@@ -1222,7 +1281,8 @@ test("a resumed build with a full status.json passes the build gate and really s
   executable(join(f.commands, "broken"), "exit 1");
   executable(join(f.build, "scripts/agents/kit"), "exit 0");
   const bin = join(f.directory, "bin");
-  const seen = join(f.directory, "seen");
+  const seen = join(f.build, ".scratch/seen");
+  mkdirSync(join(f.build, ".scratch"), { recursive: true });
   mkdirSync(bin);
   executable(join(bin, "claude"), `printf '%s\\n' "\${KIT_DOCTOR_SKIP-unset}" "$*" > ${JSON.stringify(seen)}; exit 1`);
   const brief = join(f.directory, "brief.md");
@@ -1361,11 +1421,30 @@ test("the key lock note: on with a working bubblewrap, a ✗ note and a RESULT w
   const on = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
   assert.equal(on.status, 0, on.stdout + on.stderr);
   assert.match(on.stdout, /^key lock: on \(bubblewrap runs; agents the kit starts cannot read the key files\)$/m);
+  assert.match(on.stdout, /^keyed steps: clean room on \(git's ssh starts where the worktrees and the Git folder are empty\)$/m);
   executable(join(bin, "bwrap"), 'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1');
   const blocked = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
   assert.equal(blocked.status, 0, blocked.stdout + blocked.stderr);
   assert.match(blocked.stdout, /^✗ key lock: the system blocks the sandboxes bubblewrap makes \(bwrap: setting up uid map: Permission denied\); give \/usr\/bin\/bwrap an AppArmor profile that allows user namespaces .*sysctl -w kernel\.apparmor_restrict_unprivileged_userns=0 \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m);
+  // The clean room for git's ssh cannot start either: its own ✗ line, but one warning on the RESULT line for both.
+  assert.match(blocked.stdout, /^✗ keyed steps: clean room cannot start: the system blocks the sandboxes bubblewrap makes .*\(a fetch or push from an ssh remote stops until it works\); fix: the step named above, or set ASE_KEY_GUARD=off to run without the lock$/m);
   assert.match(blocked.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: key lock cannot start \(see the ✗ key lock line\)$/);
+  // A bwrap that runs, but not with the room's own process list and /proc (a container that blocks them): the key lock
+  // is on, and the clean room says why it cannot start, with its own RESULT warning.
+  executable(join(bin, "bwrap"), `case "$*" in *--unshare-pid*) echo "bwrap: Can't mount proc on /newroot/proc: Operation not permitted" >&2; exit 1 ;; *" -e "*) echo inside; echo done ;; esac; exit 0`);
+  const noRoom = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
+  assert.equal(noRoom.status, 0, noRoom.stdout + noRoom.stderr);
+  assert.match(noRoom.stdout, /^key lock: on /m);
+  assert.match(noRoom.stdout, /^✗ keyed steps: clean room cannot start: bubblewrap cannot start it here \(bwrap: Can't mount proc on \/newroot\/proc: Operation not permitted\); run bwrap .* -- true to see why \(a fetch or push from an ssh remote stops until it works\)/m);
+  assert.match(noRoom.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: keyed steps cannot start their clean room \(see the ✗ keyed steps line\)$/);
+  // A bwrap that runs, with ssh's agent socket inside the worktree: a fetch or push would stop, so doctor says so once.
+  executable(join(bin, "bwrap"), 'case "$*" in *" -e "*) echo inside; echo done ;; esac; exit 0');
+  writeFileSync(join(f.build, "agent.sock"), "");
+  const agentInside = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}`, SSH_AUTH_SOCK: join(f.build, "agent.sock") });
+  assert.equal(agentInside.status, 0, agentInside.stdout + agentInside.stderr);
+  assert.match(agentInside.stdout, /^key lock: on /m);
+  assert.match(agentInside.stdout, /^✗ keyed steps: clean room would hide ssh's agent \(\S+agent\.sock\), which is inside the worktree or the Git folder \(\S+\); keep the repository out of it \(a fetch or push from an ssh remote stops until it works\); fix: the step named above, or set ASE_KEY_GUARD=off to run without the lock$/m);
+  assert.match(agentInside.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: keyed steps cannot start their clean room \(see the ✗ keyed steps line\)$/);
   // A bwrap that starts but whose probe never reports back: the lock cannot be checked, so it is not on.
   executable(join(bin, "bwrap"), "exit 0");
   const unchecked = f.run([], f.build, { PATH: `${bin}:${process.env.PATH}` });
@@ -1393,12 +1472,15 @@ test("the key lock note is truthful: off on a system without bubblewrap, a stop 
   assert.equal(missing.status, 0, missing.stdout + missing.stderr);
   assert.match(missing.stdout, /^✗ key lock: off on this machine \(no bubblewrap\); builders can read key files \(token variables are still dropped, and Codex keeps its own profile\); fix: none on a system without bubblewrap \(it is Linux only\); ASE_KEY_GUARD=on stops those runs instead of starting them unwrapped$/m);
   assert.match(missing.stdout.trimEnd().split("\n").at(-1)!, /^RESULT: ok doctor 11\/11 checks passed; warning: key lock is off \(see the ✗ key lock line\)$/);
+  // Git's ssh there keeps today's path filter, and doctor says so (TOOLS-390).
+  assert.match(missing.stdout, /^keyed steps: not on this machine \(no bubblewrap\): git's ssh is checked by its path, as before$/m);
   // ASE_KEY_GUARD=on there, or no bubblewrap on Linux: the runs stop, and the note says that instead, with a step that exists there.
   assert.match(f.run([], f.build, { HOME: home, PATH: none, ...onMacos, ASE_KEY_GUARD: "on" }).stdout,
     /^✗ key lock: this system has no bubblewrap \(it is Linux only\), and ASE_KEY_GUARD=on asks for the lock or no run; unset it to start Claude, Grok and OpenCode unwrapped \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m);
   const linux = f.run([], f.build, { HOME: home, PATH: none, ...onLinux });
   assert.match(linux.stdout, /^✗ key lock: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\) \(the kit's Claude, Grok and OpenCode runs stop until it works\); fix: the step named above, or set ASE_KEY_GUARD=off/m);
   assert.match(linux.stdout.trimEnd().split("\n").at(-1)!, /; warning: key lock cannot start \(see the ✗ key lock line\)$/);
+  assert.match(linux.stdout, /^✗ keyed steps: clean room cannot start: bubblewrap \(bwrap\) is not installed; install it \(apt install bubblewrap\) \(a fetch or push from an ssh remote stops until it works\)/m);
   // A key folder that links to the worktree, or to the repository's Git folder, would stop the runs that lock it:
   // doctor finds it and does not say "on".
   executable(join(bin, "bwrap"), 'case "$*" in *" -e "*) echo inside; echo done ;; esac; exit 0');

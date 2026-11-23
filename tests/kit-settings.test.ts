@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { kitDevRoot, kitMainRoot, kitMaps, kitSettings, kitSettingsProblems, scoreMap } from "../kit-lib.mjs";
+import { kitDevRoot, kitMainRoot, kitMaps, kitSettings, kitSettingsFileProblems, kitSettingsProblems, scoreMap } from "../kit-lib.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
 import { optionsFor } from "../deps-check.mjs";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
@@ -57,7 +57,8 @@ function bash(script: string, env: NodeJS.ProcessEnv) {
 function repo(t: TestContext, settings?: object | string) {
   const dir = temp(t), origin = join(dir, "origin.git"), root = join(dir, "work"), main = join(dir, "main"), bin = join(dir, "bin");
   for (const path of [root, main, bin]) mkdirSync(path);
-  const calls = join(dir, "calls");
+  mkdirSync(join(root, ".scratch"));
+  const calls = join(root, ".scratch/calls");
   executable(join(bin, "gh"), `#!/bin/bash
 printf 'gh %s\\n' "$*" >> ${JSON.stringify(calls)}
 case "$1 $2" in
@@ -133,6 +134,7 @@ test("only project and branches.land are required, and both readers say what to 
     const root = temp(t);
     if (settings !== null) settingsFile(root, settings);
     assert.throws(() => kitSettings(root), { message: problems.join("; ") }, JSON.stringify(settings));
+    assert.deepEqual(kitSettingsFileProblems(root), problems, JSON.stringify(settings));
     const shell = bash("kit_settings_problems", { KIT_ROOT: root });
     assert.equal(shell.status, 1, JSON.stringify(settings));
     assert.equal(shell.stdout, `${problems.join("\n")}\n`, JSON.stringify(settings));
@@ -152,6 +154,9 @@ test("only project and branches.land are required, and both readers say what to 
   const shell = bash("kit_settings_problems", { KIT_ROOT: broken });
   assert.equal(shell.status, 1);
   assert.match(shell.stdout, /^scripts\/agents\/kit\.json is unreadable: /);
+  // One reader: the shell prints Node's very line, not one of its own (jq would word the parse error differently).
+  assert.equal(shell.stdout, `${kitSettingsFileProblems(broken).join("\n")}\n`);
+  assert.throws(() => kitSettings(broken), { message: kitSettingsFileProblems(broken).join("; ") });
   const good = temp(t);
   settingsFile(good, { project: "x", branches: { land: "main" } });
   assert.deepEqual(kitSettings(good), { project: "x", branches: { land: "main" } });
@@ -212,6 +217,41 @@ test("environment overrides still win over the settings file", t => {
   assert.equal(kitMainRoot(), "/env/main");
   assert.equal(kitDevRoot(kitSettings(root)), "/env/dev");
   assert.equal(bash("kit_main_root; kit_dev_root", { KIT_ROOT: root, KIT_MAIN_ROOT: "/env/main", KIT_DEV_ROOT: "/env/dev" }).stdout, "/env/main\n/env/dev\n");
+});
+
+test("kit_main_root is kitMainRoot's answer, read through Node, so the settings' mainRoot counts with or without jq", t => {
+  const root = temp(t);
+  settingsFile(root, { project: "x", branches: { land: "main" }, mainRoot: "/settings/main" });
+  for (const PATH of [clean.PATH, withoutJq(t)]) {
+    const main = bash("kit_main_root", { KIT_ROOT: root, KIT_MAIN_ROOT: "", PATH });
+    assert.equal(main.stdout, "/settings/main\n", main.stderr);
+    assert.equal(main.stderr, "");
+  }
+});
+
+test("without Node the shell helpers still answer: the settings go unchecked, the main worktree, ASE_OWNER, and no wait", t => {
+  const dir = realpathSync(temp(t)), bin = join(dir, "bin"), empty = join(dir, "empty"), root = join(dir, "work"), lock = join(dir, "state/agent-kit/quiet.lock");
+  for (const path of [bin, empty, root, dirname(lock)]) mkdirSync(path, { recursive: true });
+  executable(join(bin, "node"), "#!/bin/sh\nprintf 'v22.0.0\\n'\n");
+  assert.equal(spawnSync("git", ["init", "-q", root]).status, 0);
+  settingsFile(root, { project: "x", branches: { land: "main" }, mainRoot: "/settings/main" });
+  const noNode = { KIT_ROOT: root, KIT_MAIN_ROOT: "", PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty, XDG_STATE_HOME: join(dir, "state") };
+  const problems = bash("kit_settings_problems", noNode);
+  assert.equal(problems.status, 1);
+  assert.equal(problems.stdout, "scripts/agents/kit.json was not checked (kit-lib.mjs did not run)\n");
+  assert.match(problems.stderr, /no Node >=24 found/);
+  // The main worktree, quietly, so kit doctor run on its own can still say Node is missing.
+  const main = bash("kit_main_root", noNode);
+  assert.equal(main.stdout, `${root}\n`, main.stderr);
+  assert.equal(main.stderr, "");
+  for (const [owner, expected] of [["fleet\nlead", "fleet lead\n"], ["", "unknown\n"]]) {
+    assert.equal(bash("kit_owner", { ...noNode, ASE_OWNER: owner }).stdout, expected, JSON.stringify(owner));
+  }
+  // Another run holds the quiet lock: without Node nothing waits, and nothing says so.
+  writeFileSync(lock, "1 someone 60\n");
+  const quiet = bash(`flock -x ${JSON.stringify(lock)} sleep 3 > /dev/null 2>&1 & holder=$!; while flock -n ${JSON.stringify(lock)} true; do sleep 0.05; done; start=$SECONDS; kit_quiet_wait; echo "waited $((SECONDS - start))"; kill "$holder"`, noNode);
+  assert.equal(quiet.stdout, "waited 0\n", quiet.stderr);
+  assert.equal(quiet.stderr, "");
 });
 
 test("the playwright setting reaches project commands as KIT_PLAYWRIGHT_MODULE, unless the variable is set", t => {

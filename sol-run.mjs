@@ -15,7 +15,7 @@ export function durationMilliseconds(duration) {
 // reap: stop the command's whole process group once the command itself has exited (a moment later when its output is
 // still open), so a server it left behind (OpenCode 2's private one) neither outlives the call nor holds the pipes
 // open until the limit. The result's `crashed` is true when a signal or an exit above 128 ended the command on its own,
-// never when supervise stopped it (limit, signal, failed pipe).
+// never when supervise stopped it (limit, signal, failed pipe); `missing` names a command that is not installed, else null.
 export function supervise(duration, command, args, { cwd, input = 0, log, capture = false, reap = false, onSpawn, onOutput } = {}) {
   const milliseconds = durationMilliseconds(duration);
   return new Promise(resolve => {
@@ -49,6 +49,12 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
         onOutput?.(chunk.toString(), isStdout);
       } catch (error) { fail(error); }
     }
+    // A command that could not start because it is not installed (a spawn ENOENT) is named in the result's `missing`.
+    let missing = null;
+    function childFailed(error) {
+      if (error.code === "ENOENT" && error.syscall?.startsWith("spawn")) missing = error.path ?? command;
+      fail(error);
+    }
     const recordStdout = chunk => record(chunk, true);
     const recordStderr = chunk => record(chunk, false);
     if (log !== undefined) {
@@ -65,7 +71,7 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
     process.once("SIGINT", interrupt);
     process.once("SIGTERM", terminate);
     process.once("SIGHUP", hangup);
-    child.once("error", fail);
+    child.once("error", childFailed);
     // Something the command left may still hold its output: the group goes a moment after the command, as the helper's does.
     let reaper;
     if (reap) child.once("exit", () => { reaper = setTimeout(reapGroup, 500); });
@@ -81,13 +87,13 @@ export function supervise(duration, command, args, { cwd, input = 0, log, captur
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", terminate);
       process.removeListener("SIGHUP", hangup);
-      child.removeListener("error", fail);
+      child.removeListener("error", childFailed);
       child.stdout?.removeListener("data", recordStdout);
       child.stderr?.removeListener("data", recordStderr);
       child.stdout?.removeListener("error", fail);
       child.stderr?.removeListener("error", fail);
       resolve({ status: result ?? code ?? ({ SIGHUP: 129, SIGINT: 130, SIGTERM: 143 }[signal] ?? 1), stdout,
-        signal, crashed: result === undefined && (signal !== null || code > 128) });
+        signal, crashed: result === undefined && (signal !== null || code > 128), missing });
     });
   });
 }

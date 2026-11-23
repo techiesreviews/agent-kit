@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import "./support/kit-env.ts";
 // @ts-expect-error The script is plain JavaScript without declarations.
 import { options, parseWorktrees, pathInside, pruneDecision, pruneWorktree } from "../worktrees.mjs";
+// @ts-expect-error The script is plain JavaScript without declarations.
+import { bwrapWorks, keyGuard } from "../key-guard.mjs";
 
 const eligible = { protected: false, locked: false, dirty: false, merged: true, commitAge: 4, createdAge: 4, live: false };
 
@@ -163,4 +166,49 @@ test("without readable settings worktrees.sh still lists, says why, and refuses 
   assert.equal(pruned.status, 1);
   assert.equal(pruned.stdout, "");
   assert.match(pruned.stderr, /^worktrees\.sh --prune needs readable settings: no scripts\/agents\/kit\.json/);
+});
+
+test("TOOLS-397: pruning a worktree removes its saved write-fence session and leaves other worktrees' sessions alone", { skip: bwrapWorks() === null ? false : "bubblewrap cannot run here" }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-worktrees-fence-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const home = join(dir, "home"), xdgState = join(home, ".local/state"), origin = join(dir, "origin.git"), root = join(dir, "site"), oldWork = join(dir, "old"), keepWork = join(dir, "keep");
+  for (const folder of [home, xdgState, root]) mkdirSync(folder, { recursive: true });
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, XDG_STATE_HOME: xdgState, XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local/share"),
+    GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" };
+  for (const key of ["KIT_ROOT", "KIT_DEV_ROOT", "KIT_MAIN_ROOT", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "KIT_OUTER_LOCK", "ASE_KEY_GUARD"]) delete env[key];
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  execFileSync("git", ["init", "-q", "--bare", "-b", "dev", origin], { env });
+  mkdirSync(join(root, "scripts/agents"), { recursive: true });
+  writeFileSync(join(root, "scripts/agents/kit.json"), JSON.stringify({ project: "site", branches: { land: "dev" } }));
+  writeFileSync(join(root, ".gitignore"), ".scratch/\n");
+  git("init", "-q", "-b", "dev"); git("remote", "add", "origin", origin);
+  git("add", "-A"); git("commit", "-q", "-m", "base"); git("push", "-q", "-u", "origin", "dev");
+  git("worktree", "add", "-q", "-b", "merged-old", oldWork);
+  git("worktree", "add", "-q", "-b", "unmerged-keep", keepWork);
+  const common = join(root, ".git");
+  const oldArtifacts = join(oldWork, ".scratch/agent/build-1"), keepArtifacts = join(keepWork, ".scratch/agent/build-2");
+  mkdirSync(oldArtifacts, { recursive: true }); mkdirSync(keepArtifacts, { recursive: true });
+  const oldState = join(oldArtifacts, "cli-state"), keepState = join(keepArtifacts, "cli-state");
+  const g1 = keyGuard({ cli: "claude", kind: "build", worktree: oldWork, common, env, state: oldState });
+  const g2 = keyGuard({ cli: "claude", kind: "build", worktree: keepWork, common, env, state: keepState });
+  const oldFence = realpathSync(oldState), keepFence = realpathSync(keepState);
+  g1.close(); g2.close();
+  // Even if a build changed its own session folder's mode inside the fence, pruning removes both folder and owner record.
+  chmodSync(oldFence, 0o755);
+  const head = git("-C", oldWork, "rev-parse", "HEAD").trim();
+  const info = { path: oldWork, branch: "merged-old", head, protected: false, locked: false, dirty: false, merged: true, commitAge: 5, createdAge: 5, live: false };
+  const outcome = await pruneWorktree(info, 3, {
+    inspect: async () => ({ ...info }),
+    status: async () => "",
+    scan: () => ({ paths: [], complete: true }),
+    remove: async () => { git("worktree", "remove", "--", oldWork); },
+    env,
+  });
+  assert.equal(outcome, "removed");
+  assert.equal(existsSync(oldWork), false);
+  assert.equal(existsSync(oldFence), false, "pruned worktree's fence session is removed");
+  assert.equal(existsSync(`${oldFence}.owner`), false, "pruned worktree's owner record is removed");
+  assert.equal(existsSync(keepFence), true, "kept worktree's fence session stays");
+  assert.equal(existsSync(`${keepFence}.owner`), true, "kept worktree's owner record stays");
 });

@@ -100,6 +100,96 @@ test("lines compare without list marks, quotes, headings or extra spaces", () =>
   assert.equal(normalLine("12) step"), "step");
 });
 
+test("project font licences pass in every change state without exempting other paths or history", (t) => {
+  const f = fixture(t);
+  // A licence paragraph may also appear inside a skill reference with an unrelated filename.
+  f.put(join(f.home, ".claude/skills/crane/references/fonts.md"), `${licenceText}\n`);
+  f.put(join(f.repo, "public/fonts/OFL.txt"), `${licenceText}\n`);
+  f.git("add", "."); f.git("commit", "-q", "-m", "font licence");
+  f.put(join(f.repo, "assets/fonts/Crane-OFL.txt"), `${licenceText}\n`);
+  f.git("add", ".");
+  f.put(join(f.repo, "public/fonts/OFL.txt"), `${licenceText}\n${licenceText}\n`);
+  f.put(join(f.repo, "OFL.txt"), `${licenceText}\n`);
+  f.put(join(f.repo, "fonts/ofl.txt"), `${licenceText}\n`);
+  const clean = f.run(["--base", "HEAD~1"]);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /RESULT: ok skill-guard\n$/);
+  // Only font licence filenames are exempt. The path guard and history check remain active.
+  for (const path of ["fonts/OFL.md", "fonts/OFL.txt.js", "fonts/Crane-OFL-notes.txt", "fonts/Crane.OFL.txt", "fonts/Font-OFL-1.1.txt", "fonts/OFL.txt/notes.md", "notes.md"])
+    f.put(join(f.repo, path), `${licenceText}\n`);
+  f.put(join(f.repo, "skills/crane/OFL.txt"), `${licenceText}\n`);
+  f.git("add", "-f", ".");
+  const copied = f.run(["--base", "HEAD~1"]);
+  assert.equal(copied.status, 1, copied.stderr);
+  for (const path of ["fonts/OFL.md", "fonts/OFL.txt.js", "fonts/Crane-OFL-notes.txt", "fonts/Crane.OFL.txt", "fonts/Font-OFL-1.1.txt", "fonts/OFL.txt/notes.md", "notes.md"])
+    assert.ok(copied.stderr.includes(`problem: ${path}:1: holds a line from the local skill crane`), copied.stderr);
+  assert.match(copied.stderr, /problem: skills\/crane\/OFL\.txt: a skill file or skills\/ folder is tracked/);
+  const history = f.run(["--history"]);
+  assert.equal(history.status, 1, history.stderr);
+  assert.match(history.stderr, /problem: public\/fonts\/OFL\.txt@[0-9a-f]{9}:1: holds a line from the local skill crane/);
+});
+
+test("combined page headers pass but copied skill lines inside minified pages still fail", (t) => {
+  const f = fixture(t);
+  const header = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Crane gallery</title></head>';
+  const spaced = '<html> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> <title>Folded jars</title>';
+  const linked = '<!doctype html><html lang="en"><head><meta http-equiv="X-UA-Compatible" content="IE=edge"><link rel="stylesheet" href="https://fonts.example.com/crane.css"><title>Crane links</title></head>';
+  const unquoted = '<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Crane</title></head>';
+  const variants = [
+    "<!doctype html><html lang='en'><head><link href='https://fonts.example.com/crane.css' rel='stylesheet'></head>",
+    '<!doctype html><html lang=en><head><link rel=stylesheet href=https://fonts.example.com/crane.css></head>',
+    '<html><head><meta content="width=device-width, initial-scale=1" name="viewport"><title>Folded jars</title></head>',
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="icon" href="https://cdn.example.com/crane.ico"/></head>',
+    `<html><head><title>${"t".repeat(59)}</title></head>`,
+  ];
+  f.put(join(f.home, ".claude/skills/crane/templates/header.html"), [header, spaced, linked, unquoted, ...variants].join("\n"));
+  f.put(join(f.repo, "plate.html"), `${header}<body><p>Welcome</p></body></html>`);
+  f.put(join(f.repo, "gallery.mjs"), `const page = '${spaced}<body>Hello</body></html>';`);
+  f.put(join(f.repo, "linked.html"), `${linked}<body>Welcome</body></html>`);
+  f.put(join(f.repo, "unquoted.html"), `${unquoted}<body>Welcome</body></html>`);
+  for (const [index, variant] of variants.entries())
+    f.put(join(f.repo, `variant-${index}.html`), `${variant}<body>Welcome</body></html>`);
+  f.git("add", "."); f.git("commit", "-q", "-m", "pages");
+  const clean = f.run(["--base", "HEAD~1"]);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /RESULT: ok skill-guard\n$/);
+  assert.equal(f.run(["--history"]).status, 0);
+
+  const mixed = `${header}<body><p>${secret}</p></body></html>`;
+  f.put(join(f.repo, "plate.html"), mixed);
+  // A meaningful HTML line from a skill remains indexed even when it starts with a generic header.
+  const template = `${header}<body><p>Arrange the folded lanterns beside the silver teapot until every shadow faces north</p></body></html>`;
+  f.put(join(f.home, ".claude/skills/crane/templates/mixed.html"), `${template}\n`);
+  f.put(join(f.repo, "gallery.mjs"), `const page = '${template}';`);
+  const title = '<html><head><title>Carry the painted teapot across the moonlit bridge and leave it beside the sleeping lantern</title></head>';
+  f.put(join(f.home, ".claude/skills/crane/templates/title.html"), `${title}\n`);
+  f.put(join(f.repo, "title.html"), `${title}<body>Welcome</body></html>`);
+  for (const [index, variant] of variants.entries())
+    f.put(join(f.repo, `variant-${index}.html`), `${variant}<body><p>${secret}</p></body></html>`);
+  const meaningful = [
+    '<html><head><meta name="description" content="name=viewport describes the crane gallery beside the moonlit bridge"></head>',
+    '<html><head><link rel="stylesheet" href="/crane-gallery/styles/folded-lantern-pattern.css"></head>',
+    '<meta charset="utf-8" name="description" content="A folded lantern beside the teapot lights the moonlit bridge for paper birds">',
+    '<html><head><meta charset="utf-8" name="description" content="A folded lantern beside the teapot lights the moonlit bridge for paper birds"></head>',
+    '<html><head><meta name="viewport" name="description" content="A folded lantern beside the teapot lights the moonlit bridge for paper birds"></head>',
+    `<html><head><title>${"t".repeat(60)}</title></head>`,
+  ];
+  f.put(join(f.home, ".claude/skills/crane/templates/meaningful.html"), meaningful.join("\n"));
+  for (const [index, line] of meaningful.entries())
+    f.put(join(f.repo, `meaningful-${index}.html`), `${line}<body>Welcome</body></html>`);
+  const copied = f.run(["--base", "HEAD~1"]);
+  assert.equal(copied.status, 1, copied.stderr);
+  assert.match(copied.stderr, /problem: plate\.html:1: holds a line from the local skill crane/);
+  assert.match(copied.stderr, /problem: gallery\.mjs:1: holds a line from the local skill crane/);
+  assert.match(copied.stderr, /problem: title\.html:1: holds a line from the local skill crane/);
+  for (const index of variants.keys())
+    assert.ok(copied.stderr.includes(`problem: variant-${index}.html:1: holds a line from the local skill crane`), copied.stderr);
+  for (const index of meaningful.keys())
+    assert.ok(copied.stderr.includes(`problem: meaningful-${index}.html:1: holds a line from the local skill crane`), copied.stderr);
+  assert.match(copied.stdout, /RESULT: fail skill-guard 14 problem/);
+  assert.doesNotMatch(copied.stdout + copied.stderr, /paper crane|marbles/);
+});
+
 test("every file of a skill counts, but only lines of 60 or more characters that are not shared boilerplate", (t) => {
   const f = fixture(t);
   const { files, roots } = skillFiles([join(f.home, ".claude/skills"), join(f.home, ".codex/plugins"), join(f.home, "missing")]);
@@ -161,6 +251,86 @@ test("a changed line holding a skill line fails with its place and the skill's n
   assert.match(result.stderr, /problem: untracked\.md:1: holds a line from the local skill jar\n/);
   assert.doesNotMatch(result.stdout + result.stderr, /paper crane|marbles|own long line/);
   assert.match(result.stdout, /RESULT: fail skill-guard 3 problem/);
+});
+
+// Standard open-source licence texts, never paid skill content.
+const standardLicences = JSON.parse(readFileSync(new URL("../licence-texts.json", import.meta.url), "utf8")) as Record<string, string>;
+
+// Independent BSD template: the Regents variant alone misses common BSD licence wording.
+const bsdTemplate = `BSD 3-Clause License
+
+Copyright (c) <year>, <copyright holder>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+`;
+
+for (const [name, text] of Object.entries({ ...standardLicences, "BSD-3-Clause": bsdTemplate })) {
+  test(`standard ${name} licence text in a skill index does not flag a vendored licence or header`, (t) => {
+    const f = fixture(t);
+    // Reproduce a skill reference containing a licence, rather than a separately named licence file.
+    const rewrapped = text.split(/\n\s*\n/).map(paragraph => paragraph.replace(/\s+/g, " ").trim().replace(/(.{1,65})(?: +|$)/g, "$1\n")).join("\n");
+    f.put(join(f.home, ".claude/skills/crane/references/legal.md"), rewrapped);
+    f.put(join(f.home, ".claude/skills/crane/scripts/licensed.js"), text.split("\n").map(line => `// ${line}`).join("\n"));
+    f.put(join(f.home, ".claude/skills/crane/templates/licensed.html"), text.split("\n").map(line => `<!-- ${line} -->`).join("\n"));
+    f.put(join(f.repo, "src/licensed.js"), text.split("\n").map(line => `// ${line}`).join("\n"));
+    f.put(join(f.repo, "public/licensed.html"), text.split("\n").map(line => `<!-- ${line} -->`).join("\n"));
+    f.put(join(f.repo, "vendor/icons/LICENSE.txt"), text);
+    f.git("add", "."); f.git("commit", "-q", "-m", "vendored licence");
+    f.put(join(f.repo, "src/icons.js"), `/*\n${text.split("\n").map(line => ` * ${line}`).join("\n")}\n */\n`);
+    f.git("add", "src/icons.js");
+    f.put(join(f.repo, "third-party/icons.LICENSE"), text);
+    for (const args of [["--base", "HEAD~1"], ["--history"]]) {
+      const result = f.run(args);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /RESULT: ok skill-guard\n$/);
+    }
+  });
+}
+
+test("standard licence text never hides a copied skill line in the same file", (t) => {
+  const f = fixture(t);
+  const text = standardLicences.MIT;
+  f.put(join(f.home, ".claude/skills/crane/references/legal.md"), `${text}\n${secret}\n`);
+  f.put(join(f.repo, "vendor/icons/LICENSE.txt"), `${text}\n${secret}\n`);
+  f.git("add", "."); f.git("commit", "-q", "-m", "mixed licence and copied skill");
+  const result = f.run(["--base", "HEAD~1"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /vendor\/icons\/LICENSE.txt:\d+: holds a line from the local skill crane/);
+  assert.match(result.stdout, /RESULT: fail skill-guard 1 problem/);
+  assert.doesNotMatch(result.stdout + result.stderr, /paper crane/);
+  const unique = "Tuck the crane tail under the saucer and count every fold aloud to the moon";
+  const mixedLine = `${text.split("\n").find(line => line.startsWith("Permission"))} ${unique}`;
+  f.put(join(f.home, ".claude/skills/crane/references/mixed.md"), mixedLine);
+  f.put(join(f.repo, "mixed.md"), mixedLine);
+  const mixed = f.run(["--base", "HEAD~1"]);
+  assert.equal(mixed.status, 1, mixed.stderr);
+  assert.match(mixed.stderr, /mixed\.md:1: holds a line from the local skill crane/);
+  assert.match(mixed.stdout, /RESULT: fail skill-guard 2 problem/);
+  assert.doesNotMatch(mixed.stdout + mixed.stderr, /Tuck the crane/);
 });
 
 test("a project's own licence passes whatever licence text it holds, and a skill line in any other file still fails", (t) => {

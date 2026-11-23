@@ -21,11 +21,25 @@ done
 setting() { kit_setting "$1" 2>/dev/null || :; }
 jq_missing=false
 command -v jq > /dev/null || jq_missing=true
-root=$(cd -- "$(kit_root)" && pwd -P)
+# Run on its own (by path, with no KIT_ROOT) doctor needs Node to find the project, as kit-lib.mjs holds that rule.
+# With a Node whose kit-lib.mjs does not load, kit_result's own attempt prints that error, which the silenced
+# kit_root here does not.
+if ! root=$(kit_root 2>/dev/null); then
+  if kit_node_find > /dev/null; then
+    kit_result fail 'doctor cannot find the project: kit-lib.mjs did not load (its error is above); run scripts/agents/kit update to repair the kit' || :
+  else
+    kit_result fail 'doctor cannot find the project without Node >=24 (system, npx cache or nvm); install Node 24 (nvm) or fix PATH' || :
+  fi
+  exit 1
+fi
+root=$(cd -- "$root" && pwd -P)
 main=$(realpath -m -- "$(kit_main_root)")
 dev=$(kit_dev_root 2>/dev/null || :)
 [[ -z $dev ]] || dev=$(realpath -m -- "$dev")
 failed=() skipped=() checks=0 api_warning=''
+# A project may have no scripts/agents/worktree.sh of its own (the kit's front door is all it holds), so the hints name the
+# shared kit's copy the way it is found, through kit --home.
+worktree_script='"$(scripts/agents/kit --home)/worktree.sh"'
 # KIT_DOCTOR_SKIP=help (agent.sh sets it for builds): a broken --help prints a problem: line and does not fail,
 # so the builder that should repair it can start; so does a failing kit home check (it runs kit version)
 # when the copy's version fails as version's help did: both hang, or both exit alike and print the same.
@@ -45,17 +59,26 @@ fail() {
 # settings_unread: why the settings file could not be read (missing or unreadable), so the commands check
 # says it did not look for the project folder rather than report "commands" as unset.
 land='' settings_unread=''
-if problems=$(kit_settings_problems); then
+if problems=$(kit_settings_problems 2>/dev/null); then
   land=$(setting .branches.land)
   pass settings "scripts/agents/kit.json ($(setting .project), lands on $land)"
 elif [[ $jq_missing == true ]]; then
   fail settings 'jq is not installed, so scripts/agents/kit.json cannot be read' 'install jq'
+elif [[ -f $(kit_settings_file) ]] && ! kit_node_find > /dev/null; then
+  # Node checks the file (kit-lib.mjs); the node check below fails and says what to install, and jq still reads it.
+  land=$(setting .branches.land)
+  pass settings 'skipped (Node >=24 not found)'
+elif [[ -f $(kit_settings_file) && $problems == *'was not checked'* ]]; then
+  # Node ran but kit-lib.mjs did not load (a file beside it is missing or broken): the kit needs repair, not the settings.
+  fail settings "$problems" 'repair the kit: run scripts/agents/kit update, or restore kit-lib.mjs and the files beside it'
 else
   if [[ -f $(kit_settings_file) ]]; then
     fix='edit scripts/agents/kit.json as the problem says'
     if [[ $problems == *'is unreadable'* || $problems == *'must hold one JSON object'* ]]; then settings_unread=unreadable; fi
   else
     fix='add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }'
+    # Without Node the missing file is named here, as Node names it.
+    if [[ $problems == *'was not checked'* ]]; then problems='no scripts/agents/kit.json'; fi
     settings_unread=missing
   fi
   fail settings "${problems//$'\n'/; }" "$fix"
@@ -70,7 +93,7 @@ elif [[ $root != "$main" && $root != "$dev" ]]; then
 elif [[ $root == "$main" && $allow_main == true ]]; then
   pass place "$root (main checkout; allowMainCheckout)"
 else
-  fail place "main or dev worktree ($root)" "create a worktree with scripts/agents/worktree.sh <branch> origin/${land:-<land>}"
+  fail place "main or dev worktree ($root)" "create a worktree with $worktree_script <branch> origin/${land:-<land>}"
 fi
 
 # Local clones are often behind GitHub (research 02): fetch the land branch before judging the base.
@@ -119,7 +142,7 @@ else
     fail base "stale: origin/$land moved on from merge-base ${base:0:7} over a day ago" "rebase onto origin/$land"
   else
     base=${base:-none}
-    fail base "not based on origin/$land (merge-base ${base:0:7})" "rebase onto origin/$land or recreate with scripts/agents/worktree.sh"
+    fail base "not based on origin/$land (merge-base ${base:0:7})" "rebase onto origin/$land or recreate with $worktree_script <branch> origin/$land"
   fi
 fi
 
@@ -146,7 +169,7 @@ else
 fi
 
 if node=$(kit_node_find); then
-  pass node "$("$node" --version)"
+  pass node "$(kit_node_version "$node")"
 else
   fail node 'Node >=24 not found' 'install Node 24 (nvm) or fix PATH'
 fi
@@ -369,7 +392,10 @@ version_failed_alike() {
 # A copy stopped by timeout may have printed nothing, or only part of a line.
 last=${output##*$'\n'}
 if (( code == 124 || code == 137 )); then last="${last:+$last }(timed out)"; fi
-if (( code == 0 )) && [[ $last == 'RESULT: ok version '* ]]; then
+if ! kit_node_find > /dev/null; then
+  # Without Node 24 a copy's front door runs nothing but kit update (TOOLS-395): the node check says what is wrong.
+  pass 'kit home' 'skipped (Node >=24 not found)'
+elif (( code == 0 )) && [[ $last == 'RESULT: ok version '* ]]; then
   pass 'kit home' "a copy of $home runs kit version for a project with only its settings and front door"
 elif [[ $skip_help == true ]] && version_failed_alike; then
   # The copy fails only through the broken version command, so this follows the help skip: the builder repairs both.
@@ -546,7 +572,9 @@ fi
 if [[ $quiet == false ]]; then
   guard_common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || guard_common=''
   guard_library=$(dirname -- "${KIT_LIB_MJS:-$(dirname -- "${KIT_LIB:-$(dirname -- "${BASH_SOURCE[0]}")/../kit-lib.sh}")/kit-lib.mjs}")/key-guard.mjs
-  if node=$(kit_node_find) && guard_report=$("$node" --input-type=module -e 'const r = (await import(process.argv[1])).keyGuardReport(process.env, { worktree: process.argv[2], common: process.argv[3] || undefined }); console.log(r.state + "\t" + r.text);' "$(realpath -m -- "$guard_library")" "$root" "$guard_common" 2>/dev/null); then
+  # One Node asks both the key lock and the clean room for keyed steps (below), so bubblewrap's probe runs once.
+  if node=$(kit_node_find) && guard_reports=$("$node" --input-type=module -e 'const m = await import(process.argv[1]), where = { worktree: process.argv[2], common: process.argv[3] || undefined }; for (const r of [m.keyGuardReport(process.env, where), m.cleanRoomReport(process.env, where)]) console.log(r.state + "\t" + r.text);' "$(realpath -m -- "$guard_library")" "$root" "$guard_common" 2>/dev/null); then
+    guard_report=${guard_reports%%$'\n'*} room_report=${guard_reports#*$'\n'}
     guard_state=${guard_report%%$'\t'*} guard_text=${guard_report#*$'\t'}
     case $guard_state in
       problem) api_warning="${api_warning:+$api_warning; }key lock cannot start (see the ✗ key lock line)"
@@ -559,6 +587,18 @@ if [[ $quiet == false ]]; then
          printf '✗ key lock: %s (the lock stays on)\n' "$guard_text" ;;
       *) printf 'key lock: %s\n' "$guard_text" ;;
     esac
+    # Keyed steps (TOOLS-390): whether git's ssh for a fetch or push runs in the clean room, where the worktrees and the
+    # Git folder are empty. Only a room that cannot start on Linux is a warning: such a fetch or push stops. Where the
+    # key lock cannot start for the same reason (bubblewrap is missing or blocked), the RESULT line keeps that one warning.
+    room_state=${room_report%%$'\t'*} room_text=${room_report#*$'\t'}
+    if [[ $room_state == problem ]]; then
+      room_cause=${room_text#clean room cannot start: }
+      [[ $guard_state == problem && $room_cause != "$room_text" && $guard_text == *"$room_cause"* ]] ||
+        api_warning="${api_warning:+$api_warning; }keyed steps cannot start their clean room (see the ✗ keyed steps line)"
+      printf '✗ keyed steps: %s (a fetch or push from an ssh remote stops until it works); fix: the step named above, or set ASE_KEY_GUARD=off to run without the lock\n' "$room_text"
+    else
+      printf 'keyed steps: %s\n' "$room_text"
+    fi
   else
     api_warning="${api_warning:+$api_warning; }key lock not checked (see the ✗ key lock line)"
     printf '✗ key lock: doctor could not read the lock'"'"'s state (Node >=24 or key-guard.mjs missing); fix: install Node 24, or run scripts/agents/kit update if key-guard.mjs is missing\n'

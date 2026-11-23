@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { accessSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { findingsRecord } from "./review-findings.mjs";
@@ -12,10 +12,13 @@ function git(args, env = process.env) {
   catch { return ""; }
 }
 
-/** Return the current worktree root, with KIT_ROOT taking precedence. */
-export function kitRoot() {
-  // Outside git: the project around a kit kept in its scripts/agents/, else the kit's own folder (kit_root in kit-lib.sh).
-  const outside = /[\\/]scripts[\\/]agents$/.test(import.meta.dirname) ? resolve(import.meta.dirname, "../..") : import.meta.dirname;
+/**
+ * The project's top folder: KIT_ROOT, else the git worktree's. Outside git it is the project around a kit kept in its
+ * scripts/agents/ (where a project's settings file sits), else the kit folder itself: `here` (the front door passes its
+ * own) or this file's. kit_root in kit-lib.sh asks this one.
+ */
+export function kitRoot(here = import.meta.dirname) {
+  const outside = /[\\/]scripts[\\/]agents$/.test(here) ? resolve(here, "../..") : here;
   return process.env.KIT_ROOT || (git(["rev-parse", "--show-toplevel"]) || outside);
 }
 
@@ -72,16 +75,26 @@ export function kitSettingsProblems(settings) {
   ];
 }
 
-/** Read the project's settings file once per root; throws one plain line when it is missing, broken or lacks a required key. */
-export function kitSettings(root = kitRoot()) {
-  if (settingsCache.has(root)) return settingsCache.get(root);
+// The project's settings file as read, with what it lacks: one plain line per problem, none when it is usable.
+function readSettings(root) {
   let settings;
   try { settings = JSON.parse(readFileSync(join(root, kitSettingsFile), "utf8")); }
   catch (error) {
-    if (error.code === "ENOENT") throw new Error(`no ${kitSettingsFile}; add one with "project" and "branches": { "land": "<branch>" }`);
-    throw new Error(`${kitSettingsFile} is unreadable: ${oneLine(error.message)}`);
+    if (error.code === "ENOENT") return { problems: [`no ${kitSettingsFile}; add one with "project" and "branches": { "land": "<branch>" }`] };
+    return { problems: [`${kitSettingsFile} is unreadable: ${oneLine(error.message)}`] };
   }
-  const problems = kitSettingsProblems(settings);
+  return { settings, problems: kitSettingsProblems(settings) };
+}
+
+/** What the project's settings file lacks, one plain line each (kit_settings_problems in kit-lib.sh prints them); [] when it is usable. */
+export function kitSettingsFileProblems(root = kitRoot()) {
+  return readSettings(root).problems;
+}
+
+/** Read the project's settings file once per root; throws one plain line when it is missing, broken or lacks a required key. */
+export function kitSettings(root = kitRoot()) {
+  if (settingsCache.has(root)) return settingsCache.get(root);
+  const { settings, problems } = readSettings(root);
   if (problems.length) throw new Error(problems.join("; "));
   // One spelling for every reader: "docs/wayfinder/" is "docs/wayfinder".
   if (typeof settings.maps === "string") settings.maps = settings.maps.replace(/\/+$/, "");
@@ -169,7 +182,7 @@ export function kitProjects(env = process.env) {
 /**
  * Take a machine-wide lock in the kit's state folder (ticket ke-88): `<state>/<name>.lock`, held with flock(1) by a
  * small child process for as long as this process lives, so the system frees it when the holder ends however it
- * ends. While held the file reads `<pid> <owner>` (the front door's kit_quiet_wait reads the quiet lock's).
+ * ends. While held the file reads `<pid> <owner>` (kitQuietLock reads the quiet lock's for the front door).
  * A held lock is waited for; onWait(owner) is told once. release() empties the file and lets the lock go,
  * resolving once flock has ended, so the next taker never finds it still held. Without flock (KIT_FLOCK names
  * another program) nothing is locked: the lock says `missing`, so the caller can say so.
@@ -216,6 +229,22 @@ export async function kitMachineLock(name, { owner = kitOwner(), onWait, env = p
 }
 
 /**
+ * Whether a kit job must wait for the machine's quiet lock, which kit pr holds while it runs spec files alone (ticket
+ * ke-88): { path, owner } while another run holds it, else null. That run's own kit calls (KIT_QUIET_HOLDER is its pid,
+ * the first word of the lock file) go on, and without flock (KIT_FLOCK names another program) nothing waits. The front
+ * door's kit_quiet_wait asks this, then waits in the shell so its signal traps still fire at once.
+ */
+export function kitQuietLock(env = process.env) {
+  const path = join(kitStateDir(env), "quiet.lock");
+  let text;
+  try { text = readFileSync(path, "utf8"); } catch { return null; }
+  const [, pid, owner] = /^\s*(\S*)\s*(.*?)\s*$/.exec(text.split("\n", 1)[0]);
+  if (pid && env.KIT_QUIET_HOLDER === pid) return null;
+  const probe = spawnSync(env.KIT_FLOCK || "flock", ["-n", "-s", path, "true"], { stdio: "ignore" });
+  return probe.error || probe.status === 0 ? null : { path, owner: owner || "unknown" };
+}
+
+/**
  * List a project in projects.json (kit init), under its lock and written atomically: "added", or "listed" when
  * it is already there with the same root. Throws one plain line when the list is broken or the name is taken
  * by another root, so two projects never share a name. during() runs under the lock once the name is checked
@@ -224,8 +253,7 @@ export async function kitMachineLock(name, { owner = kitOwner(), onWait, env = p
 export function kitRegisterProject(name, root, env = process.env, during = () => {}) {
   const path = join(kitStateDir(env), "projects.json");
   mkdirSync(dirname(path), { recursive: true });
-  const lock = `${path}.lock`;
-  takeLock(lock);
+  const release = takeLock(`${path}.lock`);
   try {
     const projects = kitProjects(env), listed = projects[name]?.root;
     if (listed && listed !== root) throw new Error(`${path} already lists ${name} at ${listed}; give this project another "project" name in ${kitSettingsFile}`);
@@ -241,61 +269,20 @@ export function kitRegisterProject(name, root, env = process.env, during = () =>
       throw new Error(`cannot write ${path}: ${oneLine(error.message)}`);
     }
     return "added";
-  } finally { rmSync(lock, { recursive: true, force: true }); }
+  } finally { release(); }
 }
 
-function version(candidate) {
-  try {
-    if (!statSync(candidate).isFile()) return null;
-    accessSync(candidate, constants.X_OK);
-    const output = execFileSync(candidate, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).replace(/\n+$/, "");
-    return /^v([0-9]+)\.([0-9]+)\.([0-9]+)$/.exec(output)?.slice(1).map(Number) ?? null;
-  } catch { return null; }
-}
-
-function children(directory) {
-  try { return readdirSync(directory).filter((name) => !name.startsWith(".")).sort(); }
-  catch { return []; }
-}
-
-function absoluteNode(candidate) {
-  return join(realpathSync(dirname(candidate)), "node");
-}
-
-/** Find system Node >=24 first, then the highest installed npx/nvm version. */
-export function findNode({ path = process.env.PATH, searchRoot } = {}) {
-  for (const directory of (path ?? "").split(":")) {
-    const candidate = resolve(directory, "node");
-    try {
-      if (!statSync(candidate).isFile()) continue;
-      accessSync(candidate, constants.X_OK);
-    } catch { continue; }
-    const found = version(candidate);
-    if (found?.[0] >= 24) return absoluteNode(candidate);
-    break; // Only the first executable node is the system node on PATH.
-  }
-  const root = searchRoot ?? (process.env.CLAUDE_NODE_SEARCH_ROOT || process.env.HOME);
-  if (!root) return null;
-  const npm = join(root, ".npm/_npx");
-  const nvm = join(root, ".nvm/versions/node");
-  const candidates = [
-    ...children(npm).map((name) => join(npm, name, "node_modules/node/bin/node")),
-    ...children(nvm).map((name) => join(nvm, name, "bin/node")),
-  ];
-  let best = null;
-  let highest = [0, 0, 0];
-  for (const candidate of candidates) {
-    const found = version(candidate);
-    if (!found || found[0] < 24) continue;
-    const difference = found.map((part, index) => part - highest[index]).find((part) => part !== 0) ?? 0;
-    if (difference > 0) { best = candidate; highest = found; }
-  }
-  return best ? absoluteNode(best) : null;
-}
-
-/** Copy env with a supported Node first on PATH, or throw when unavailable. */
+/**
+ * Copy env with a supported Node first on PATH, or throw when unavailable. The Node is the one kit_node_find in
+ * kit-lib.sh picks for env's PATH and search folder (CLAUDE_NODE_SEARCH_ROOT, else HOME): system Node >=24 first, then
+ * the highest installed npx/nvm version. That rule has one copy, in the shell, as the front door must run it before
+ * there is a Node.
+ */
 export function nodeEnv(env = process.env) {
-  const node = findNode({ path: env.PATH ?? "", searchRoot: env.CLAUDE_NODE_SEARCH_ROOT || env.HOME || "" });
+  const root = env.CLAUDE_NODE_SEARCH_ROOT || env.HOME || "";
+  const found = spawnSync("bash", ["-c", 'source "$1" && PATH=$2 CLAUDE_NODE_SEARCH_ROOT=$3 HOME=$3 kit_node_find', "kit_node_find",
+    join(import.meta.dirname, "kit-lib.sh"), env.PATH ?? "", root], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const node = found.status === 0 ? found.stdout.replace(/\n$/, "") : "";
   if (!node) throw new Error(nodeError);
   const directory = dirname(node);
   const path = env.PATH ?? "";
@@ -863,7 +850,9 @@ const alive = pid => {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
 };
 
-// The lock folder names its owner; one whose owner died, or older than ten waits, is taken over.
+// The lock folder names its owner; one whose owner died, or with no owner named and older than ten waits, is
+// taken over. A live owner's lock is never taken over: past the wait it is one "is held" error. Returns the
+// release, which removes the lock only while it is still this one (same owner line), never a lock taken since.
 function takeLock(lock) {
   const wait = Number(process.env.ASE_SCORE_LOCK_MS || 5_000), bound = Number.isFinite(wait) && wait >= 0 ? wait : 5_000;
   const deadline = Date.now() + bound;
@@ -871,8 +860,13 @@ function takeLock(lock) {
     let made = false;
     try {
       mkdirSync(lock); made = true;
-      writeFileSync(join(lock, "owner"), `${process.pid} ${Date.now()}\n`);
-      return;
+      const mine = `${process.pid} ${Date.now()}\n`;
+      writeFileSync(join(lock, "owner"), mine);
+      return () => {
+        let owner = null;
+        try { owner = readFileSync(join(lock, "owner"), "utf8"); } catch { /* Gone: nothing to release. */ }
+        if (owner === mine) rmSync(lock, { recursive: true, force: true });
+      };
     } catch (error) {
       // An owner that cannot be written must not leave an ownerless lock behind.
       if (made) { rmSync(lock, { recursive: true, force: true }); throw error; }
@@ -881,8 +875,10 @@ function takeLock(lock) {
     let owner = null, seen;
     try { owner = readFileSync(join(lock, "owner"), "utf8"); } catch { /* Not written yet, or just released. */ }
     try { seen = statSync(lock); } catch { continue; }
-    const pid = Number(owner?.split(" ")[0]);
-    if ((owner !== null && Number.isSafeInteger(pid) && pid > 0 && !alive(pid)) || Date.now() - seen.mtimeMs > 10 * Math.max(bound, 1_000)) {
+    const pid = Number(owner?.split(" ")[0]), named = owner !== null && Number.isSafeInteger(pid) && pid > 0;
+    // A named owner's lock never ages out while its process lives: a slow writer keeps it. The cost: a crashed owner
+    // whose PID the system has since given to another live process holds it until someone removes it (the error says so).
+    if ((named && !alive(pid)) || (!named && Date.now() - seen.mtimeMs > 10 * Math.max(bound, 1_000))) {
       // Move the stale lock aside, then remove it only if it is the folder judged stale (same inode);
       // a fresh lock taken meanwhile is put back when its place is still free.
       const aside = `${lock}.stale.${process.pid}.${Date.now()}`;
@@ -914,8 +910,7 @@ export function kitScore({ ticket, branch, root = kitRoot() }, change) {
     const path = join(kitMainRoot(), ".scratch/scoreboard", scoreMap(file && relative(root, file), maps), `${name}.json`);
     mkdirSync(dirname(path), { recursive: true });
     // Another worktree (a lead's second-opinion review) may write the same record: lock read to rename.
-    const lock = `${path}.lock`;
-    takeLock(lock);
+    const release = takeLock(`${path}.lock`);
     try {
       let saved = {};
       try { saved = JSON.parse(readFileSync(path, "utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -931,7 +926,7 @@ export function kitScore({ ticket, branch, root = kitRoot() }, change) {
         writeFileSync(temporary, JSON.stringify(record, null, 2) + "\n");
         renameSync(temporary, path);
       } finally { rmSync(temporary, { force: true }); }
-    } finally { rmSync(lock, { recursive: true, force: true }); }
+    } finally { release(); }
   } catch (error) {
     if (!scoreFailed) console.error(`problem: scoreboard ${oneLine(error.message)}`);
     scoreFailed = true;

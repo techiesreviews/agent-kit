@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,13 +11,18 @@ import { talkStyleLine } from "../brief-lib.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { unitSummary } from "../unit-summary.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
-import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, inferCli, isoWeek, opencodeAdapter, opencodeCommands, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeReviewEnv, opencodeRunHelp, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, plainCode, refusedOutright, sessionObserver, releaseReviewBudget, reserveReviewBudget, reviewBase, reviewFamily, usageLimitProblem } from "../agent-run.mjs";
+import { agentInvocation, buildContract, claudeResult, codexModelMatches, grokOutOfCredit, grokResult, opencodeAdapter, opencodeCommands, opencodeErrorProblem, opencodeExport, opencodeExportTimeout, opencodeReviewEnv, opencodeRunHelp, opencodeOutOfCredit, opencodeResult, opencodeReviewAgent, opencodeStartTimeout, opencodeReviewConfig, opencodeUsageLimit, outOfCreditProblem, parseAgentArgs, plainCode, refusedOutright, sessionObserver, reviewBase, usageLimitProblem } from "../agent-run.mjs";
+// @ts-expect-error The agent helper is plain JavaScript without declarations.
+import { inferCli, reviewFamily } from "../model-names.mjs";
+// @ts-expect-error The agent helper is plain JavaScript without declarations.
+import { isoWeek, releaseReviewBudget, reserveReviewBudget } from "../review-budget.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { durationMilliseconds } from "../sol-run.mjs";
 // @ts-expect-error The agent helper is plain JavaScript without declarations.
 import { kitStateDir } from "../kit-lib.mjs";
 // The test environment (a temporary HOME, no lock settings from the shell): this file starts agent runs or kit doctor.
 import { insideKitPrLock } from "./support/kit-env.ts";
+import { loadLimit } from "./support/machine-load.ts";
 // The opt-in API route is read from the environment: these tests run with it off, whatever the shell exports.
 delete process.env.KIT_API_KEY_FILE; delete process.env.KIT_API_CONFIG_DIR;
 
@@ -724,9 +729,10 @@ test("a lock that cannot be removed after the ledger is saved is a warning, and 
   assert.ok(existsSync(`${path}.lock`));
 });
 
-test("the kit's state folder is XDG_STATE_HOME/agent-kit when absolute, else ~/.local/state/agent-kit, in Node and bash", () => {
+test("the kit's state folder is XDG_STATE_HOME/agent-kit when absolute, else ~/.local/state/agent-kit, with one copy of the rule in Node", () => {
+  // The shell asks kit-lib.mjs (kitQuietLock reads the quiet lock there) rather than keeping a second copy.
   const lib = resolve("kit-lib.sh");
-  const bash = (env: NodeJS.ProcessEnv) => spawnSync("bash", ["-c", `source "${lib}"; kit_state_dir`], { encoding: "utf8", env: { PATH: process.env.PATH, ...env } }).stdout.trim();
+  assert.notEqual(spawnSync("bash", ["-c", `source "${lib}"; declare -F kit_state_dir`], { encoding: "utf8" }).status, 0);
   for (const [env, expected] of [
     [{ HOME: "/home/x", XDG_STATE_HOME: "/var/state" }, "/var/state/agent-kit"],
     [{ HOME: "/home/x", XDG_STATE_HOME: "" }, "/home/x/.local/state/agent-kit"],
@@ -734,7 +740,6 @@ test("the kit's state folder is XDG_STATE_HOME/agent-kit when absolute, else ~/.
     [{ HOME: "/home/x" }, "/home/x/.local/state/agent-kit"],
   ] as [NodeJS.ProcessEnv, string][]) {
     assert.equal(kitStateDir(env), expected);
-    assert.equal(bash(env), expected);
   }
 });
 
@@ -1002,6 +1007,8 @@ process.exit(1);
   const fresh = review({ FAKE_OPENCODE_SILENT: "1" });
   assert.ok(fresh.result.stderr.split("\n").includes(problem), fresh.result.stderr);
   assert.equal(status(fresh.out).silent, true);
+  // The runner names its own outcome: the model never answered, so the review is given back.
+  assert.deepEqual(status(fresh.out).outcome, { kind: "unavailable", why: "opencode unavailable: no session within 0.5s", spent: false, outOfCredit: false });
   // A resumed run's call follows one that opened a session, so it is not marked, though the problem is still printed.
   const opened = review();
   assert.equal(status(opened.out).session, "ses_fake");
@@ -1009,6 +1016,48 @@ process.exit(1);
   assert.equal(resumed.status, 1, resumed.stderr);
   assert.ok(resumed.stderr.split("\n").includes(problem), resumed.stderr);
   assert.equal("silent" in status(opened.out), false);
+});
+
+test("a review whose CLI is missing records the missing command and an unavailable outcome in status.json", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-agent-missing-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const wt = join(dir, "work tree"), nodeBin = join(dir, "node-bin"), brief = join(dir, "brief.md");
+  mkdirSync(wt); mkdirSync(nodeBin);
+  reviewRepository(wt);
+  writeFileSync(brief, "tiny brief\n");
+  // Only node joins the system folders, so no grok is found.
+  symlinkSync(process.execPath, join(nodeBin, "node"));
+  const result = spawnSync("bash", [resolve("agent.sh"), "review", wt, brief, "--base", "origin/dev", "--model", "grok-4.7"], {
+    encoding: "utf8", timeout: 15_000, env: { ...process.env, PATH: `${nodeBin}:/usr/bin:/bin`, ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s" },
+  });
+  assert.equal(result.status, 1, result.stderr);
+  // The runner's own lines are as before: the spawn error, then the CLI's failure last.
+  assert.match(result.stderr, /^problem: spawn grok ENOENT$/m);
+  assert.match(result.stderr.trimEnd().split("\n").at(-1)!, /^problem: grok failed \(1\); see /);
+  const out = /^artifacts: (.+)$/m.exec(result.stdout)?.[1];
+  assert.ok(out, result.stdout);
+  const status = JSON.parse(readFileSync(join(out, "status.json"), "utf8"));
+  assert.equal(status.missing, "grok");
+  assert.deepEqual(status.outcome, { kind: "unavailable", why: "CLI missing: grok not found (ENOENT)", spent: false, outOfCredit: false });
+});
+
+test("a run that crashes before its CLI starts records a failed outcome whose reason is its problem line", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ase-agent-crash-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const wt = join(dir, "not a repo"), brief = join(dir, "brief.md");
+  mkdirSync(wt);
+  writeFileSync(brief, "tiny brief\n");
+  const result = spawnSync("bash", [resolve("agent.sh"), "review", wt, brief, "--base", "origin/dev", "--model", "claude-opus-5-5"], {
+    encoding: "utf8", timeout: 15_000, env: { ...process.env, ASE_AGENT_CLI: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s" },
+  });
+  assert.equal(result.status, 2, result.stderr);
+  const out = /^artifacts: (.+)$/m.exec(result.stdout)?.[1];
+  assert.ok(out, result.stdout);
+  // The failed git call's message spans several lines; kit review reads only the problem line, so the outcome matches it.
+  const problem = result.stderr.split("\n").filter(line => line.startsWith("problem: ")).at(-1)!.slice("problem: ".length);
+  const status = JSON.parse(readFileSync(join(out, "status.json"), "utf8"));
+  assert.deepEqual(status.outcome, { kind: "failed", why: problem, spent: false, outOfCredit: false });
+  assert.match(problem, /^Command failed: .*git /);
 });
 
 test("both adapters run through the shared shell entry and compatibility wrappers using fake CLIs", (t) => {
@@ -1040,7 +1089,8 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
   // A local package type makes these extensionless fixtures ESM under Node 24.
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   for (const cli of ["codex", "claude"]) { writeFileSync(join(bin, cli), fake); chmodSync(join(bin, cli), 0o755); }
-  const capture = join(dir, "capture.json");
+  const capture = join(wt, ".scratch/capture.json");
+  mkdirSync(join(wt, ".scratch"), { recursive: true });
   const invoke = (script: string, args: string[], overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", [resolve(script), ...args], {
     encoding: "utf8", timeout: 15_000,
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: sourceHome, ASE_FAKE_CAPTURE: capture, ASE_AGENT_CLI: "", ASE_BUILD_MODEL: "", ASE_REVIEW_MODEL: "", ASE_AGENT_TIMEOUT: "10s", KIT_TALK_STYLE: "plain", ...overrides },
@@ -1089,11 +1139,13 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
   assert.ok(defaultOut);
   assert.match(readFileSync(join(defaultOut, "run.log"), "utf8"), /claude-opus-5-5/);
   assert.equal(invoke("sol.sh", [wt, brief, "high"], { ASE_BUILD_MODEL: "claude-opus-5-5" }).status, 0);
-  const reviewDir = join(dir, "review");
-  assert.equal(invoke("review.sh", [wt, brief, reviewDir, "--base", "origin/dev"], { ASE_REVIEW_MODEL: "claude-haiku-5-5" }).status, 0);
-  assert.match(readFileSync(join(reviewDir, "result.md"), "utf8"), /REVIEW_STATUS: complete/);
-  assert.match(readFileSync(join(reviewDir, "run.log"), "utf8"), /claude-haiku-5-5/);
-  const empty = invoke("review.sh", [wt, brief, reviewDir, "--base", "HEAD"]);
+  const reviewed = invoke("agent.sh", ["review", wt, brief, "--base", "origin/dev"], { ASE_REVIEW_MODEL: "claude-haiku-5-5" });
+  assert.equal(reviewed.status, 0, reviewed.stderr);
+  const reviewOut = /^artifacts: (.+)$/m.exec(reviewed.stdout)?.[1];
+  assert.ok(reviewOut);
+  assert.match(readFileSync(join(reviewOut, "out.md"), "utf8"), /REVIEW_STATUS: complete/);
+  assert.match(readFileSync(join(reviewOut, "run.log"), "utf8"), /claude-haiku-5-5/);
+  const empty = invoke("agent.sh", ["review", wt, brief, "--base", "HEAD"]);
   assert.equal(empty.status, 1);
   assert.match(empty.stderr, /empty diff for/);
   writeFileSync(brief, "Scope: git diff HEAD...HEAD\n");
@@ -1104,7 +1156,7 @@ process.exitCode = Number(process.env.ASE_FAKE_EXIT || 0);
   assert.equal(readFileSync(join(scopedOut, "diff.patch"), "utf8"), "");
   assert.equal(readFileSync(join(scopedOut, "commits.log"), "utf8"), "");
   writeFileSync(brief, "tiny brief\n");
-  const incomplete = invoke("review.sh", [wt, brief, reviewDir, "--base", "origin/dev"], { ASE_FAKE_REPORT: "incomplete" });
+  const incomplete = invoke("agent.sh", ["review", wt, brief, "--base", "origin/dev"], { ASE_FAKE_REPORT: "incomplete" });
   assert.equal(incomplete.status, 1);
   assert.match(incomplete.stderr, /lacks REVIEW_STATUS/);
   for (const model of ["gpt-5.5", "claude-haiku-5-5"]) {
@@ -1156,9 +1208,9 @@ if (name === "first") {
 `;
   writeFileSync(join(bin, "codex"), fake); chmodSync(join(bin, "codex"), 0o755);
   function invoke(name: string) {
-    const brief = join(dir, `${name}.md`), output = join(dir, name);
+    const brief = join(dir, `${name}.md`);
     writeFileSync(brief, `${name}\n`);
-    const child = spawn("bash", [resolve("review.sh"), wt, brief, output, "--base", "origin/dev"], {
+    const child = spawn("bash", [resolve("agent.sh"), "review", wt, brief, "--base", "origin/dev"], {
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASE_REVIEW_BARRIER: dir, CODEX_HOME: sourceHome,
         ASE_AGENT_CLI: "codex", ASE_REVIEW_MODEL: "gpt-5.5", ASE_AGENT_TIMEOUT: "10s" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -1189,10 +1241,10 @@ if (name === "first") {
   const secondArtifacts = /^artifacts: (.+)$/m.exec(second.stdout)?.[1];
   assert.ok(firstArtifacts); assert.ok(secondArtifacts);
   assert.notEqual(firstArtifacts, secondArtifacts);
-  for (const name of ["first", "second"]) {
-    assert.match(readFileSync(join(dir, name, "result.md"), "utf8"), new RegExp(`${name} report|report.*${name}`));
-    assert.match(readFileSync(join(dir, name, "run.log"), "utf8"), new RegExp(`invocation: ${name}`));
-    assert.doesNotMatch(readFileSync(join(dir, name, "run.log"), "utf8"), new RegExp(`invocation: ${name === "first" ? "second" : "first"}`));
+  for (const [name, artifacts] of [["first", firstArtifacts], ["second", secondArtifacts]]) {
+    assert.match(readFileSync(join(artifacts, "out.md"), "utf8"), new RegExp(`${name} report|report.*${name}`));
+    assert.match(readFileSync(join(artifacts, "run.log"), "utf8"), new RegExp(`invocation: ${name}`));
+    assert.doesNotMatch(readFileSync(join(artifacts, "run.log"), "utf8"), new RegExp(`invocation: ${name === "first" ? "second" : "first"}`));
   }
 });
 
@@ -1235,10 +1287,12 @@ test("slice brief resolves fixture ticket links and states both axes and validat
   assert.ok(reviewBrief(path, "", "HEAD^", wt).includes(git("rev-parse", "HEAD^").trim()));
   assert.throws(() => reviewBrief(path, "", "dev; rm -rf /", wt), /cannot resolve commit ref/);
   assert.throws(() => reviewBrief(path, "", "--output=x", wt), /cannot resolve commit ref/);
-  const result = spawnSync("bash", [resolve("review-brief.sh"), resolve(path)], { encoding: "utf8", cwd: wt });
+  const result = spawnSync(process.execPath, [resolve("review-brief.mjs"), resolve(path)], { encoding: "utf8", cwd: wt });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, reviewBrief(resolve(path), readFileSync(path, "utf8"), "origin/dev", wt));
-  assert.equal(spawnSync("bash", ["review-brief.sh"], { encoding: "utf8" }).status, 2);
+  assert.equal(spawnSync(process.execPath, [resolve("review-brief.mjs")], { encoding: "utf8" }).status, 2);
+  // The cut command's shell wrappers are gone (TOOLS-293): nothing calls review.sh or review-brief.sh.
+  for (const name of ["review.sh", "review-brief.sh"]) assert.equal(existsSync(resolve(name)), false, name);
 });
 
 test("unit summary prints counts and bounded error lines for each failure", () => {
@@ -1439,12 +1493,19 @@ test("supervise with reap stops the group a finished command left behind, even o
     for (const mode of ["leaves", "holds"]) {
       const pidFile = join(scratch, `${mode}.json`);
       try {
-        const reaped = spawnSync(process.execPath, ["--input-type=module", "-e", reapHarness, pidFile, mode, "yes"], { encoding: "utf8", timeout: 20_000 });
+        // Both limits grow with the load per core (at most four times): 40 s still sits well under the 60 s limit a
+        // supervise that waited for the pipes would end at.
+        const quick = loadLimit(10_000);
+        const reaped = spawnSync(process.execPath, ["--input-type=module", "-e", reapHarness, pidFile, mode, "yes"], { encoding: "utf8", timeout: quick.ms + 10_000 });
         assert.equal(reaped.status, 0, `${mode}: ${reaped.stderr}`);
         const said = JSON.parse(reaped.stdout.trim());
         assert.equal(said.status, 0, mode);
-        assert.ok(said.seconds < 10, `${mode}: supervise waited ${said.seconds}s for the pipes`);
-        assert.ok(descendantsGone(pidFile), `${mode}: something the command left is still running`);
+        assert.ok(said.seconds * 1000 < quick.ms, `${mode}: supervise waited ${said.seconds}s for the pipes; ${quick.note}`);
+        // A killed process ends once it gets a core again, which on a busy machine is a moment after the kill. What the
+        // command left never ends by itself (the run without reap below shows it), so a short wait keeps the check.
+        const settle = loadLimit(1000);
+        for (const end = Date.now() + settle.ms; !descendantsGone(pidFile) && Date.now() < end;) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+        assert.ok(descendantsGone(pidFile), `${mode}: something the command left is still running; ${settle.note}`);
       } finally {
         try { process.kill(-JSON.parse(readFileSync(pidFile, "utf8"))[0], "SIGKILL"); } catch { /* Gone already. */ }
       }
@@ -1493,7 +1554,8 @@ console.log(JSON.stringify({ result: "REVIEW_STATUS: complete\\nDefects: none\\n
   writeFileSync(join(bin, "package.json"), '{"type":"module"}');
   writeFileSync(join(bin, "claude"), `#!/usr/bin/env node\n${fake}`); chmodSync(join(bin, "claude"), 0o755);
   const run = (kind: string) => {
-    const pidFile = join(dir, `${kind}-pids.json`);
+    const pidFile = join(wt, ".scratch", `${kind}-pids.json`);
+    mkdirSync(join(wt, ".scratch"), { recursive: true });
     pidFiles.push(pidFile);
     const result = spawnSync("bash", [resolve("agent.sh"), kind, wt, brief, "--model", "claude-haiku-5-5", ...(kind === "review" ? ["--base", "origin/dev"] : [])], {
       encoding: "utf8", timeout: 20_000,

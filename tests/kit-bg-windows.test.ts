@@ -12,6 +12,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import { kitJob, kitJobExit, kitJobPlatform, kitJobSame, kitJobTree, kitWinBash, kitWinLaunch, kitWinProcessList } from "../kit-lib.mjs";
 import { kitEnv } from "./support/kit-env.ts";
+import { loadLimit } from "./support/machine-load.ts";
 
 const kit = resolve("kit");
 
@@ -25,6 +26,21 @@ const only = /-Filter 'ProcessId=(\\d+)'/.exec(script)?.[1];
 // A job's command (not kit bg's own processes) whose command line holds this marker cannot be looked up on its own.
 try { const line = only ? fs.readFileSync("/proc/" + only + "/cmdline", "utf8") : "";
   if (line.includes("fail-pin-marker") && !line.includes("--wrapper") && !line.includes("--command")) { console.error("Get-CimInstance : Access denied."); process.exit(1); } } catch {}
+// On request the job ends during kit go's second and last look (with KIT_GO_WAIT_MS=1), which go took after reading
+// the job's log before TOOLS-373: this list releases the job, then waits until its exit record is written and its
+// wrapper has ended.
+const job = process.env.FAKE_LAST_LOOK_JOB;
+if (job && !only && fs.readFileSync("/proc/" + process.ppid + "/cmdline", "utf8").split("\\0").some(word => word.endsWith("/kit.d/go"))) {
+  const count = process.env.FAKE_WIN_LOG + ".looks-" + process.ppid;
+  const looks = (fs.existsSync(count) ? Number(fs.readFileSync(count, "utf8")) : 0) + 1;
+  fs.writeFileSync(count, String(looks));
+  const gone = pid => { try { const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8"); return ["Z", "X"].includes(stat.slice(stat.lastIndexOf(")") + 2)[0]); } catch { return true; } };
+  if (looks === 2) {
+    fs.writeFileSync(process.env.FAKE_LAST_LOOK_RELEASE, "");
+    const wrapper = fs.readFileSync(job + "/pid", "utf8").trim();
+    for (const end = Date.now() + 20000; Date.now() < end && !(fs.existsSync(job + "/exit") && gone(wrapper));) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+}
 const lines = [];
 for (const pid of only ? [only] : fs.readdirSync("/proc").filter(name => /^\\d+$/.test(name))) {
   try {
@@ -340,15 +356,34 @@ test("go on Windows says RUNNING while the job runs, then ends with its RESULT l
 test("go on Windows: --max is a timer in the job's wrapper that ends its tree and names the time limit", async t => {
   const f = fixture(t);
   const never = join(f.root, "never");
-  const started = f.go("win-max", "--max", "1", "--", process.execPath, "-e", holdUntil(never));
-  assert.equal(started.status, 75, started.stdout + started.stderr);
+  // 1 s on a quiet machine; on a busy one starting the job takes longer than that, so the limit grows with the load
+  // per core (at most 4 s), and the job still runs when the first call ends.
+  const limit = loadLimit(1000);
+  const max = Math.ceil(limit.ms / 1000);
+  const started = f.go("win-max", "--max", String(max), "--", process.execPath, "-e", holdUntil(never));
+  assert.equal(started.status, 75, `${started.stdout}${started.stderr}${limit.note}`);
   let done = f.go("win-max");
   for (let i = 0; i < 40 && done.status === 75; i++) done = f.go("win-max");
   assert.equal(done.status, 143, done.stdout);
-  assert.match(last(done), /^RESULT: fail go win-max exit 143: the time limit \(1s\) ended this job; see /);
+  assert.match(last(done), new RegExp(`^RESULT: fail go win-max exit 143: the time limit \\(${max}s\\) ended this job; see `));
   assert.equal(readFileSync(join(f.directory("win-max"), "exit"), "utf8").trim(), "143");
   assert.match(f.log(), /^taskkill \/PID \d+ \/T \/F$/m);
   assert.deepEqual(linuxTools(f.log()), []);
+});
+
+// A job that ends between go's read of its log and its last look must not lose the lines it wrote last (its RESULT
+// line, the time limit's line): on a busy machine that look is slow, and "--max is a timer…" above failed that way.
+test("go reads the job's log after its last look, so a job that ends during that look keeps its last lines", async t => {
+  const f = fixture(t);
+  const release = join(f.root, "release");
+  const started = f.go("win-last", "--", process.execPath, "-e", holdUntil(release));
+  assert.equal(started.status, 75, started.stdout + started.stderr);
+  Object.assign(f.env, { KIT_GO_WAIT_MS: "1", FAKE_LAST_LOOK_JOB: f.directory("win-last"), FAKE_LAST_LOOK_RELEASE: release });
+  const done = f.go("win-last");
+  assert.equal(done.status, 4, done.stdout + done.stderr);
+  assert.ok(existsSync(release), "the job was released during go's last look");
+  assert.equal(last(done), "RESULT: fail go win-last exit 4 after its RESULT line said ok; see " + join(f.directory("win-last"), "log"));
+  assert.match(done.stdout, /^job: RESULT: ok held job done$/m);
 });
 
 test("a Windows job ends on its own although each of its node processes has a console host child", async t => {

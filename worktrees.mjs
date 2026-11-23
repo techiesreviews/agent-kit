@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { kitBranch, kitDevRoot, kitSettings } from "./kit-lib.mjs";
+import { removeFenceSessions } from "./key-guard.mjs";
 
 const exec = promisify(execFile);
 const day = 86400000;
@@ -40,7 +41,7 @@ export function pathInside(path, root) {
   return path === root || path.startsWith(`${root}/`);
 }
 
-export async function pruneWorktree(info, olderThan, { inspect, status, scan, remove }) {
+export async function pruneWorktree(info, olderThan, { inspect, status, scan, remove, env = process.env }) {
   const fresh = await inspect();
   // The inspection awaits Git commands. Recheck status, then synchronously scan
   // cwd with no further asynchronous checks before starting removal.
@@ -52,6 +53,7 @@ export async function pruneWorktree(info, olderThan, { inspect, status, scan, re
   if (fresh.head !== info.head) return "HEAD changed";
   if (reason !== "eligible") return reason;
   await remove();
+  removeFenceSessions(path, env);
   return "removed";
 }
 

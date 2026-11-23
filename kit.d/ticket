@@ -4,9 +4,10 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { kitOwner, kitResult, kitRoot, kitSettings } from "../kit-lib.mjs";
-import { OrbitError, OrbitSetupProblem, orbitCardRedactor, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "../orbit-client.mjs";
+import { OrbitError, OrbitSetupProblem, orbitCardRedactor, orbitRedactor } from "../orbit-client.mjs";
 import { orbitSetup } from "../orbit-setup.mjs";
-import { orbitStore, readTidyFolder, showDate, showRepeat, ticketSettings } from "../ticket-store.mjs";
+import { openOrbitTickets } from "../ticket-cards.mjs";
+import { readTidyFolder, showDate, showRepeat, ticketSettings } from "../ticket-store.mjs";
 import { importTickets, migrateTickets, ticketParity } from "../ticket-import.mjs";
 
 const usage = `Usage: kit ticket <command> [options]
@@ -274,12 +275,10 @@ async function main() {
   const sameBoard = String(project ?? "").toLowerCase() === String(own.project ?? "").toLowerCase();
   const parent = name === "migrate" && flags.parent !== undefined ? flags.parent : sameBoard ? own.parent : null;
 
-  const config = readOrbitConfig();
-  redact = orbitRedactor(orbitSecrets(config));
-  redactCard = orbitCardRedactor(orbitSecrets(config));
   const dryRun = Boolean(flags["dry-run"]);
-  const store = orbitStore({ client: orbitClient(config), role: process.env.ORBIT_ROLE, who: kitOwner(), logPath: orbitLogPath(), redact, secrets: orbitSecrets(config), dryRun,
-    defaults: { project, parent, problem: settingsProblem } });
+  const opened = openOrbitTickets({ settings, who: kitOwner(), dryRun, project, parent, problem: settingsProblem });
+  ({ redact, redactCard } = opened);
+  const { store } = opened;
 
   switch (name) {
     case "get": return show(store, key, flags);

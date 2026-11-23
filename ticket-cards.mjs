@@ -1,10 +1,11 @@
-// Tickets as Orbit cards for kit brief, pr and init --issues, when scripts/agents/kit.json says "tickets": "orbit".
+// Tickets as Orbit cards for kit brief, pr and init --issues, when scripts/agents/kit.json says "tickets": "orbit": the
+// Orbit adapter of the ticket seam (ticket.mjs), and the one place the Orbit store is opened (openOrbitTickets).
 // kit pr copies a card into a brief shaped like a ticket file (title, the card's text), so its review reads it as it
 // reads a ticket; only the lead's own kit commands write the board (ORBIT_ROLE=lead), and the agents they start never do.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { OrbitError, OrbitSetupProblem, orbitCardKey, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "./orbit-client.mjs";
-import { orbitStore, ticketSettings } from "./ticket-store.mjs";
+import { OrbitError, OrbitSetupProblem, orbitCardKey, orbitCardRedactor, orbitClient, orbitLogPath, orbitRedactor, orbitSecrets, readOrbitConfig } from "./orbit-client.mjs";
+import { cardFree, orbitStore, ticketSettings } from "./ticket-store.mjs";
 import { kitSliceBranch } from "./kit-lib.mjs";
 import { fencedLines } from "./tickets.mjs";
 
@@ -20,12 +21,17 @@ export function cardNaming(card) {
 /** True when the project keeps its tickets on Orbit. */
 export const onOrbit = settings => ticketSettings(settings).backend === "orbit";
 
-/** The project's Orbit store from the saved setup; throws OrbitSetupProblem when Orbit is not set up on this computer. */
-export function openOrbitTickets({ settings, who, role = process.env.ORBIT_ROLE, env = process.env }) {
+/**
+ * The project's Orbit store from the saved setup, the one place it is built (kit ticket, brief, pr and init all open it
+ * here); throws OrbitSetupProblem when Orbit is not set up on this computer. `project` and `parent` replace kit.json's
+ * board and parent card when given; `problem` names a settings problem the store says when it needs the board.
+ */
+export function openOrbitTickets({ settings, who, env = process.env, role = env.ORBIT_ROLE, dryRun = false, project, parent, problem }) {
   const config = readOrbitConfig(env), secrets = orbitSecrets(config), redact = orbitRedactor(secrets);
-  const { project, parent } = ticketSettings(settings);
-  const store = orbitStore({ client: orbitClient(config), role, who, logPath: orbitLogPath(env), redact, secrets, defaults: { project, parent } });
-  return { store, redact, secrets, project, parent };
+  const own = ticketSettings(settings);
+  const board = { project: project === undefined ? own.project : project, parent: parent === undefined ? own.parent : parent };
+  const store = orbitStore({ client: orbitClient(config), role, who, logPath: orbitLogPath(env), redact, secrets, dryRun, defaults: { ...board, problem } });
+  return { store, redact, redactCard: orbitCardRedactor(secrets), secrets, ...board };
 }
 
 /** True for a failure of Orbit or of its setup, whose words orbitProblem gives; any other error keeps its own message. */
@@ -112,10 +118,10 @@ export function ticketCardKey(root, ticket) {
  * .scratch/kit-tickets), the saved one when it is. It claims nothing: a lead's `kit brief <KEY>` claims the card
  * (kit slice, which also claimed here, was cut in TOOLS-235).
  */
-export async function cardBriefFor({ root, key, settings, who, folder }) {
+export async function cardBriefFor({ root, key, settings, who, folder, env }) {
   const path = folder ? join(folder, `${orbitCardKey(key)}.md`) : cardBriefPath(root, key);
   if (existsSync(path)) return { path, arg: cardBriefArg(key), key: orbitCardKey(key), resumed: true };
-  const { store } = openOrbitTickets({ settings, who });
+  const { store } = openOrbitTickets({ settings, who, env });
   const task = await store.read(key);
   mkdirSync(folder ?? join(root, ".scratch/kit-tickets"), { recursive: true });
   writeFileSync(path, cardBrief(task));
@@ -133,10 +139,10 @@ export function briefFollowups(text) {
  * one comment, added once (a rerun adds only what is missing, never the follow-ups twice). The merge already happened, so a failure is
  * returned as words for the caller to show, with the command that closes the card by hand.
  */
-export async function closeLandedCard({ settings, key, pr, sha, followups = [], who }) {
+export async function closeLandedCard({ settings, key, pr, sha, followups = [], who, env }) {
   let redact;
   try {
-    const opened = openOrbitTickets({ settings, who });
+    const opened = openOrbitTickets({ settings, who, env });
     redact = opened.redact;
     const landing = `Landed in ${pr} (${sha ? `merge commit ${sha}` : "GitHub named no merge commit"})`;
     const lines = [...new Set(followups)];
@@ -147,5 +153,109 @@ export async function closeLandedCard({ settings, key, pr, sha, followups = [], 
   } catch (error) {
     const why = orbitProblem(error, redact);
     return { closed: false, line: `card: ${key} not closed: ${why}; close it with kit ticket update ${key} --status Done`, suffix: `; card ${key} not closed: ${why}` };
+  }
+}
+
+/**
+ * A PR a merge queue took leaves its card open: its follow-ups go on the card now as one comment, since no later step reads
+ * the brief. When Orbit refuses them they are saved in `folder` and `comment` posts that file on the PR. The line names who
+ * closes the card and where the follow-ups are.
+ */
+export async function queuedCardFollowups({ settings, key, pr, number, followups = [], who, env, folder, comment }) {
+  const lines = [...new Set(followups)];
+  let where = "";
+  if (lines.length) {
+    let redact;
+    try {
+      const opened = openOrbitTickets({ settings, who, env });
+      redact = opened.redact;
+      await opened.store.comment(key, `Follow-ups from ${pr}:\n${lines.join("\n")}`);
+    } catch (error) {
+      // The brief's UX follow-ups are in no PR comment yet, so all of them go there now, and the line names where they are.
+      const problem = orbitProblem(error, redact), file = join(folder, "card-followups.md");
+      writeFileSync(file, `Follow-ups for card ${key} (Orbit did not take them):\n${lines.join("\n")}\n`);
+      try { await comment(file); where = ` (its follow-ups were not added: ${problem}; they are in a PR comment)`; }
+      catch { where = ` (its follow-ups were not added: ${problem}; they are only in ${file})`; }
+    }
+  }
+  return { line: `card: ${key} stays open: nothing here waits for the queue; run kit ticket update ${key} --status Done once #${number} lands${where}`,
+    words: `; card ${key} stays open: close it once #${number} lands` };
+}
+
+/**
+ * Free to claim: a card up for building (stage "ready": Todo, or every unstarted status on a board with no Todo; and
+ * In Progress given back after Lex) and Backlog. A claim narrower than that would let a second helper start on the card. Any other status a board with Todo keeps (Ideas, say) is not the brief's to move.
+ * Asked of the card as the brief first reads it, and again by the claim of the card as it is right before its write.
+ */
+const cardOpen = task => task.stage === "ready" || String(task.status_name ?? "").trim().toLowerCase() === "backlog" || cardFree(task);
+/** Why a card that is not free is left as it is, for the owner the brief is written for; "" for the owner's own card. */
+function whyLeft(task, owner) {
+  if (task.stage === "done") return `it is already ${task.status_name}, so there is nothing to build`;
+  if (task.claimed_by && task.claimed_by === oneLine(owner)) return "";
+  const why = task.claimed_by ? `${task.claimed_by} holds it (${task.status_name})`
+    : task.next_lex !== null ? `it waits for Lex (Next step (Lex): ${task.next_lex})`
+    : task.assignee_ids?.length ? `someone is assigned to it (${task.status_name})` : `it is in ${task.status_name}`;
+  return `${why}; make sure no second builder starts on it`;
+}
+
+/** A card as the ticket text kit brief reads (title, builder, assignee, Files), and the card itself for the brief. */
+export async function readCard({ settings, key, who, env }) {
+  let redact;
+  try {
+    const opened = openOrbitTickets({ settings, who, env });
+    redact = opened.redact;
+    const task = await opened.store.read(key);
+    const comments = await opened.store.comments(task.identifier);
+    const line = name => new RegExp(`^${name}:[ \\t]*(.*?)\\s*$`, "m").exec(task.description ?? "")?.[1] ?? "";
+    const owner = task.claimed_by || line("Assignee");
+    const text = `---\ntitle: ${JSON.stringify(oneLine(task.title))}\norbit: ${task.identifier}\nbuilder: ${oneLine(line("Builder"))}\nassignee: ${oneLine(owner)}\n---\n\n${String(task.description ?? "").replace(/\r\n?/g, "\n")}\n`;
+    return { key: task.identifier, free: cardOpen(task), left: owner => whyLeft(task, owner), text, card: { title: oneLine(task.title), url: task.url, description: task.description,
+      comments: comments.map(note => ({ who: note.author_service_account?.name ?? note.author_id ?? "someone", when: note.created_at, body: note.body })) } };
+  } catch (error) {
+    if (isOrbitFailure(error)) throw new Error(`card ${key} could not be read: ${orbitProblem(error, redact)}`);
+    throw error;
+  }
+}
+
+/**
+ * A build brief takes a card nobody holds (Todo, Backlog, or In Progress given back after Lex): In Progress and
+ * "Claimed by: <owner>" in one write, so no second helper starts on the same card. A Todo or Backlog card waiting for Lex or still blocked is refused (next-lex moves a card
+ * it marks to In Progress, which the brief leaves alone). Only a lead writes to Orbit; anyone else is warned.
+ * A card that stopped being free after the brief read it is not claimed: the claim asks again right before its write.
+ * Returns what gives a new claim back (the status the card had, no "Claimed by" line), for a step after it that fails.
+ */
+export async function claimCard({ settings, key, owner, who, env = process.env }) {
+  const none = async () => "";
+  if (env.ORBIT_ROLE !== "lead") {
+    console.error(`warning: ${key} is not claimed (only a lead writes to Orbit: ORBIT_ROLE=lead); until it is, another helper may start it too`);
+    return none;
+  }
+  let redact;
+  try {
+    const opened = openOrbitTickets({ settings, who, env });
+    redact = opened.redact;
+    // The brief's first read may be old by now: the claim puts the same test to the card as it is right before its write,
+    // so a card moved in between (Todo to Ideas, say) keeps its place and the brief says why it holds no claim.
+    const claim = await opened.store.claim(key, owner, { free: cardOpen });
+    const why = claim.left ? whyLeft(claim.left, owner) : "";
+    if (why) console.error(`warning: ${key} changed while its brief was written and is left as it is, not claimed for ${owner}: ${why}`);
+    if (claim.unchanged) return none;
+    console.error(`claimed ${key} for ${owner}: In Progress with "Claimed by: ${owner}"`);
+    // Named now, while Orbit answers: what the card needs by hand if giving the claim back fails later.
+    const before = await opened.store.statusName({ project_id: claim.task.project_id, status_id: claim.previous });
+    const undo = `take that line off the card${before.trim().toLowerCase() === "in progress" ? "" : ` and set its status back to ${before}`}`;
+    return async () => {
+      try { await opened.store.unclaim(key, owner, claim.previous); return "; the claim was given back"; }
+      catch (error) { return `; giving the claim back failed (${isOrbitFailure(error) ? orbitProblem(error, redact) : error.message}): ${key} is still In Progress with "Claimed by: ${owner}", so ${undo}`; }
+    };
+  } catch (error) {
+    if (error?.taken) throw new Error(error.message);
+    if (!isOrbitFailure(error)) throw error;
+    // Only the claim's own write left with no answer (a dropped connection, a timeout, a gateway's error page) can be saved
+    // with its reply lost: running the brief again settles it (a card that now shows the claim is In Progress, so its brief
+    // is written without a second claim). A refused write (a stale version, a token that may not change the card) and a
+    // failed read saved nothing, and their own message says what to do.
+    const unknown = error.write && error.noAnswer;
+    throw new Error(`card ${key} could not be claimed: ${orbitProblem(error, redact)}${unknown ? `; it may be claimed anyway, so run kit brief again: a card that shows "Claimed by: ${owner}" then gets its brief` : ""}`);
   }
 }

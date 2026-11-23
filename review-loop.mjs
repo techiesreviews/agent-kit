@@ -1,11 +1,12 @@
 // The review loop (Lex, 2026-11-06; after Theo's sol-loop): the budget as a function of risk, the early stop on nits,
 // finding ids and the ledger, and the PR line. The rule text is the "Review loop" section of docs/kitchen.md.
-// The pure parts live here so kit review and kit pr never read the rules differently.
+// The pure parts live here so kit review and kit pr never read the rules differently; the saved review records
+// (.scratch/reviews) are read and written in review-records.mjs.
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { doneHeading } from "./pr-tier.mjs";
-import { blockingFindings, openFindings, parseMarks } from "./review-findings.mjs";
+import { blockingFindings, parseMarks } from "./review-findings.mjs";
 export { parseMarks };
 
 /** Rounds of fixing a normal change gets, and the most a risky change gets while a blocker or should stays open. */
@@ -127,34 +128,6 @@ export function earlierReleaseCut(root, commit, head, { base, git } = {}) {
 /** Whether `commit` is in `head`'s history (or is `head`), counting an earlier cut of the same release (see earlierReleaseCut) as part of it. */
 export const inHistory = (root, commit, head, base) => isAncestorOf(root, commit, head) || earlierReleaseCut(root, commit, head, { base });
 
-/**
- * The branch's earlier second looks that came back, under any owner in `reviewsRoot`: each one marked for `branch` whose
- * reviewed head is an ancestor of `head` (or an earlier cut of the same release, given `base`) and not `head` itself. kit pr passes the head Claude's review saw, which a review
- * reused after a rebase with the same patch keeps, so the count survives that rebase until the next commit (then, like Claude's
- * rounds, it starts again); a rebase that changes the patch, or one in the docs tier (no Claude review), starts it again at once.
- * Returns [{ head, findings }] with the findings its result.md left open; a result.md kit cannot read counts no round.
- */
-export function earlierSecondLooks(reviewsRoot, { branch, head, root, base }) {
-  if (!branch || !head || !existsSync(reviewsRoot)) return [];
-  const looks = [];
-  for (const owner of readdirSync(reviewsRoot, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
-    for (const entry of readdirSync(join(reviewsRoot, owner.name), { withFileTypes: true }).filter(item => item.isDirectory())) {
-      const folder = join(reviewsRoot, owner.name, entry.name);
-      try {
-        const mark = JSON.parse(readFileSync(join(folder, "second-look.json"), "utf8"));
-        if (mark?.ok !== true || mark.branch !== branch) continue;
-        const looked = readFileSync(join(folder, "refs.txt"), "utf8").split(/\r?\n/)[0].trim();
-        if (!/^[0-9a-f]{7,64}$/.test(looked) || looked === head) continue;
-        if (!inHistory(root, looked, head, base)) continue;
-        // A report kit cannot read stands for a blocker when it is weighed, but it is no review that asked for a fix.
-        const report = openFindings(readFileSync(join(folder, "result.md"), "utf8"));
-        if (report.readable) looks.push({ head: looked, findings: report.findings });
-      } catch { /* Not a second look of this branch's history, or unreadable: it counts no round. */ }
-    }
-  }
-  return looks;
-}
-
 /** blocker (P0, P1), should (P2) or nit (P3, a validation gap); an unread severity counts as a blocker, never as a nit. */
 export function severityWord(item) {
   if (item.group === "Validation gaps") return "nit";
@@ -200,14 +173,14 @@ export const unmarkedIds = (ids, marks) => ids.filter(id => !marks.has(id));
  * The brief section for round 2 and later (later rounds): review only what changed since the last reviewed head and the open ids,
  * and mark each old id. `open` is [{ id, severity, kind, text }].
  */
-export function loopBriefSection({ round, limit, previousHead, currentHead, open, declined = [], declinedInBrief = false }) {
+export function loopBriefSection({ round, limit, previousHead, currentHead, open, declined = [] }) {
   const label = item => item.group === "Validation gaps" ? "validation gap" : `${item.severity ?? "no severity"}${item.kind && item.kind !== "unsorted" ? ` ${item.kind}` : ""}`;
   // A carried finding keeps its original text after the reviewer's reason, so it gets more room.
   const list = open.map(item => `- ${item.id} (${label(item)}): ${String(item.text).slice(0, isCarried(item) ? 600 : 200)}`).join("\n");
-  // Only what is really in the brief is pointed at: the builder's declined findings listed below, the ones handed over in ASE_REVIEW_DECLINED (the cut kit fix set it), or none.
+  // Only what is really in the brief is pointed at: the builder's declined findings listed below, or none.
   const listed = declined.length > 0;
   const scope = previousHead === currentHead
-    ? `No commit came after the last review (${listed ? "the builder answered or declined: its declined findings and their reasons are listed below" : declinedInBrief ? 'the builder answered or declined: its declined findings and their reasons are in the "Declined by the author" part of this brief' : "no declined finding was recorded, so the builder fixed nothing or its answer was not saved"}): check each finding below against ${listed || declinedInBrief ? "that answer" : "the code"}; there is no new code to read.`
+    ? `No commit came after the last review (${listed ? "the builder answered or declined: its declined findings and their reasons are listed below" : "no declined finding was recorded, so the builder fixed nothing or its answer was not saved"}): check each finding below against ${listed ? "that answer" : "the code"}; there is no new code to read.`
     : `Review only the code changed since ${previousHead} (the \`Changes since the last review\` file named in the scope note) and the findings still open below. Do not review unchanged code again.`;
   return [
     `## Review loop: review round ${round}, after ${round - 1} fix round${round === 2 ? "" : "s"} (at most ${limit} fix rounds)`,
@@ -336,70 +309,8 @@ export function waiverRefusal({ mode, count, open }) {
   return [head, ...lines, how].join("\n");
 }
 
-/**
- * The chain of review records ending at a review's evidence folder, oldest first, from the findings.json each review saved
- * (`round`, `previous` = the earlier folder's name, `findings` with ids) and each result.md's marks.
- */
-export function reviewChain(folder) {
-  const chain = [];
-  for (let current = resolve(folder), guard = 0; current && guard < 20; guard++) {
-    const recordPath = join(current, "findings.json");
-    if (!existsSync(recordPath)) break;
-    let record;
-    try { record = JSON.parse(readFileSync(recordPath, "utf8")); } catch { break; }
-    if (!record || typeof record !== "object" || Array.isArray(record)) break;
-    let marks = new Map();
-    try { marks = parseMarks(readFileSync(join(current, "result.md"), "utf8")); } catch { /* No report text: no marks. */ }
-    const round = record.round ?? 1;
-    // A review saved before ids existed gets the ids a new one would have been given.
-    chain.unshift({ round, model: record.model, head: record.head, declined: (Array.isArray(record.declined) ? record.declined : []).filter(entry => entry && typeof entry.text === "string" && entry.text.trim()), findings: (record.findings ?? []).map((item, index) => ({ ...item, id: item.id ?? `R${round}-${index + 1}` })), marks });
-    current = record.previous ? join(dirname(current), record.previous) : null;
-  }
-  return chain;
-}
-
 /** The rules every review round gets, round 1 included (the later-round section adds the open ids). */
 export const loopReviewerNote = [
   "## Review loop rules for the reviewer",
   "You are the only reviewer: start no subagents. Rate each finding blocker (P0, P1), should (P2) or nit (P3, or a missing test): a nit is a rare path with a small cost, a comment, doc or format-only point, or a missing test. A review that returns only nits ends the loop.",
 ].join("\n\n");
-
-/**
- * The earlier review this one answers (later rounds): in `parent` (the owner's folder under .scratch/reviews) the newest review of the
- * same base that still had findings and whose reviewed head is an ancestor of the current head, or an earlier cut of the
- * same release. A second look's folder is never one.
- * Returns { name, round, head, findings, declined } or null (then this is round 1, a full review).
- */
-export function findPreviousReview(parent, { head, base, root, branch, otherOwners = [] }) {
-  if (!head || !base) return null;
-  const isAncestor = other => {
-    try { execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", other, head], { stdio: "ignore" }); return true; }
-    catch { return false; }
-  };
-  // The owner's own folder first; a lead landing a builder's branch also answers the reviews other owners saved for this same branch
-  // (they must name it), and such a review is linked by a path from the owner's folder. Newest first by the timestamp in the name.
-  const candidates = [parent, ...otherOwners].filter(folder => existsSync(folder))
-    .flatMap(folder => readdirSync(folder).map(name => ({ name, folder: join(folder, name), foreign: folder !== parent,
-      link: folder === parent ? name : `${relative(parent, folder)}/${name}` })))
-    .sort((a, b) => b.name.localeCompare(a.name) || Number(a.foreign) - Number(b.foreign));
-  for (const { name, folder, foreign, link } of candidates) {
-    if (existsSync(join(folder, "second-look.json")) || !existsSync(join(folder, "findings.json")) || !existsSync(join(folder, "refs.txt"))) continue;
-    try {
-      const [reviewedHead, reviewedBase] = readFileSync(join(folder, "refs.txt"), "utf8").trim().split("\n");
-      const record = JSON.parse(readFileSync(join(folder, "findings.json"), "utf8"));
-      // The base may have moved on (another PR landed): the earlier base only has to be part of this branch's history.
-      // The same branch's own history only: a branch cut from a reviewed head starts at round 1, and so does a rebased one
-      // (its old head is gone from the history), which gets the full first review its new code needs.
-      // An earlier cut of the same release counts as this history too (TOOLS-310): a re-cut answers its review.
-      const connected = (reviewedBase === base || isAncestor(reviewedBase)) && (reviewedHead === head || isAncestor(reviewedHead) || earlierReleaseCut(root, reviewedHead, head, { base }));
-      if (record.unreadable || record.incomplete || record.round === undefined || !connected || (record.branch && branch && record.branch !== branch)) continue;
-      // Another owner's review counts only when it names this very branch.
-      if (foreign && (!branch || record.branch !== branch)) continue;
-      // The newest review of this change decides: when it found nothing, the loop had ended, so no open ids carry over, but the rounds still link.
-      // The builder's declined findings saved on that review (text, reason, round; the cut kit fix saved them); a malformed entry is dropped.
-      const declined = (Array.isArray(record.declined) ? record.declined : []).filter(entry => entry && typeof entry.text === "string" && entry.text.trim());
-      return { name: link, clean: !record.findings?.length, round: record.round ?? 1, head: reviewedHead, declined, findings: record.findings.map((item, index) => ({ ...item, id: item.id ?? `R${record.round ?? 1}-${index + 1}` })) };
-    } catch { /* An unreadable record is not a previous review. */ }
-  }
-  return null;
-}

@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { pathToFileURL } from "node:url";
 import { checkSteps, classify, docsOnly, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
 import { coverageHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
 import { sameReviewPatch } from "../review-findings.mjs";
@@ -12,7 +13,7 @@ import { kitEnv } from "./support/kit-env.ts";
 import { tempOutsideGit } from "./support/temp-outside-git.ts";
 import { onMacos, pathWithout, pathWithoutBwrap } from "./support/no-bwrap.ts";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { bwrapWorks } from "../key-guard.mjs";
+import { bwrapWorks, cleanRoomReport, resetBwrapProbe } from "../key-guard.mjs";
 import { orbitProject, orbitSecretsForTests, orbitSettings, runAsync, type Run } from "./support/orbit-project.ts";
 import type { ScoreRecord } from "./kit-score.test.ts";
 
@@ -42,13 +43,6 @@ appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool, script: process.argv[1], a
   ...(tool === "fake-kit" && args[0] === "specs" ? { full: held("browser-run"), quiet: held("quiet"), holder: env.KIT_QUIET_HOLDER || "" } : {}) }) + "\\n");
 const scripts = { "unit.sh": "unit", "tickets.mjs": "tickets", "check-colours.mjs": "colours" };
 const action = tool === "npm" ? (args[0] === "test" ? "unit" : args[1]) : scripts[tool] || (tool === "fake-kit" ? args[0] : args.slice(0, 2).join("-"));
-// FAKE_RELEASE_CHECK_STDERR: the check fails with only that stderr line and no RESULT line.
-if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK_STDERR) { console.error(env.FAKE_RELEASE_CHECK_STDERR); process.exit(3); }
-// FAKE_RELEASE_CHECK is the real kit release-check, which kit pr --release then runs.
-if (tool === "fake-kit" && action === "release-check" && env.FAKE_RELEASE_CHECK) {
-  const run = require("node:child_process").spawnSync(env.FAKE_RELEASE_CHECK, args.slice(1), { stdio: "inherit" });
-  process.exit(run.status ?? 1);
-}
 // FAKE_GH_SWAP: gh (which kit pr starts outside the lock) swaps kit pr's own git link in TMPDIR for another program.
 if (tool === "gh" && env.FAKE_GH_SWAP) for (const name of require("node:fs").readdirSync(env.TMPDIR).filter(name => name.startsWith("kit-pr-programs-"))) {
   const link = join(env.TMPDIR, name, "git");
@@ -90,50 +84,7 @@ if (tool === "fake-kit" && action === "specs" && env.FAKE_SPECS) {
   console.log(failed.length ? "RESULT: fail specs " + failed.length + " of " + files.length + " failed" : "RESULT: ok specs " + files.length + "/" + files.length + " passed");
   process.exit(failed.length ? 1 : 0);
 }
-// The second look: FAKE_SECOND=skip has no model to take it, =fail fails; FAKE_SECOND_REVIEW is its report (clean by default).
-if (tool === "fake-kit" && action === "review" && args.includes("--second-look")) {
-  // FAKE_EMPTY: the PR's diff against its base is empty, so kit review has nothing to review (a skip, exit 3).
-  if (env.FAKE_EMPTY) {
-    console.log("second look: skipped (nothing to review: git diff base...HEAD is empty)");
-    console.log("RESULT: skip second look (nothing to review: git diff base...HEAD is empty)");
-    process.exit(3);
-  }
-  if (env.FAKE_SECOND === "fail") { console.log("RESULT: fail second-look table broken evidence none"); process.exit(1); }
-  if (env.FAKE_SECOND === "skip") {
-    console.log("second look: skipped (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
-    console.log("RESULT: skip second look (grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit)");
-    process.exit(3);
-  }
-  const count = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
-    .filter(call => call.tool === "fake-kit" && call.args[0] === "review" && call.args.includes("--second-look")).length;
-  const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, "second-" + count);
-  mkdirSync(folder, { recursive: true });
-  writeFileSync(join(folder, "result.md"), (count > 1 && env.FAKE_SECOND_REBASED_REVIEW) || env.FAKE_SECOND_REVIEW || ${JSON.stringify(cleanReview)});
-  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model: env.FAKE_SECOND_MODEL || "grok-4.7", ok: true }));
-  const { execFileSync } = require("node:child_process");
-  const git = (...argv) => execFileSync("git", argv, { encoding: "utf8" }).trim();
-  writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n" + git("merge-base", "origin/" + (env.FAKE_BASE || "dev"), "HEAD") + "\\n");
-  console.log("second look: code (feature.txt) " + (env.FAKE_SECOND_MODEL || "grok-4.7"));
-  console.log("RESULT: ok review git diff base...HEAD evidence " + folder);
-} else if (tool === "fake-kit" && action === "review") {
-  const count = readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
-    .filter(call => call.tool === "fake-kit" && call.args[0] === "review" && !call.args.includes("--second-look")).length;
-  if (env.FAKE_EMPTY) {
-    console.log("nothing to review: git diff base...HEAD is empty");
-    console.log("RESULT: skip review nothing to review (git diff base...HEAD is empty)");
-    process.exit(3);
-  }
-  // FAKE_REVIEW_FAIL: Claude's review fails to run (a review that left an id out, say).
-  if (env.FAKE_REVIEW_FAIL) { console.log("RESULT: fail review incomplete evidence none"); process.exit(1); }
-  const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, count === 1 ? "fresh" : "fresh-" + count);
-  mkdirSync(folder, { recursive: true });
-  const report = (count > 1 && env.FAKE_REBASED_REVIEW) || env.FAKE_REVIEW || ${JSON.stringify(cleanReview)};
-  if (!env.FAKE_REVIEW_MISSING) writeFileSync(join(folder, "result.md"), report);
-  const { execFileSync } = require("node:child_process");
-  const git = (...argv) => execFileSync("git", argv, { encoding: "utf8" }).trim();
-  writeFileSync(join(folder, "refs.txt"), git("rev-parse", "HEAD") + "\\n" + git("merge-base", "origin/" + (env.FAKE_BASE || "dev"), "HEAD") + "\\n");
-  console.log("RESULT: ok review git diff base...HEAD evidence " + folder);
-} else if (tool === "fake-kit") console.log("RESULT: ok " + args[0] + " done");
+if (tool === "fake-kit") console.log("RESULT: ok " + args[0] + " done");
 else if (tool === "gh") {
   if (action === "pr-list") console.log(env.FAKE_EXISTING ? '[{"number":73}]' : "[]");
   else if (action === "pr-create") console.log(env.FAKE_BAD_URL ? "no URL" : "https://github.com/test/repo/pull/73");
@@ -214,6 +165,70 @@ else if (tool === "gh") {
   }
 }
 `;
+// kit pr's in-process steps (KIT_PR_CALLS): the review, the second look and the release check. Each call is logged as the
+// kit review or kit release-check command it stands for, so the tests read them beside the fake kit's own calls.
+const fakeCalls = `import { execFileSync } from "node:child_process";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { releaseCheck as realReleaseCheck } from ${JSON.stringify(pathToFileURL(resolve("release-check.mjs")).href)};
+const env = process.env, clean = ${JSON.stringify(cleanReview)};
+const record = args => appendFileSync(env.FAKE_CALLS, JSON.stringify({ tool: "fake-kit", args,
+  ...(env.GH_REPO ? { repo: env.GH_REPO } : {}), ...(env.GH_HOST ? { host: env.GH_HOST } : {}) }) + "\\n");
+const looks = second => readFileSync(env.FAKE_CALLS, "utf8").trim().split("\\n").map(line => JSON.parse(line))
+  .filter(call => call.tool === "fake-kit" && call.args[0] === "review" && call.args.includes("--second-look") === second).length;
+const git = (...argv) => execFileSync("git", argv, { encoding: "utf8" }).trim();
+const refs = () => git("rev-parse", "HEAD") + "\\n" + git("merge-base", "origin/" + (env.FAKE_BASE || "dev"), "HEAD") + "\\n";
+const reviewArgs = flags => ["review", "--base", flags.base, "--pr", flags.pr, ...(flags.ticket ? ["--ticket", flags.ticket] : []), ...(flags.secondLook ? ["--second-look"] : [])];
+// FAKE_FAIL=review: the look fails with 35 lines on stderr (and FAKE_FAIL_TEXT last).
+const failed = io => {
+  for (let i = 1; i <= 35; i++) io.err("failure line " + i + "\\n");
+  if (env.FAKE_FAIL_TEXT) io.err(env.FAKE_FAIL_TEXT + "\\n");
+  return { exit: 1, status: "fail", text: "child failure" };
+};
+// FAKE_RELEASE_CHECK: the real check; FAKE_RELEASE_CHECK_STDERR: the check cannot run (it throws that message).
+export function releaseCheck(options) {
+  record(["release-check", ...(options.land ? ["--land"] : []), ...(options.waive ? ["--waive", options.waive] : [])]);
+  if (env.FAKE_RELEASE_CHECK_STDERR) throw new Error(env.FAKE_RELEASE_CHECK_STDERR);
+  if (env.FAKE_RELEASE_CHECK) return realReleaseCheck(options);
+  if (env.FAKE_FAIL === "release-check") return { passed: false, failure: "child failure", problems: [], warnings: [] };
+  return { passed: true, summary: "done", problems: [], warnings: [] };
+}
+// Claude's review. FAKE_EMPTY: the diff is empty, so there is nothing to review; FAKE_REVIEW_FAIL: it fails to run (a review
+// that left an id out, say); FAKE_REVIEW (FAKE_REBASED_REVIEW from the second one on) is its report, FAKE_REVIEW_MISSING leaves it out.
+export async function review(flags, io) {
+  record(reviewArgs(flags));
+  if (env.FAKE_FAIL === "review") return failed(io);
+  if (env.FAKE_EMPTY) {
+    io.out("nothing to review: git diff base...HEAD is empty\\n");
+    return { exit: 3, status: "skip", text: "review nothing to review (git diff base...HEAD is empty)", nothing: "git diff base...HEAD is empty" };
+  }
+  if (env.FAKE_REVIEW_FAIL) return { exit: 1, status: "fail", text: "review incomplete evidence none" };
+  const count = looks(false), folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, count === 1 ? "fresh" : "fresh-" + count);
+  mkdirSync(folder, { recursive: true });
+  if (!env.FAKE_REVIEW_MISSING) writeFileSync(join(folder, "result.md"), (count > 1 && env.FAKE_REBASED_REVIEW) || env.FAKE_REVIEW || clean);
+  writeFileSync(join(folder, "refs.txt"), refs());
+  return { exit: 0, status: "ok", text: "review git diff base...HEAD evidence " + folder, evidence: folder };
+}
+// The second look: FAKE_SECOND=skip has no model to take it, =fail fails; FAKE_SECOND_REVIEW (FAKE_SECOND_REBASED_REVIEW from the
+// second one on) is its report, clean by default, by FAKE_SECOND_MODEL (grok-4.7).
+export async function secondLook(flags, io) {
+  record(reviewArgs(flags));
+  const notes = [], say = line => { notes.push(line); io.out(line + "\\n"); };
+  const skip = why => { say("second look: skipped (" + why + ")"); return { exit: 3, status: "skip", text: "second look (" + why + ")", skipped: "second look: skipped (" + why + ")", notes }; };
+  if (env.FAKE_FAIL === "review") return { ...failed(io), notes };
+  if (env.FAKE_EMPTY) return skip("nothing to review: git diff base...HEAD is empty");
+  if (env.FAKE_SECOND === "fail") return { exit: 1, status: "fail", text: "second-look table broken evidence none", notes };
+  if (env.FAKE_SECOND === "skip") return skip("grok-4.7 out of credit; opencode/deepseek-v4.1-flash-free out of credit");
+  const count = looks(true), model = env.FAKE_SECOND_MODEL || "grok-4.7";
+  const folder = join(env.KIT_MAIN_ROOT, ".scratch/reviews", env.ASE_OWNER, "second-" + count);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "result.md"), (count > 1 && env.FAKE_SECOND_REBASED_REVIEW) || env.FAKE_SECOND_REVIEW || clean);
+  writeFileSync(join(folder, "second-look.json"), JSON.stringify({ kind: "code", model, ok: true }));
+  writeFileSync(join(folder, "refs.txt"), refs());
+  say("second look: code (feature.txt) " + model);
+  return { exit: 0, status: "ok", text: "review git diff base...HEAD evidence " + folder, evidence: folder, notes };
+}
+`;
 
 // Default branch: two commits to feature.txt (full tier). `changes` replaces them with one commit of these files.
 // `settings` replaces this editor's settings; `workflows: false` leaves out the CI workflow, a string replaces its text.
@@ -236,8 +251,9 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
   // kit-lib's nodeEnv puts the Node directory first on PATH; where npm sits beside node (CI), that would
   // shadow the fake npm. A node link here makes bin the Node directory itself (same fix as kit-deps).
   symlinkSync(process.execPath, join(bin, "node"));
+  writeFileSync(join(bin, "fake-calls.mjs"), fakeCalls);
   const env: NodeJS.ProcessEnv = { ...kitEnv(), PATH: `${bin}:${process.env.PATH}`, KIT_ROOT: root, KIT_MAIN_ROOT: main,
-    ASE_OWNER: "ak-14", KIT_PR_KIT: join(bin, "fake-kit"), FAKE_CALLS: join(dir, "calls.jsonl"), CLAUDECODE: "",
+    ASE_OWNER: "ak-14", KIT_PR_KIT: join(bin, "fake-kit"), KIT_PR_CALLS: join(bin, "fake-calls.mjs"), FAKE_CALLS: join(root, ".scratch/calls.jsonl"), CLAUDECODE: "",
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", XDG_STATE_HOME: join(dir, "state") };
   for (const key of Object.keys(env)) if (key.startsWith("FAKE_") && key !== "FAKE_CALLS") delete env[key];
   // The origin is a folder, so GH_REPO names the fake's repo (what its gh repo view answers); kit pr stops without one.
@@ -249,6 +265,7 @@ function fixture(t: TestContext, changes?: Record<string, string>, override: Rec
   };
   gitAt(dir, "init", "--bare", "--initial-branch=dev", origin);
   gitAt(dir, "clone", origin, root);
+  mkdirSync(join(root, ".scratch"));
   const git = (...args: string[]) => gitAt(root, ...args);
   git("config", "user.name", "Kit test"); git("config", "user.email", "kit@example.com");
   writeFileSync(join(root, ".gitignore"), ".scratch/\n");
@@ -372,6 +389,13 @@ test("guards refuse dirty trees, protected branches, detached HEAD and invalid r
     result = f.run(args); assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail guards:/);
   }
   assert.deepEqual(f.calls(), []);
+});
+
+test("a failed review, run in kit pr's process, keeps its lines and RESULT line in review.log and prints only the log tail", t => {
+  const f = fixture(t), result = f.run([], { FAKE_FAIL: "review" });
+  assert.equal(result.status, 1); assert.match(result.stdout, /RESULT: fail review: /);
+  assert.doesNotMatch(result.stderr, /failure line 1\n/); assert.match(result.stderr, /failure line 35/);
+  assert.match(readFileSync(join(f.logDir(), "review.log"), "utf8"), /failure line 1\n[\s\S]*failure line 35\n[\s\S]*RESULT: fail child failure\n$/);
 });
 
 test("deps failure stops before fetch, prints only log tail and one final result", t => {
@@ -1506,6 +1530,36 @@ test("kit pr --sync-main lands a merge of main into dev that changes nothing, as
   assert.match(result.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
 });
 
+test("a kit pr --sync-main PR says it joins main into dev and changes no file, and lists no joined commit subject (TOOLS-380)", t => {
+  const f = fixture(t), peer = f.peer();
+  f.git("checkout", "-q", "dev"); const first = f.commit("Dev edit", "file.txt", "dev one\n"); f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main"); f.gitAt(peer, "cherry-pick", first); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.commit("Dev edit again", "file.txt", "dev two\n"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  const result = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1", FAKE_LAND_MERGE: peer });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const body = f.body();
+  assert.match(body, /^## Summary\n\nThis joins origin\/main into dev and changes no file on dev\. It adds no new work: the 1 commit it joins is already in dev's files\.\n/m);
+  // The joined old commit and kit's own merge are no new work: neither is listed as a Summary line.
+  assert.doesNotMatch(body, /^- Dev edit$/m);
+  assert.doesNotMatch(body, /Merge origin\/main into dev \(sync, no file changes\)/);
+  assert.match(body, /## Tests/);
+});
+
+test("a kit pr --sync-main PR counts several joined commits in the plural (TOOLS-380)", t => {
+  const f = fixture(t), peer = f.peer();
+  f.git("checkout", "-q", "dev"); const one = f.commit("Dev edit", "file.txt", "dev one\n"); const two = f.commit("Dev edit two", "file.txt", "dev two\n");
+  f.git("push", "-q", "origin", "dev");
+  f.gitAt(peer, "fetch", "-q", "origin"); f.gitAt(peer, "checkout", "-q", "main");
+  f.gitAt(peer, "cherry-pick", one); f.gitAt(peer, "cherry-pick", two); f.gitAt(peer, "push", "-q", "origin", "main");
+  f.commit("Dev edit three", "file.txt", "dev three\n"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "sync/main"); f.git("fetch", "-q", "origin");
+  const result = f.run(["--sync-main", "--no-merge"], { FAKE_EMPTY: "1", FAKE_LAND_MERGE: peer });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(f.body(), /^## Summary\n\nThis joins origin\/main into dev and changes no file on dev\. It adds no new work: the 2 commits it joins are already in dev's files\.\n/m);
+  assert.doesNotMatch(f.body(), /^- Dev edit/m);
+});
+
 test("kit pr --sync-main refuses a sync that would change dev, and leaves the branch at origin/dev", t => {
   const f = fixture(t), peer = f.peer();
   f.gitAt(peer, "checkout", "-q", "main"); writeFileSync(join(peer, "hotfix.txt"), "hotfix\n");
@@ -1713,6 +1767,10 @@ test("kit pr --sync-main lands a hand-made merge on a rerun with kit's own follo
   assert.equal(f.git("rev-parse", "origin/dev^2"), note, "dev takes the join by a merge commit");
   f.git("merge-base", "--is-ancestor", "origin/main", "origin/dev");
   assert.match(again.stdout, /RESULT: ok merged #73 [a-f0-9]{7}$/m);
+  // TOOLS-380: a merge that changes a file says so and counts what it joins; kit's follow-ups commit (ticket.md) is no part of the join.
+  assert.match(f.body(), /^## Summary\n\nThis joins origin\/main into dev and changes 1 file on dev: hotfix\.txt\. It joins 1 commit of main\.\n/m);
+  assert.doesNotMatch(f.body().split("## Tests")[0].split("## Summary")[1], /ticket\.md/);
+  assert.doesNotMatch(f.body(), /^- Hotfix on main$/m);
 });
 
 test("kit pr --sync-main makes its merge again under kit's own follow-ups commit: the same commits on the same dev and main, the note put on a new merge after dev moved (TOOLS-352)", t => {
@@ -2035,6 +2093,22 @@ test("a sync that is behind when it merges makes its merge again on the moved de
   assert.equal(merges[1].args[merges[1].args.indexOf("--match-head-commit") + 1], f.git("rev-parse", "HEAD"));
 });
 
+test("a sync made again after a behind retry gets its Summary written again from the new merge (TOOLS-380)", t => {
+  const f = fixture(t), peer = release(f);
+  f.gitAt(peer, "checkout", "-q", "dev"); f.gitAt(peer, "pull", "-q", "--ff-only", "origin", "dev");
+  f.git("checkout", "-q", "dev"); f.git("pull", "-q", "--ff-only", "origin", "dev"); f.git("checkout", "-q", "-b", "sync/main");
+  // While CI runs, dev gains a commit and main gains a copy of it: the merge made again joins one more commit.
+  const script = join(f.dir, "main-copy.sh");
+  writeFileSync(script, `#!/bin/sh\nset -e\ncd '${peer}'\ngit checkout -q main\ngit cherry-pick dev\ngit push -q origin main\ngit checkout -q dev\n`, { mode: 0o755 });
+  const result = f.run(["--sync-main"], { FAKE_EMPTY: "1", FAKE_BEHIND: "1", FAKE_ADVANCE: peer, FAKE_AFTER_PUSH: script });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const counted = (text: string) => Number(/the (\d+) commits? it joins/.exec(text)?.[1]);
+  const patched = f.apiCalls().filter(call => call.args.includes("PATCH")).at(-1)!.body!;
+  const first = counted(f.ghCalls("create")[0].body!), last = counted(patched);
+  assert.ok(first >= 1, f.ghCalls("create")[0].body);
+  assert.equal(last, first + 1, `the PR counts the commits of the merge made again\n${patched}`);
+});
+
 test("a release through a merge queue asks for --auto --merge, and a landed commit that is no merge of the head is said", t => {
   const queued = fixture(t), result = queued.run(["--base", "main", "--release"], { FAKE_QUEUE: "1" });
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -2179,11 +2253,26 @@ test("a failed release check stops the release before the fetch and the push, wi
   assert.equal(existsSync(join(f.logDir(), "fetch.log")), false);
 });
 
-test("a release check that fails without a RESULT line is named by its last stderr line", t => {
+test("a release check that cannot run is named by its error, which its log ends with as kit release-check's RESULT line", t => {
   const f = fixture(t), result = f.run(["--base", "main", "--release"], { FAKE_RELEASE_CHECK_STDERR: "kit-lib: cannot read settings" });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /RESULT: fail release-check: kit-lib: cannot read settings$/m);
+  assert.match(readFileSync(join(f.logDir(), "release-check.log"), "utf8"), /RESULT: fail kit-lib: cannot read settings\n$/);
   assert.equal(existsSync(join(f.logDir(), "fetch.log")), false);
+});
+
+test("the real release check, in kit pr's process, runs git with the key lock's settings: a file system monitor the build set never starts", t => {
+  const f = fixture(t), real = { FAKE_RELEASE_CHECK: resolve("kit.d/release-check") };
+  f.git("checkout", "-q", "dev"); f.commit("Landed change", "landed.txt"); f.git("push", "-q", "origin", "dev");
+  f.git("checkout", "-q", "-b", "release/cut");
+  // Set last: the test's own git calls would start it. The release check's git status is the first git call to read it.
+  const marker = join(f.dir, "monitor-ran.txt"), monitor = join(f.dir, "monitor.sh");
+  writeFileSync(monitor, `#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\n`); chmodSync(monitor, 0o755);
+  writeFileSync(join(f.root, ".git/config"), `${readFileSync(join(f.root, ".git/config"), "utf8")}[core]\n\tfsmonitor = ${monitor}\n`);
+  const result = f.run(["--base", "main", "--release", "--dry-run"], real);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^logs: .+\nrelease-check: ok \([a-f0-9]{7} is origin\/dev, nothing unsaved\)\n/);
+  assert.equal(existsSync(marker), false, existsSync(marker) ? readFileSync(marker, "utf8") : "");
 });
 
 test("the real release check passes a release cut at origin/dev, fails one with a commit that never landed, and takes a lead's waiver", t => {
@@ -2465,6 +2554,8 @@ test("a rerun after an earlier run merged a hotfixed main into the cut says to c
   result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 1);
   assert.match(result.stdout, /^RESULT: fail release-check: HEAD [a-f0-9]{7} is 2 commits ahead of origin\/dev: cut the release again from origin\/dev \(git reset --keep origin\/dev\) and rerun kit pr --release$/m);
+  // The check ran in kit pr's process: its log keeps the problem lines kit release-check prints, then its RESULT line.
+  assert.match(readFileSync(join(f.logDir(), "release-check.log"), "utf8"), /problem: HEAD [a-f0-9]{7} is 2 commits ahead of origin\/dev: [^\n]+\nRESULT: fail HEAD /);
   f.git("reset", "-q", "--hard", "origin/dev");
   result = f.run(["--base", "main", "--release", "--no-merge"], real);
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -3235,6 +3326,37 @@ test("a KIT_HOME outside the project runs its own unit.sh by absolute path, as t
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.calls().filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/a.test.ts"]]);
   assert.ok(f.body().includes(`- ${join(home, "unit.sh")} tests/a.test.ts: ok`), f.body());
+});
+
+test("a KIT_HOME at the project root runs ./unit.sh inside the key lock, including when KIT_HOME is relative", t => {
+  for (const kitHomeValue of ["root", "."] as const) {
+    const f = fixture(t, { "tests/a.test.ts": "// changed\n" });
+    f.git("checkout", "dev");
+    for (const name of ["unit.sh", "tickets.mjs"]) copyFileSync(join(f.root, "scripts/agents", name), join(f.root, name));
+    chmodSync(join(f.root, "unit.sh"), 0o755);
+    rmSync(join(f.root, "scripts/agents/unit.sh"));
+    f.git("add", "-A");
+    f.git("commit", "-m", "place kit helpers at repo root");
+    f.git("push", "origin", "dev");
+    f.git("checkout", "feature/kit-pr");
+    f.git("rebase", "dev");
+    const result = f.run(["--no-merge"], { KIT_HOME: kitHomeValue === "root" ? f.root : "." });
+    assert.equal(result.status, 0, `${kitHomeValue}: ${result.stdout}${result.stderr}`);
+    const unitCalls = f.calls().filter(call => call.tool === "unit.sh");
+    assert.deepEqual(unitCalls.map(call => call.args), [["tests/a.test.ts"]]);
+    assert.equal(unitCalls[0].script, join(f.root, "unit.sh"));
+    assert.ok(f.body().includes("- ./unit.sh tests/a.test.ts: ok"), f.body());
+  }
+  // A relative KIT_HOME outside the project still resolves to an absolute path.
+  const outside = fixture(t, { "tests/a.test.ts": "// changed\n" });
+  const home = join(outside.dir, "kit-home");
+  mkdirSync(home);
+  for (const name of ["unit.sh", "tickets.mjs"]) copyFileSync(join(outside.root, "scripts/agents", name), join(home, name));
+  chmodSync(join(home, "unit.sh"), 0o755);
+  const rel = outside.run(["--no-merge"], { KIT_HOME: "../kit-home" });
+  assert.equal(rel.status, 0, rel.stdout + rel.stderr);
+  assert.deepEqual(outside.calls().filter(call => call.tool === "unit.sh").map(call => call.args), [["tests/a.test.ts"]]);
+  assert.ok(outside.body().includes(`- ${join(home, "unit.sh")} tests/a.test.ts: ok`), outside.body());
 });
 
 test("a docs-tier PR with a KIT_HOME outside the project runs that home's tickets.mjs, as the PR body says", t => {
@@ -4124,6 +4246,29 @@ test("a no-code PR whose diff is empty lands: kit review skips as nothing to rev
   assert.match(block, /<!-- review-loop -->\nReview: nothing to review \(the diff against dev is empty\)\.\n\nsecond look: skipped \(nothing to review: git diff base\.\.\.HEAD is empty\)\n<!-- \/review-loop -->/);
 });
 
+test("review-run.mjs's own review and second look, called in kit pr's process, skip a no-code change and the PR lands", t => {
+  const f = fixture(t);
+  // No override: kit pr calls the real review and second look; the branch's commits add feature.txt and take it out again.
+  writeFileSync(join(f.bin, "real-calls.mjs"), "export {};\n");
+  f.git("rm", "-q", "feature.txt"); f.git("commit", "-q", "-m", "Take the change out");
+  // Should the scope ever not be empty, no real reviewer runs: the CLIs fail at once, in a temporary HOME.
+  for (const cli of ["claude", "codex", "opencode"]) { writeFileSync(join(f.bin, cli), "#!/bin/sh\necho 'a reviewer CLI ran' >&2\nexit 1\n"); chmodSync(join(f.bin, cli), 0o755); }
+  const home = join(f.dir, "home");
+  mkdirSync(home);
+  // Set last, as in the release check's test: the review's and second look's git calls run with the key lock's settings.
+  const marker = join(f.dir, "monitor-ran.txt"), monitor = join(f.dir, "monitor.sh");
+  writeFileSync(monitor, `#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\n`); chmodSync(monitor, 0o755);
+  writeFileSync(join(f.root, ".git/config"), `${readFileSync(join(f.root, ".git/config"), "utf8")}[core]\n\tfsmonitor = ${monitor}\n`);
+  const result = f.run([], { KIT_PR_CALLS: join(f.bin, "real-calls.mjs"), HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local/share"), XDG_CACHE_HOME: join(home, ".cache") });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const empty = `git diff ${f.git("merge-base", "origin/dev", "HEAD")}...HEAD is empty`;
+  assert.ok(result.stdout.includes(`\nreview: skipped (nothing to review: ${empty})\n`), result.stdout);
+  assert.ok(result.stdout.includes(`\nsecond look: skipped (nothing to review: ${empty})\n`), result.stdout);
+  assert.match(result.stdout, /RESULT: ok merged #73/);
+  assert.match(readFileSync(join(f.logDir(), "review.log"), "utf8"), /RESULT: skip review nothing to review/);
+  assert.equal(existsSync(marker), false, existsSync(marker) ? readFileSync(marker, "utf8") : "");
+});
+
 test("a skipped second look is written into the PR's review block, so the PR never reads as double-checked", t => {
   const f = fixture(t);
   const path = f.saveReview(cleanReview);
@@ -4131,6 +4276,8 @@ test("a skipped second look is written into the PR's review block, so the PR nev
   assert.equal(f.run([], { FAKE_SECOND: "skip" }).status, 0);
   const block = f.apiCalls().filter(call => call.args[1] === "--method").map(call => call.body ?? "").find(text => text.includes("<!-- review-loop -->"))!;
   assert.match(block, /Verdict: approved\n\nsecond look: skipped \(grok-4\.7 out of credit; opencode\/deepseek-v4\.1-flash-free out of credit\)\n\nFindings ledger: none\./);
+  // The second look ran in kit pr's process: its log keeps its notes and kit review's RESULT line.
+  assert.match(readFileSync(join(f.logDir(), "second-look.log"), "utf8"), /second look: skipped \([^\n]+\)\nRESULT: skip second look \([^\n]+\)\n$/);
 });
 
 test("a saved second look is reused only as a second look that ran; it is never taken for Claude's review", t => {
@@ -5329,11 +5476,20 @@ test("a release re-cut from an unchanged dev is the same cut: its saved review i
 // TOOLS-303: a locked build may write the repository's Git settings and hooks, a program in a PATH folder inside the
 // worktree, a BASH_ENV file and the project's own checks; kit pr runs in the lead's process, with the keys.
 const noBwrap = bwrapWorks() === null ? false : `bubblewrap cannot run here: ${bwrapWorks()}`;
+// Whether git's ssh runs in the clean room here (TOOLS-390): it needs more than bubblewrap, which a container can block.
+const roomUsable = !noBwrap && (() => {
+  const probe = mkdtempSync(join(tmpdir(), "kit-room-probe-"));
+  try {
+    for (const folder of ["work", "home"]) mkdirSync(join(probe, folder));
+    return cleanRoomReport({ PATH: process.env.PATH, HOME: join(probe, "home") }, { worktree: join(probe, "work") }).state === "on";
+  } finally { rmSync(probe, { recursive: true, force: true }); resetBwrapProbe(); }
+})();
 test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool or BASH_ENV file a build left with the keys, and runs the checks inside the key lock", { skip: noBwrap }, t => {
   const dummy = "dummy-key-0123456789-not-real";
   // The lint check is a git command whose alias runs the build's script: a check whatever program it names.
   const f = fixture(t, undefined, { checks: { check: "sh scripts/leak.sh", test: "npm test", lint: "git -c alias.leak=!scripts/leak-git.sh leak", extra: ["bash -c true"] } }), peer = f.peer();
-  const home = join(f.dir, "home"), keyFile = join(home, ".config/fleet/orbit.json"), noted = join(f.dir, "noted.txt");
+  const home = join(f.dir, "home"), keyFile = join(home, ".config/fleet/orbit.json"), noted = join(f.root, ".scratch/noted.txt"), tmp = join(f.dir, "tmp");
+  mkdirSync(tmp);
   mkdirSync(dirname(keyFile), { recursive: true }); writeFileSync(keyFile, `${dummy}\n`, { mode: 0o600 });
   // Each planted thing notes who it is, the key file as it reads it and the token variable, then does its job.
   const note = (who: string) => `{ echo ${JSON.stringify(who)}; cat ${JSON.stringify(keyFile)} 2>&1; printf 'token=%s.\\n' "$GH_TOKEN"; } >> ${JSON.stringify(noted)}`;
@@ -5345,7 +5501,7 @@ test("PROOF: kit pr runs no hook, Git filter, diff tool, merge driver, PATH tool
   // The check also tries to swap kit pr's own program links for scripts of its own.
   const swapped = `#!/bin/sh\n${note("a program the check swapped in")}\nexec ${spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()} "$@"\n`;
   writeFileSync(join(f.root, "scripts/leak.sh"), `${note("the project's check")}
-for f in "$TMPDIR"/kit-pr-programs-*/git; do [ -L "$f" ] && echo "saw $f" >> ${JSON.stringify(noted)}; rm -f "$f" 2>/dev/null; printf '%s' ${JSON.stringify(swapped)} > "$f" 2>/dev/null && chmod +x "$f"; done
+for f in ${JSON.stringify(tmp)}/kit-pr-programs-*/git; do [ -L "$f" ] && echo "saw $f" >> ${JSON.stringify(noted)}; rm -f "$f" 2>/dev/null; printf '%s' ${JSON.stringify(swapped)} > "$f" 2>/dev/null && chmod +x "$f"; done
 cat ${JSON.stringify(join(home, ".bash_env"))} ${JSON.stringify(join(home, ".shinit"))} >> ${JSON.stringify(noted)} 2>&1
 exit 0
 `);
@@ -5380,7 +5536,6 @@ exit 0
   writeFileSync(shStartup, `export GH_TOKEN=${dummy}\n`);
   // A temporary folder of this test's own (kit pr keeps its program links there), so the check reaches only this kit
   // pr's links, never another one's.
-  const tmp = join(f.dir, "tmp"); mkdirSync(tmp);
   const env = { HOME: home, GH_TOKEN: dummy, BASH_ENV: startup, ENV: shStartup, PATH: `${tools}:${links}:${f.env.PATH}`, TMPDIR: tmp } as NodeJS.ProcessEnv;
   // Without kit pr's care they are live: a plain git status in the worktree starts the build's programs.
   spawnSync("git", ["-C", f.root, "status"], { env: { ...f.env, ...env }, encoding: "utf8" });
@@ -5464,7 +5619,7 @@ test("a gh that changes kit pr's program links stops kit pr at its next start", 
 
 // TOOLS-320: git's ssh for kit pr's fetch and push is found as kit pr finds its own programs: an ssh PATH holds only as a
 // link into the worktree (a person's link to a script a build can change) is never started; a push to an ssh remote
-// stops and says why.
+// stops and says why. On Linux git's ssh runs in the clean room (TOOLS-390), where that link leads nowhere.
 test("kit pr's push to an ssh remote never starts an ssh PATH holds only as a link into the worktree", t => {
   const f = fixture(t);
   f.git("config", "remote.origin.pushurl", "ssh://example.invalid/repo.git");
@@ -5473,12 +5628,21 @@ test("kit pr's push to an ssh remote never starts an ssh PATH holds only as a li
   writeFileSync(planted, `#!/bin/sh\necho planted >> ${JSON.stringify(join(f.dir, "planted.txt"))}\n`, { mode: 0o755 });
   appendFileSync(join(f.root, ".git/info/exclude"), "tools/\n");
   symlinkSync(planted, join(links, "ssh"));
-  const result = f.run([], { PATH: `${f.bin}:${links}:${pathWithout(f.dir, ["ssh"], "no-ssh-bin")}` });
-  assert.equal(result.status, 1, result.stdout + result.stderr);
-  assert.match(result.stdout, /^RESULT: fail push: /m);
-  const logs = /^logs: (.+)$/m.exec(result.stdout)![1];
-  assert.match(readFileSync(join(logs, "push.log"), "utf8"), /kit: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/);
-  assert.ok(!existsSync(join(f.dir, "planted.txt")), "the planted ssh never started");
+  const pushLog = (result: ReturnType<typeof f.run>) => {
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /^RESULT: fail push: /m);
+    assert.ok(!existsSync(join(f.dir, "planted.txt")), "the planted ssh never started");
+    return readFileSync(join(/^logs: (.+)$/m.exec(result.stdout)![1], "push.log"), "utf8");
+  };
+  const roomed = pushLog(f.run([], { PATH: `${f.bin}:${links}:${pathWithout(f.dir, ["ssh"], "no-ssh-bin")}` }));
+  // In the room the worktree is empty, so the link finds no ssh, and the kit says where it looked in plain words.
+  // Without the room (macOS, or inside kit pr's own lock for its checks, where a kit pr that takes itself for macOS
+  // would try a lock of its own) the path filter refuses that ssh and says why.
+  const filterRefusal = /kit: ssh on PATH is \S+\/links\/ssh, a link into the worktree or its Git folder/;
+  if (roomUsable) {
+    assert.match(roomed, /ssh: not found\nkit: a program was not found \(exit 127\)\. If it was git's ssh or a program it starts, the clean room keeps these folders empty: /);
+    assert.match(pushLog(f.run([], { PATH: `${f.bin}:${links}:${join(f.dir, "no-ssh-bin")}`, ...onMacos })), filterRefusal);
+  } else assert.match(roomed, new RegExp(`${filterRefusal.source}|the clean room for git.*s ssh cannot start`));
   // A push that starts no ssh (the folder remote) goes through all the same.
   f.git("config", "--unset", "remote.origin.pushurl");
   const folder = f.run([], { PATH: `${f.bin}:${links}:${join(f.dir, "no-ssh-bin")}` });
@@ -5492,7 +5656,7 @@ test("kit pr's push to an ssh remote never starts an ssh PATH holds only as a li
 // outside any lock.
 test("kit pr refuses a push whose remote lists a folder after another push address, or one on this machine", t => {
   const f = fixture(t);
-  const noted = join(f.dir, "hook.txt");
+  const noted = join(f.origin, "hook.txt");
   writeFileSync(join(f.origin, "hooks/pre-receive"), `#!/bin/sh\necho ran >> ${JSON.stringify(noted)}\ncat > /dev/null\n`, { mode: 0o755 });
   // A build lists an outside address first and the folder second. The outside one is an ssh remote whose ssh (the
   // lead's, outside the worktree) serves a bare repository here, so its push goes through and git goes on to the next.
@@ -5545,4 +5709,100 @@ test("kit pr refuses a push whose remote lists a folder after another push addre
   const folders = f.run();
   assert.equal(folders.status, 0, folders.stdout + folders.stderr);
   assert.match(readFileSync(noted, "utf8"), /^ran$/m);
+});
+
+test("TOOLS-397: a local push link cannot grant home setup writes to a different repository's hook", { skip: noBwrap }, t => {
+  const f = fixture(t), home = join(f.dir, "home"), bin = join(home, ".local/bin"), planted = join(bin, "planted");
+  mkdirSync(bin, { recursive: true });
+  symlinkSync(bin, join(f.root, "r"));
+  f.gitAt(f.root, "init", "-q", "--bare", "r.git");
+  writeFileSync(join(f.root, "r.git/hooks/pre-receive"), `#!/bin/sh\necho planted > ${JSON.stringify(planted)}\n`, { mode: 0o755 });
+  appendFileSync(join(f.root, ".git/info/exclude"), "r\nr.git/\n");
+  f.git("config", "remote.origin.pushurl", join(f.root, "r"));
+  const result = f.run([], { HOME: home });
+  assert.equal(existsSync(planted), false, result.stdout + result.stderr);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /not a direct Git repository folder/);
+});
+
+test("TOOLS-397: swapping a validated local push folder for a home-folder link before fence creation cannot let sibling .git hook write HOME", { skip: noBwrap }, t => {
+  const f = fixture(t), home = join(f.dir, "home"), bin = join(home, ".local/bin"), planted = join(bin, "planted");
+  const target = join(f.root, "r"), swapLog = join(f.dir, "swap.log"), loader = join(f.dir, "swap-loader.mjs");
+  mkdirSync(bin, { recursive: true });
+  f.gitAt(f.root, "init", "-q", "--bare", "r");
+  f.gitAt(f.root, "init", "-q", "--bare", "r.git");
+  writeFileSync(join(f.root, "r.git/hooks/pre-receive"), `#!/bin/sh\necho planted > ${JSON.stringify(planted)}\n`, { mode: 0o755 });
+  appendFileSync(join(f.root, ".git/info/exclude"), "r/\nr.git/\n");
+  f.git("config", "remote.origin.pushurl", target);
+  writeFileSync(loader, `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    import { join } from "node:path";
+    const target = process.env.SWAP_TARGET;
+    const homeBin = process.env.SWAP_BIN;
+    const log = process.env.SWAP_LOG;
+    let swapped = false, targetFd = null;
+    const origOpen = fs.openSync;
+    const origLstat = fs.lstatSync;
+    const origRename = fs.renameSync;
+    const origSymlink = fs.symlinkSync;
+    const origAppend = fs.appendFileSync;
+    fs.openSync = function (path, ...rest) {
+      const fd = origOpen.call(fs, path, ...rest);
+      if (path === target) targetFd = fd;
+      return fd;
+    };
+    fs.lstatSync = function (path, ...rest) {
+      const info = origLstat.call(fs, path, ...rest);
+      if (!swapped && (path === join(target, "refs") || (targetFd !== null && path === join("/proc/self/fd/" + targetFd, "refs")))) {
+        swapped = true;
+        origRename(target, target + ".aside");
+        origSymlink(homeBin, target);
+        origAppend(log, "swapped\\n");
+      }
+      return info;
+    };
+    syncBuiltinESMExports();
+  `);
+  const result = f.run([], {
+    HOME: home,
+    NODE_OPTIONS: `--import=${loader}`,
+    SWAP_TARGET: target,
+    SWAP_BIN: bin,
+    SWAP_LOG: swapLog,
+  });
+  assert.equal(existsSync(swapLog), true, "swap hook must fire after localPushTarget validates refs");
+  assert.match(readFileSync(swapLog, "utf8"), /swapped/);
+  assert.equal(existsSync(planted), false, `home setup file was planted: ${result.stdout}${result.stderr}`);
+  assert.deepEqual(readdirSync(bin), []);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+});
+
+test("TOOLS-397: kit pr pushes to a file:// and a relative bare folder remote inside the lock", { skip: noBwrap }, t => {
+  for (const kind of ["file", "relative"] as const) {
+    const f = fixture(t);
+    const address = kind === "file" ? pathToFileURL(f.origin).href : relative(f.root, f.origin);
+    f.git("config", "remote.origin.pushurl", address);
+    const result = f.run();
+    assert.equal(result.status, 0, `${kind}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, /^RESULT: ok merged #73/m, kind);
+  }
+});
+
+// TOOLS-329 (SL-3): the push reads the global and system Git config, so their URL rewrites count in kit pr's check of
+// the push addresses too: one that takes an outside address to this machine stops the push before any ssh starts.
+test("kit pr weighs push addresses with the global and system URL rewrites the push applies", t => {
+  const f = fixture(t);
+  const noted = join(f.dir, "ssh.txt");
+  writeFileSync(join(f.bin, "ssh"), `#!/bin/sh\necho "ssh $*" >> ${JSON.stringify(noted)}\nexit 1\n`, { mode: 0o755 });
+  f.git("config", "--add", "remote.origin.pushurl", "https://mirror.invalid/repo.git");
+  const rewrite = join(f.dir, "rewrite.gitconfig");
+  writeFileSync(rewrite, '[url "ssh://git@localhost/srv/"]\n\tinsteadOf = https://mirror.invalid/\n');
+  for (const [where, overrides] of [["global", { GIT_CONFIG_GLOBAL: rewrite }], ["system", { GIT_CONFIG_NOSYSTEM: undefined, GIT_CONFIG_SYSTEM: rewrite }]] as const) {
+    rmSync(noted, { force: true });
+    const result = f.run([], overrides);
+    assert.equal(result.status, 1, `${where}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, /^RESULT: fail push: origin pushes to this machine itself \(ssh:\/\/(git@)?localhost\/srv\/repo\.git\)/m, where);
+    assert.ok(!existsSync(noted), `${where}: an ssh started: ${existsSync(noted) ? readFileSync(noted, "utf8") : ""}`);
+  }
 });

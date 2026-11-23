@@ -6,7 +6,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { kitEnv } from "./support/kit-env.ts";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
-import { NORMAL_ROUNDS, earlierSecondLooks, fixRoundsDone, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, findPreviousReview, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, reviewChain, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, waiverCheck, waiverRefusal, withIds } from "../review-loop.mjs";
+import { NORMAL_ROUNDS, fixRoundsDone, modelsLine, RISKY_ROUNDS, branchRisk, budgetReport, isNit, ledgerRows, loopBriefSection, loopStop, parseMarks, prLine, renderLedger, riskyChange, roundLimit, secondLookRows, severityWord, stoppingFindings, unmarkedIds, waiverCheck, waiverRefusal, withIds } from "../review-loop.mjs";
+// @ts-expect-error The kit's helpers are plain JavaScript without declarations.
+import { earlierSecondLooks, findPreviousReview, reviewChain } from "../review-records.mjs";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { findingsRecord, openFindings } from "../review-findings.mjs";
 
@@ -304,9 +306,6 @@ test("a same-head rerun's brief lists the builder's declined findings itself, or
   assert.match(listed, /Declined by the builder \(with reasons\):\n- file\.txt:1 — P2 style: rename it — reason: the spec keeps the name/);
   assert.match(listed, /its declined findings and their reasons are listed below/);
   assert.doesNotMatch(listed, /are in this brief/);
-  // Declined findings that the brief already carries (kit fix hands them over) are pointed at, not repeated.
-  const carried = loopBriefSection({ round: 2, limit: 3, previousHead: "same", currentHead: "same", open, declinedInBrief: true });
-  assert.match(carried, /its declined findings and their reasons are in the "Declined by the author" part of this brief/);
   // None known: the brief never points at a list that is not there.
   const none = loopBriefSection({ round: 2, limit: 3, previousHead: "same", currentHead: "same", open });
   assert.match(none, /No commit came after the last review/);

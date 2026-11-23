@@ -525,7 +525,7 @@ test("trash moves a card to Orbit's trash only with Lex's words, and a permanent
   assert.equal(remove.query.get("expected_version"), String(version));
   assert.equal(remove.query.get("permanent"), null, "never permanent");
   assert.match(log(), /action=trash fields=trash who=test-lead result=ok lex_said="bin that card"/);
-  const source = readFileSync(resolve("orbit-client.mjs"), "utf8") + readFileSync(resolve("ticket-store.mjs"), "utf8") + readFileSync(ticket, "utf8");
+  const source = ["orbit-client.mjs", "ticket-store.mjs", "ticket-cards.mjs", "ticket.mjs"].map(file => readFileSync(resolve(file), "utf8")).join("") + readFileSync(ticket, "utf8");
   assert.ok(!/permanent=|["']permanent["']|permanent:/.test(source), "no code path can send the permanent flag");
 });
 
@@ -1742,9 +1742,9 @@ test("only card keys count as blockers", async t => {
 test("an agent the kit starts never inherits a lead's ORBIT_ROLE", async t => {
   const home = mkdtempSync(join(tmpdir(), "kit-ticket-role-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  const bin = join(home, "bin"), seen = join(home, "seen"), root = join(home, "work");
+  const bin = join(home, "bin"), root = join(home, "work"), seen = join(root, ".scratch/seen");
   mkdirSync(bin);
-  mkdirSync(root);
+  mkdirSync(join(root, ".scratch"), { recursive: true });
   spawnSync("git", ["init", "-q", root]);
   const fake = (name: string) => {
     writeFileSync(join(bin, name), `#!/bin/sh\nprintf '%s' "\${ORBIT_ROLE-none}" > "${seen}"\ncat > /dev/null\necho "{}"\n`);

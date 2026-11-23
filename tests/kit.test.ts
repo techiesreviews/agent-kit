@@ -6,7 +6,9 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error The script is plain JavaScript without declarations.
-import { findNode, kitGhEnv, kitGhRepo, kitHideUserInfo, kitHidingLog, kitMainRoot, kitOwner, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
+import * as kitLib from "../kit-lib.mjs";
+// @ts-expect-error The script is plain JavaScript without declarations.
+import { kitGhEnv, kitGhRepo, kitHideUserInfo, kitHidingLog, kitMainRoot, kitOwner, kitQuietLock, kitResult, kitRoot, nodeEnv } from "../kit-lib.mjs";
 import { ghConfig, kitEnv } from "./support/kit-env.ts";
 import { kitFiles } from "./support/kit-files.ts";
 
@@ -68,6 +70,11 @@ function fakeNode(file: string, version: string) {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' '${version}'\n`);
   chmodSync(file, 0o755);
+}
+
+// The Node that nodeEnv puts first for env (its search folder is env's CLAUDE_NODE_SEARCH_ROOT), or null when there is none.
+function nodeFound(env: NodeJS.ProcessEnv) {
+  try { return nodeEnv(env).KIT_NODE; } catch { return null; }
 }
 
 function fixtureEnv(directory: string) {
@@ -402,11 +409,13 @@ test("bash and mjs select the same highest numeric Node and prefer a supported s
   const nonExecutable = join(directory, ".nvm/versions/node/no-execute/bin/node");
   fakeNode(nonExecutable, "v99.0.0");
   chmodSync(nonExecutable, 0o644);
+  // One copy of the lookup: nodeEnv asks kit-lib.sh's kit_node_find, which the front door runs before there is a Node.
+  assert.equal(kitLib.findNode, undefined);
   const assertLookup = (expected: string) => {
     const result = bash("kit_node_find", env);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, `${expected}\n`);
-    assert.equal(findNode({ path: env.PATH, searchRoot: directory }), expected);
+    assert.equal(nodeFound(env), expected);
     const selected = bash('kit_node; kit_node; printf "%s\\n%s\\n" "$KIT_NODE" "$PATH"', env);
     const expectedEnv = nodeEnv(env);
     assert.equal(selected.status, 0, selected.stderr);
@@ -418,7 +427,8 @@ test("bash and mjs select the same highest numeric Node and prefer a supported s
   command(directory, "which-node", "command -v node");
   const result = run(["which-node"], { ...env, KIT_COMMANDS_DIR: directory });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, `${nvm}\nRESULT: ok which-node finished\n`);
+  // The fake Node only prints its version, so the RESULT line it is asked for is not checked here.
+  assert.equal(result.stdout.split("\n")[0], nvm);
   fakeNode(join(directory, "current/node"), "v24.0.0");
   assertLookup(join(directory, "current/node"));
 });
@@ -429,10 +439,10 @@ test("Node lookup handles npm alone, absent system node, and unsupported install
   const npm = join(directory, ".npm/_npx/install/node_modules/node/bin/node");
   fakeNode(npm, "v24.0.1");
   assert.equal(bash("kit_node_find", env).stdout, `${npm}\n`);
-  assert.equal(findNode({ path: env.PATH, searchRoot: directory }), npm);
+  assert.equal(nodeFound(env), npm);
   const noSystem = { ...env, PATH: "/missing" };
   assert.equal(bash("kit_node_find", noSystem).stdout, `${npm}\n`);
-  assert.equal(findNode({ path: noSystem.PATH, searchRoot: directory }), npm);
+  assert.equal(nodeFound(noSystem), npm);
   fakeNode(npm, "v23.9.9");
   const found = bash("kit_node_find", env);
   assert.equal(found.status, 1);
@@ -441,13 +451,51 @@ test("Node lookup handles npm alone, absent system node, and unsupported install
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, `${nodeError}\n`);
-  assert.equal(findNode({ path: env.PATH, searchRoot: directory }), null);
   assert.throws(() => nodeEnv(env), { message: nodeError });
-  command(directory, "still-runs", "exit 0");
-  const child = run(["still-runs"], { ...env, KIT_COMMANDS_DIR: directory });
-  assert.equal(child.status, 0);
-  assert.equal(child.stderr, `${nodeError}\n`);
-  assert.equal(child.stdout, "RESULT: ok still-runs finished\n");
+  // The front door needs Node first (TOOLS-395): with an old Node, or none, it says so and runs nothing; --home still answers.
+  const marker = join(directory, "ran");
+  command(directory, "needs-node", `touch '${marker}'`);
+  const bin = join(directory, "no-node-bin");
+  mkdirSync(bin);
+  symlinkSync("/usr/bin/dirname", join(bin, "dirname"));
+  for (const without of [env, { PATH: bin, CLAUDE_NODE_SEARCH_ROOT: join(directory, "empty") }]) {
+    const child = run(["needs-node"], { ...without, KIT_COMMANDS_DIR: directory });
+    assert.equal(child.status, 2);
+    assert.equal(child.stderr, `${nodeError}\n`);
+    assert.equal(child.stdout, `RESULT: fail ${nodeError.replace(/^kit: /, "")}\n`);
+    assert.equal(existsSync(marker), false);
+    const home = run(["--home"], { ...without, KIT_COMMANDS_DIR: directory });
+    assert.equal(home.status, 0, home.stderr);
+    assert.equal(home.stdout, `${realpathSync(".")}\n`);
+  }
+  // kit update still runs, so a timer whose service cannot reach Node 24 still brings the next kit.
+  const update = run(["update", "--help"], env);
+  assert.equal(update.status, 0, update.stderr);
+  assert.match(update.stdout, /^Usage: kit update /);
+  // Its help is usage text, not a run, as with Node: no RESULT line.
+  assert.equal(results(update.stdout).length, 0, update.stdout);
+});
+
+// Node on Windows (Git Bash) ends `node --version` with CRLF; the carriage return is not part of the version (TOOLS-335).
+test("Node lookup reads a version printed with a Windows CRLF line ending", (t) => {
+  const directory = temp(t);
+  const env = fixtureEnv(directory);
+  const crlfNode = (file: string, version: string) => {
+    fakeNode(file, version);
+    writeFileSync(file, `#!/bin/sh\nprintf '%s\\r\\n' '${version}'\n`);
+  };
+  const npm = join(directory, ".npm/_npx/install/node_modules/node/bin/node");
+  crlfNode(npm, "v26.1.0");
+  assert.equal(bash("kit_node_find", env).stdout, `${npm}\n`);
+  assert.equal(nodeFound(env), npm);
+  const system = join(directory, "current/node");
+  crlfNode(system, "v26.0.0");
+  assert.equal(bash("kit_node_find", env).stdout, `${system}\n`);
+  assert.equal(nodeFound(env), system);
+  const selected = bash('kit_node && printf "%s\\n" "$KIT_NODE"', env);
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.equal(selected.stdout, `${system}\n`);
+  assert.equal(nodeEnv(env).KIT_NODE, system);
 });
 
 test("bash and mjs roots and owner follow overrides, owner file and branch fallbacks", (t) => {
@@ -616,6 +664,70 @@ test("bash and mjs RESULT helpers hide every url's user-info, so a remote's toke
   assert.equal(bash("kit_hide_user_info 'x_https://u:t@h/p 1http://t@h/q'").stdout, "x_https://h/p 1http://h/q\n");
 });
 
+test("the shell's project root, RESULT line and URL hiding are kit-lib.mjs's, their one copy (TOOLS-395)", (t) => {
+  // kit-lib.sh beside a kit-lib.mjs with other rules: each shell helper answers with that file's rule, not one of its own.
+  const directory = realpathSync(temp(t));
+  copyFileSync(library, join(directory, "kit-lib.sh"));
+  writeFileSync(join(directory, "kit-lib.mjs"), [
+    "export const kitRoot = (here) => `root from mjs: ${here}`;",
+    "export const kitResult = (status, text) => console.log(`result from mjs: ${JSON.stringify([status, text])}`);",
+    "export const kitHideUserInfo = (text) => `hidden by mjs: ${JSON.stringify(text)}`;",
+  ].join("\n"));
+  const shell = (body: string) => spawnSync("/bin/bash", ["-c", `set -euo pipefail; source "${directory}/kit-lib.sh"; ${body}`], {
+    encoding: "utf8", env: kitEnv(), cwd: directory, timeout: 5000,
+  });
+  const root = shell(`unset KIT_ROOT; kit_root "${directory}"`);
+  assert.equal(root.stdout, `root from mjs: ${directory}\n`, root.stderr);
+  // The words go over stdin, whole: Git Bash rewrites path-like arguments it hands Node on Windows.
+  const result = shell("kit_result ok $'one\\ntwo' /c/three 'https://u:t@h/x'");
+  assert.equal(result.stdout, `result from mjs: ${JSON.stringify(["ok", "one\ntwo /c/three https://u:t@h/x"])}\n`, result.stderr);
+  const hidden = shell("kit_hide_user_info 'https://u:t@h/x /c/y'");
+  assert.equal(hidden.stdout, `hidden by mjs: ${JSON.stringify("https://u:t@h/x /c/y")}\n`, hidden.stderr);
+});
+
+test("without Node the shell helpers print no unhidden text: a RESULT line holding back a URL, no root, no hidden text", (t) => {
+  const env = fixtureEnv(temp(t));
+  // kit update runs without Node: its RESULT line keeps its status, and its words when they hold no URL.
+  for (const status of ["ok", "fail"]) {
+    const plain = bash(`kit_result ${status} $'updated to\\nabc' /c/x`, env);
+    assert.equal(plain.status, 0);
+    assert.equal(plain.stdout, `RESULT: ${status} updated to abc /c/x\n`);
+    assert.equal(plain.stderr, `${nodeError}\n`);
+  }
+  const result = bash("kit_result fail 'update cannot fetch main from https://u:fake-token@h/x and (x_ssh://t@h/y), nor git@h:a/b'", env);
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, "RESULT: fail update cannot fetch main from (URL held back) and (URL held back) nor git@h:a/b\n");
+  const bad = bash("kit_result $'bad\\nstatus' 'https://u:fake-token@h/x'", env);
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stdout, `RESULT: fail ${nodeError.replace(/^kit: /, "")}\n`);
+  const hidden = bash("kit_hide_user_info 'https://u:fake-token@h/x'", env);
+  assert.equal(hidden.status, 1);
+  assert.equal(hidden.stdout, "");
+  const root = bash("unset KIT_ROOT; kit_root", env);
+  assert.equal(root.status, 1);
+  assert.equal(root.stdout, "");
+  // KIT_ROOT, the root the front door found, still answers.
+  assert.equal(bash("kit_root", { ...env, KIT_ROOT: "/given" }).stdout, "/given\n");
+});
+
+test("a kit-lib.mjs that does not load still ends the helper and the front door with one RESULT line", (t) => {
+  const kit = realpathSync(temp(t));
+  for (const file of ["kit", "kit-lib.sh"]) copyFileSync(file, join(kit, file));
+  writeFileSync(join(kit, "kit-lib.mjs"), 'throw new Error("boom");\n');
+  // kit update, which repairs such a kit, still ends with its own status: its words kept, each URL held back.
+  const result = spawnSync("/bin/bash", ["-c", `source "${kit}/kit-lib.sh"; kit_result ok x https://u:fake-token@h/y`], { encoding: "utf8", env: kitEnv(), timeout: 5000 });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, "RESULT: ok x (URL held back)\n");
+  assert.match(result.stderr, /boom/);
+  const bad = spawnSync("/bin/bash", ["-c", `source "${kit}/kit-lib.sh"; kit_result maybe x`], { encoding: "utf8", env: kitEnv(), timeout: 5000 });
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
+  const frontDoor = spawnSync("/bin/bash", [join(kit, "kit"), "where"], { encoding: "utf8", env: { ...kitEnv(), KIT_ROOT: undefined, KIT_HOME: kit }, timeout: 5000 });
+  assert.equal(frontDoor.status, 2);
+  assert.equal(frontDoor.stdout, "RESULT: fail kit-lib.mjs did not run (its error is above)\n");
+  assert.match(frontDoor.stderr, /boom/);
+});
+
 test("kitHidingLog hides a token split across chunks and on a last line with no newline, keeping each stream apart", () => {
   const written: string[] = [];
   const log = kitHidingLog((text: string) => written.push(text));
@@ -652,6 +764,8 @@ test("the real kit keeps version as an inside helper (kit doctor shows it), unli
 const envAllowed: [string, RegExp][] = [
   ["tests/kit-commit.test.ts", /commitBuilderWork\(|const rootEnv = /],
   ["tests/kit-doctor.test.ts", /spawnSync\("git"/],
+  // The in-process kit init test keeps a copy of the test's own env to put back afterwards; its run sees the fixture's.
+  ["tests/kit-init.test.ts", /^  const saved = \{ \.\.\.process\.env \};$/],
   ["tests/kit-specs.test.ts", /spawnSync\("git"|spawnSync\(process\.argv\[2\]/],
   ["tests/kit-sweep.test.ts", /GIT_AUTHOR_DATE/],
   ["tests/kit-shots.test.ts", /chromium\.launch\(/],
@@ -798,6 +912,25 @@ test("while kit pr runs spec files alone it holds the machine's quiet lock and n
   assert.match(waited.stdout, /RESULT: ok job ran/);
   // The line the ended holder left in the file stops nothing.
   quick(["job"]);
+});
+
+test("kitQuietLock names whose lone run holds the quiet lock, unless nobody holds it, it is the caller's own run or there is no flock", (t) => {
+  const state = temp(t), lock = join(state, "agent-kit/quiet.lock");
+  const env = { PATH: process.env.PATH, XDG_STATE_HOME: state };
+  assert.equal(kitQuietLock(env), null, "no lock file");
+  mkdirSync(dirname(lock), { recursive: true });
+  writeFileSync(lock, "");
+  assert.equal(kitQuietLock(env), null, "a lock file nobody holds");
+  const holder = spawn("flock", ["-o", "-x", lock, "sleep", "10"]);
+  t.after(() => { holder.kill(); });
+  const held = () => spawnSync("flock", ["-n", lock, "true"]).status !== 0;
+  for (let i = 0; i < 200 && !held(); i++) spawnSync("sleep", ["0.02"]);
+  writeFileSync(lock, `${holder.pid} ke 60 \n`);
+  assert.deepEqual(kitQuietLock(env), { path: lock, owner: "ke 60" });
+  assert.equal(kitQuietLock({ ...env, KIT_QUIET_HOLDER: String(holder.pid) }), null, "the lone run's own kit calls");
+  assert.equal(kitQuietLock({ ...env, KIT_FLOCK: join(state, "no-flock") }), null, "no flock, nothing waits");
+  writeFileSync(lock, "\n");
+  assert.deepEqual(kitQuietLock({ ...env, KIT_QUIET_HOLDER: "" }), { path: lock, owner: "unknown" });
 });
 
 test("a kit job waiting for a lone browser run stops at once on SIGTERM", async (t) => {

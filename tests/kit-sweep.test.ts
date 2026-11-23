@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 // @ts-expect-error The agent helpers are plain JavaScript without declarations.
-import { isoWeek } from "../agent-run.mjs";
+import { isoWeek } from "../review-budget.mjs";
 import { kitEnv } from "./support/kit-env.ts";
 
 const script = resolve("kit.d/sweep"), kit = resolve("kit");

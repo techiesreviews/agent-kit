@@ -345,6 +345,34 @@ test("--pieces (kit init --all's own step) writes the Messages to Lex section in
   assert.ok(readFileSync(join(work, "AGENTS.md"), "utf8").includes(`## Messages to Lex\n${section}\n`));
 });
 
+// kit init's entry, called in this process as a test calls it (TOOLS-291): arguments in, the exit code out, and the test
+// process goes on after a failure as after a pass.
+test("kit init runs in-process through its entry: a refusal and a --pieces run each give their exit code", async (t) => {
+  const f = fixture(t);
+  const { work } = f.repo("in-process", { "scripts/agents/kit.json": JSON.stringify({ project: "p", branches: { land: "dev" } }), "AGENTS.md": "# Agents\n" });
+  // The run sees the fixture's environment, as a spawned kit init would (temporary HOME and XDG folders, no KIT_LIB_MJS
+  // from a kit pr run, no global git config); this process's own comes back afterwards.
+  const saved = { ...process.env };
+  const environment = (values: NodeJS.ProcessEnv) => {
+    for (const name of Object.keys(process.env)) if (!(name in values)) delete process.env[name];
+    Object.assign(process.env, values);
+  };
+  t.after(() => environment(saved));
+  environment({ ...f.env, KIT_ROOT: work });
+  const said: string[] = [];
+  t.mock.method(console, "log", (line: string) => { said.push(line); });
+  t.mock.method(process.stderr, "write", () => true);
+  const { init } = await import("../kit.d/init");
+  assert.equal(await init(["--light", "--full"]), 2);
+  assert.equal(said.at(-1), "RESULT: fail init --light and --full do not go together");
+  assert.equal(await init(["--pieces"]), 0);
+  assert.match(said.at(-1) ?? "", /^RESULT: ok init wrote \d+ files?$/);
+  assert.match(readFileSync(join(work, "AGENTS.md"), "utf8"), /## Messages to Lex\n/);
+  // A second run finds nothing left to write: each call starts from its own arguments, not the last run's.
+  assert.equal(await init(["--pieces"]), 0);
+  assert.equal(said.at(-1), "RESULT: ok init nothing to write (already set up)");
+});
+
 test("a rulebook without the rule fails kit init with a RESULT line naming it, and writes nothing", (t) => {
   const f = fixture(t);
   writeFileSync(join(f.kit, "docs/kitchen.md"), "# Rulebook without the rule\n");
@@ -762,6 +790,22 @@ test("--all lands the missing pieces in every listed project through its own kit
   assert.match(again.stdout, new RegExp(`^RESULT: fail init stuck: ${stuck}-kit-init-pieces or branch kit/init-pieces is left from an earlier run; land or remove it, then rerun$`, "m"));
 });
 
+test("--all names a settings file on origin that does not parse when the main checkout has none, rather than skip the project", (t) => {
+  const f = fixture(t);
+  Object.assign(f.env, ident);
+  const unread = olderProject(f, "unread", (work) => writeFileSync(join(work, "scripts/agents/kit.json"), "{ not json\n"));
+  rmSync(join(unread, "scripts/agents/kit.json"));
+  writeFileSync(join(f.state, "agent-kit/projects.json"), JSON.stringify(f.projects()));
+  const { all } = standInKit(f);
+  const run = all();
+  assert.equal(run.status, 1, run.stdout + run.stderr);
+  assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")).map((line) => line.replace(/(is unreadable \().*/, "$1…")), [
+    "RESULT: fail init unread: scripts/agents/kit.json on origin/main is unreadable (…",
+    "RESULT: fail init --all: 0 updated, 0 up to date, 0 skipped, 1 failed (unread)",
+  ]);
+  assert.equal(existsSync(`${unread}-kit-init-pieces`), false);
+});
+
 test("--all skips a project with no origin or no settings on origin, names old kit files, links shared node_modules and stops a slow kit pr", (t) => {
   const f = fixture(t);
   Object.assign(f.env, ident);
@@ -785,6 +829,8 @@ test("--all skips a project with no origin or no settings on origin, names old k
   writeFileSync(join(edited, "notes.txt"), "mine\n");
   const lost = olderProject(f, "lost");
   f.git(lost, "remote", "set-url", "origin", join(f.directory, "nowhere.git"));
+  // A settings file that does not parse is named as broken, never taken for a missing one.
+  const broken = olderProject(f, "broken", (work) => writeFileSync(join(work, "scripts/agents/kit.json"), "{ not json\n"));
   // This run has no git identity (nor a guess from EMAIL or the host name): a project commits, and runs kit pr, as its
   // landing branch's last author; one with its own identity keeps it.
   const landed = (main: string, who: string) => {
@@ -808,7 +854,8 @@ test("--all skips a project with no origin or no settings on origin, names old k
   // all() adds the fixture's identity unless told otherwise.
   const run = all({ KIT_INIT_PR_TIMEOUT: "1", ...Object.fromEntries(Object.keys(ident).map((key) => [key, undefined])) });
   assert.equal(run.status, 1, run.stdout + run.stderr);
-  assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")).map((line) => line.replace(/(fetch origin failed: ).*/, "$1…")), [
+  assert.deepEqual(run.stdout.split("\n").filter((line) => line.startsWith("RESULT: ")).map((line) => line.replace(/(fetch origin failed: |is unreadable \().*/, "$1…")), [
+    `RESULT: fail init broken: scripts/agents/kit.json in ${broken} is unreadable (…`,
     `RESULT: ok init edited: skipped: ${edited} has uncommitted changes in notes.txt; commit or land them, then rerun`,
     "RESULT: ok init fresh: skipped: origin/main has no scripts/agents/kit.json; land the project's setup first",
     "RESULT: ok init half: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
@@ -818,8 +865,9 @@ test("--all skips a project with no origin or no settings on origin, names old k
     "RESULT: ok init owned: 2 files changed, 1 file renormalized, through kit pr into main: merged #7 abc1234",
     `RESULT: fail init slow: kit pr timed out after 1s and was stopped; the change waits in ${slow}-kit-init-pieces on kit/init-pieces (its branch on origin may have moved), log ${join(f.state, "agent-kit/init-all/slow.log")}`,
     "RESULT: ok init solo: skipped: no origin remote, so no kit pr; run kit init there by hand",
-    "RESULT: fail init --all: 3 updated (half, nameless, owned), 0 up to date, 3 skipped (edited, fresh, solo), 3 failed (legacy, lost, slow)",
+    "RESULT: fail init --all: 3 updated (half, nameless, owned), 0 up to date, 3 skipped (edited, fresh, solo), 4 failed (broken, legacy, lost, slow)",
   ]);
+  assert.equal(existsSync(`${broken}-kit-init-pieces`), false);
   assert.equal(existsSync(`${legacy}-kit-init-pieces`), false);
   // The slow project's kit pr ran with the shared dependencies linked, as in any of its worktrees.
   // No .gitignore line covers node_modules there: there is none, rather than one kit pr would see as a change.

@@ -304,6 +304,19 @@ test("a scoreboard write failure prints one problem line and never throws", t =>
   assert.equal(errors.length, 1); assert.match(errors[0], /^problem: scoreboard /);
 });
 
+test("a writer leaves a lock it no longer owns in place", t => {
+  const f = fixture(t), saved = process.env.KIT_MAIN_ROOT;
+  process.env.KIT_MAIN_ROOT = f.main;
+  t.after(() => { if (saved === undefined) delete process.env.KIT_MAIN_ROOT; else process.env.KIT_MAIN_ROOT = saved; });
+  const lock = join(f.main, ".scratch/scoreboard/_untracked/build%2Fx-02.json.lock"), other = `${process.pid + 1} ${Date.now()}\n`;
+  // While this writer works, another command has taken the lock over: its lock must survive this writer's release.
+  kitScore({ branch: "build/x-02", root: f.root }, record => {
+    record.rounds = 1;
+    rmSync(lock, { recursive: true }); mkdirSync(lock); writeFileSync(join(lock, "owner"), other);
+  });
+  assert.equal(readFileSync(join(lock, "owner"), "utf8"), other);
+});
+
 test("parallel writers to one record lose no update; a lock held past the wait is one problem line", async t => {
   const f = fixture(t), library = pathToFileURL(resolve("kit-lib.mjs")).href;
   const writer = (name: string, wait = "5000", umask = "") => new Promise<{ status: number | null; stderr: string }>((accept, reject) => {
@@ -334,6 +347,12 @@ kitScore({ branch: "build/x-01", root: ${JSON.stringify(f.root)} }, record => { 
   const held = await writer("late", "100");
   assert.equal(held.status, 0); assert.match(held.stderr, /^problem: scoreboard lock .+ is held/);
   assert.equal(names().includes("late"), false);
+  // So is an old one: a live owner's lock is never taken over, however long it has been held.
+  utimesSync(`${path}.lock`, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+  const waited = await writer("late-old", "100");
+  assert.match(waited.stderr, /^problem: scoreboard lock .+ is held/);
+  assert.equal(names().includes("late-old"), false);
+  assert.match(readFileSync(`${path}.lock/owner`, "utf8"), new RegExp(`^${process.pid} `));
   rmSync(`${path}.lock`, { recursive: true });
   // An owner file that cannot be written (a read-only lock folder) leaves no lock behind.
   if (process.getuid?.() !== 0) {

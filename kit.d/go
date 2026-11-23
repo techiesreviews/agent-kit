@@ -88,8 +88,11 @@ async function main() {
   // On Windows each look reads one CIM process list (about 0.4s): once a second is enough.
   const every = kitJobPlatform() === "win32" ? 1000 : 200;
   while (kitJobRunning(record) && Date.now() < deadline) await delay(Math.min(every, Math.max(10, deadline - Date.now())));
+  const running = kitJobRunning(record);
+  // The log is read after the last look: a job that ended during it has all its lines there (its RESULT line, the
+  // time limit's line), as its wrapper ends only after the job's tree, and writes its time limit line before its exit record.
   const lines = logLines(directory);
-  if (kitJobRunning(record)) {
+  if (running) {
     const since = Date.parse(kitJobRecord(directory, "started") ?? "");
     console.log(`RUNNING: ${name} (${Number.isFinite(since) ? elapsed(Date.now() - since) : "unknown"}, step ${step(lines)}). Run again: ${again}`);
     return 75;

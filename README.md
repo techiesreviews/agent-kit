@@ -61,7 +61,7 @@ The PR's review block says "Verdict: pending" while a new head (after a "behind"
 
 After a merge from the base, the "changes since the last review" file lists only the branch's own commits (merges left out, so a conflict fixed inside a merge commit is not in it). A lead who lands a builder's branch answers the builder's rounds, so the PR line counts them and names every model the rounds used. A ticket's risk comes from its title and its whole text (an Orbit card's description and Done when line too) and the files it names, never from the follow-ups `kit pr` adds later.
 
-`kit pr` counts the fix rounds from the review records (TOOLS-287): each earlier head of the branch at which a review left a finding above a nit, Claude's rounds (the chain of `findings.json` records) and the branch's earlier second looks alike. Reviews at the same head (both looks, or a round after a decline) are one round, and a clean or nits-only review calls for no fix and counts none. Once 3 are used (5 for a risky change), only blockers (P0, P1) block, for both looks, and the shoulds left land as follow-ups for Lex, never as approval. The count survives a rebase that keeps the patch only while the head stays (Claude's review is reused, and the second looks are found from the head it saw); the next commit after it starts the count again, as Claude's review starts again at round 1 once the old head is gone from the history. A rebase that changes the patch starts it again at once, and so does any rebase in the docs tier, which has no Claude review to anchor it. Rounds the cut `kit fix` saved (`.scratch/kit-fix`) still count. A lead may give `--waive` more than once: ids count in any of the reasons, and counts add up (once any reason names an id, the counts are not read). Nor does anything hand a helper's declined findings to the next review any more (`kit fix` set `ASE_REVIEW_DECLINED` and saved them): a decline goes, with its reason, in the helper's report and the PR text, and the lead waives it by id.
+`kit pr` counts the fix rounds from the review records (TOOLS-287): each earlier head of the branch at which a review left a finding above a nit, Claude's rounds (the chain of `findings.json` records) and the branch's earlier second looks alike. Reviews at the same head (both looks, or a round after a decline) are one round, and a clean or nits-only review calls for no fix and counts none. Once 3 are used (5 for a risky change), only blockers (P0, P1) block, for both looks, and the shoulds left land as follow-ups for Lex, never as approval. The count survives a rebase that keeps the patch only while the head stays (Claude's review is reused, and the second looks are found from the head it saw); the next commit after it starts the count again, as Claude's review starts again at round 1 once the old head is gone from the history. A rebase that changes the patch starts it again at once, and so does any rebase in the docs tier, which has no Claude review to anchor it. Rounds the cut `kit fix` saved (`.scratch/kit-fix`) still count. A lead may give `--waive` more than once: ids count in any of the reasons, and counts add up (once any reason names an id, the counts are not read). Nor does anything hand a helper's declined findings to the next review any more (`kit fix` set `ASE_REVIEW_DECLINED` and saved them; `kit review` no longer reads it, TOOLS-293): a decline goes, with its reason, in the helper's report and the PR text, and the lead waives it by id.
 
 A `--ticket` file outside the repo, or one git ignores (a brief `kit brief` wrote into `.scratch`), gets the follow-ups written into it and no commit, and no commit names its commits; the PR body and comment hold the follow-ups as for any ticket (TOOLS-337).
 
@@ -288,32 +288,108 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   that is installed but cannot start (the system blocks it, the `/proc` check fails). `kit doctor`'s `key lock:` line
   searches the key folders as a run in that worktree would, so it says "on" only where a run would really start: a
   key folder that cannot be listed, is too large or links to a folder the lock cannot hide shows there first.
-- **What the key lock does not do.** It keeps an agent the kit starts from reading the key files while it runs; it does
-  not confine what the agent writes. A build writes wherever the user can (the worktree, the repository's Git folder and
-  settings, files under HOME), and what it leaves runs later with whoever starts it. The kit's own later steps are
-  covered (TOOLS-303):
+- **Write fence (TOOLS-397).** A locked build and `kit pr`'s locked checks see the disk read-only, with writes only to
+  their worktree, Git common folder and private run state. Home setup files, including `.gitconfig`, `.bashrc`,
+  `.profile`, `.local/bin`, `.config/systemd/user` and `.ssh`, stay read-only or hidden. CLI state and caches use private
+  folders rather than writable home folders. This uses the same bubblewrap mount boundary as the clean room in
+  `git-safety.mjs`, facing the other way: the build keeps its work and loses write access to the rest of the machine;
+  git's ssh keeps the keys and loses access to the build. No string filter decides where a write may go. The kernel
+  also refuses writes through a worktree link into HOME. Codex keeps its own profile, with only the run's private
+  folder writable rather than all of `/tmp`, on every platform Codex supports. Claude's build state starts with copies of its own login and settings;
+  `CLAUDE.md`, `output-styles`, skills and other resources are read-only links. A locked build refuses a `CLAUDE_CONFIG_DIR`
+  (or a linked login or settings file) that leads into the worktree or Git folder; move `CLAUDE_CONFIG_DIR` outside them. A build's artifact folder holds a `cli-state` link to its private
+  state folder under `${XDG_STATE_HOME:-~/.local/state}/agent-kit/fence/`, so a resume keeps its session across reboots.
+  The path to `cli-state` must have no links inside the worktree, Git folder or other writable roots; fresh starts and
+  resumes through such a link are refused.
+  The parent fence folder is masked and read-only inside locked runs, and each session has an owner record tied to its
+  `cli-state` path and worktree, so sibling sessions and their login copies stay hidden from other builds, reviews and
+  checks, another build cannot claim a session, and a build cannot rename its own state root. That folder may contain
+  the CLI's refreshed login; on resume, a newer home login is copied into the private folder inside the write fence, while an untrusted build's
+  copy is never written back to HOME. Resuming a pre-fence Claude build with no `cli-state` migrates only that session's
+  transcript from the original Claude folder into its new private state. `worktrees.sh --prune` removes saved fence folders belonging to pruned worktrees;
+  when removing artifacts by hand, read the `cli-state` link and remove that state folder too. A removed session gives a message to start a new build. The lead must check a real Claude login refresh
+  before merging a change to this isolation. Checks' private temporary folders are removed when `kit pr` exits.
+  A push to a folder remote allows writes only when the destination is a direct bare Git repository folder outside home
+  setup and system folders with no links on the way, validated through an open directory handle and re-checked up to
+  launch. A destination already inside the worktree or Git common folder needs no separate mount. For an outside folder,
+  bubblewrap 0.10 or newer mounts it by handle (`--bind-fd`), blocking replacement through mounting; older bubblewrap
+  (such as Ubuntu 24.04's 0.9) falls back to mounting the verified path, so an unlocked process swapping that outside
+  folder for a relative link in the short gap between the launch check and mount is not blocked (a locked build still
+  cannot write outside its worktree to make that swap). Its hooks still see no keys. Tools that
+  insist on writing to a fixed home path fail; use their cache or state setting to put those writes in the worktree or
+  `$TMPDIR`. On Linux, installed Playwright browsers remain readable at their original cache path when `PLAYWRIGHT_BROWSERS_PATH`
+  is unset. There is no bubblewrap fence where the lock is off or runs unwrapped (macOS and Windows); Codex keeps its native profile there.
+- **What the key lock does not do.** On Linux with bubblewrap, a locked build and `kit pr`'s locked checks write only to
+  their worktree, Git common folder and private run state (Write fence, above), and what a build leaves inside its
+  worktree and Git folder still runs later with whoever starts it. Where the lock is off or runs unwrapped (macOS,
+  Windows, or `ASE_KEY_GUARD=off`), a build writes wherever the user can (the worktree, the repository's Git folder and
+  settings, files under HOME). The kit's own later steps are covered (TOOLS-303):
   - **Git calls.** Every git call the runner and `kit pr` make on a build's worktree (`kit pr`'s own, the kit's helpers
-    in its process, and those of the programs it starts: `kit review`, `gh`) runs with `git-safety.mjs`'s settings: no
-    hooks (`core.hooksPath=/dev/null`), no file system monitor, no signing or signature checks, no automatic maintenance
-    or submodule recursion, and the settings in the repository's own config that name a program set empty, which starts
-    nothing: those whose name ends in command, cmd, program, helper, driver, textconv, editor, pager, askpass, proxy,
-    pack, hook, filter, clean, smudge, process or external (a filter, `diff.external`, a text converter, a merge driver,
+    in its process (the release check, the review and the second look among them), and those of the programs it
+    starts (`gh` among them)) runs with `git-safety.mjs`'s settings: no hooks (`core.hooksPath=/dev/null`), no file
+    system monitor, no signing or signature checks, no automatic maintenance or submodule recursion, and the settings
+    in the repository's own config that name a program set empty, which starts nothing: those whose name ends in
+    command, cmd, program, helper, driver, textconv, editor, pager, askpass, proxy, pack, hook, filter, clean, smudge,
+    process or external (a filter, `diff.external`, a text converter, a merge driver,
     `core.sshCommand`, `core.alternateRefsCommand`, a credential helper...), every alias, per-command pager and trace2
     target. Settings that only commands `kit pr` never runs read (`difftool.<tool>.path`, `submodule.<name>.update`) are
-    not matched. A call without the network reads no global or system Git config (a build can write `~/.gitconfig`); the
+    not matched. A call without the network reads no global or system Git config (an earlier unlocked build may have changed `~/.gitconfig`); the
     user's name and e-mail, the excludes file and the line-ending settings come along. A fetch or push keeps the global
     config (its credential helper) and is refused while the repository's own config holds `http.*` or `credential.*`
     settings. Every call allows only the transports git has itself (file, git, http, https, ssh), and a fetch or push
     also refuses a remote helper the repository's config names (`remote.<name>.vcs`, a `<helper>::` URL or rewrite), so
-    no `git-remote-<name>` from PATH starts. A fetch or push starts git's ssh by its full path (TOOLS-320), found as the
-    programs below are: the lead's `GIT_SSH_COMMAND`, else `core.sshCommand` from the lead's own config (the
-    repository's is set empty), else `GIT_SSH`, else `ssh`, with the command's other words kept, and where a PATH folder
-    holds a link into the worktree or the Git folder the command's PATH leaves that folder out, for a program it starts
-    by name in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot be told (shell syntax beyond
-    words and quotes, an expansion, `env`, a `PATH=` of its own), or an ssh PATH holds only as such a link, is swapped
-    for one that says so and fails, so only a call to an ssh remote stops. `kit pr` pushes to a folder remote (whose hooks git runs without
-    these settings) inside the key lock. It weighs every push address the remote lists, rewrites applied (TOOLS-320):
-    a folder beside other addresses (which need the credentials the lock hides), or an address on this machine itself
+    no `git-remote-<name>` from PATH starts. Git's ssh for a fetch or push is the lead's `GIT_SSH_COMMAND`, else
+    `core.sshCommand` from the lead's own config (the repository's is set empty), else `GIT_SSH`, else `ssh`.
+    - **On Linux it runs in a clean room (TOOLS-390).** The key lock cannot hold it: ssh needs the keys that lock
+      hides. So it runs in the mirror image, a bubblewrap room (started by its full path) where the worktree, every
+      other worktree of the repository and the Git folder are empty folders, while the rest of the machine is as it is,
+      so ssh still reads its keys, its agent and `known_hosts`. Root-owned, safely permissioned client config files in
+      `/etc/ssh/ssh_config` and `/etc/ssh/ssh_config.d`, and files their `Include` lines name, get private, read-only
+      copies in the room, with the same bytes. Includes from the user's config and an explicit `ssh -F` config are
+      followed too, including globs and links. This keeps OpenSSH's owner check working when the user namespace shows
+      the machine's root as nobody. Nothing in the machine's config changes. The other worktrees are the main one (the
+      folder that
+      holds the Git folder as `.git`, or the one its `core.worktree` names) and each linked one whose entry in the Git
+      folder and `.git` file point at each other, as git checks them. Since a build can write the Git folder, a folder
+      named there is not hidden when it is `/`, holds the home folder, `/opt`, `/tmp`, `/var` or a system folder
+      (`/usr`, `/etc`, `/run`, …), or lies inside a system folder; only a folder below `/usr/local/src` or `/usr/src`, such as a checkout in
+      `/usr/local/src/project`, is hidden there, PATH folders in it too. The
+      room has a process list of its own and starts in `/`. A path that leads into the build's folders ends in "not
+      found" there, however it is written: a `/proc/self/cwd/ssh` link on PATH, a link folder such as
+      `<worktree>/tools-link`, another process's `/proc/<pid>/cwd`, or a link a build changes after the kit looked and
+      before the room starts; the kit then adds one line that names the empty folders. So the lead's own ssh command
+      runs as written (a wrapper script, `env`, `sh -c`, a `$` word), with none of the line rules below, and git keeps
+      telling its kind of ssh from the lead's first word (`GIT_SSH_VARIANT`, unless the lead set one). An ssh command
+      that lives in one of those folders (another worktree of the same repository) is not found either. Each fetch or
+      push ends every process its room started, so an ssh `ControlPersist` connection does not outlast it. Where the
+      room cannot start (bubblewrap missing or blocked), or would hide the home folder or ssh's agent (a repository
+      that holds them), a call to an ssh remote stops with a line that says why (`ASE_KEY_GUARD=off` runs it
+      without). Inside `kit pr`'s lock for its checks no second sandbox starts (see `kit pr`'s checks, below), so
+      git's ssh there keeps the path filter; the key files are hidden there anyway. `kit doctor` says which:
+      `keyed steps: clean room on`, or not on this machine.
+    - **What the room does not close.** Git itself still reads the Git folder before it starts ssh; its settings stay
+      guarded as above (no hooks, program settings set empty). The room alone does not protect home setup:
+      `~/.gitconfig` (a fetch or push reads the global config), `~/.bashrc`, a PATH folder such as `~/.local/bin`, or
+      `~/.ssh/config`. A remote over https never starts ssh at all: it signs in through the credential helper the
+      global config names. The write fence above (TOOLS-397) now keeps locked builds and checks from changing those
+      files. Files left by earlier unlocked runs still need review. A process from an unlocked build still running
+      when the room is up could move a hidden folder aside and put another folder at its path, which the room does not hide; a
+      link into it then reaches that folder. And a main worktree the Git folder does not record (a Git folder made with
+      `--separate-git-dir` and no `core.worktree`) stays visible during a fetch or push from a linked worktree.
+    - **On macOS and Windows (no bubblewrap) it is as before:** git's ssh starts by its full path (TOOLS-320), found as
+      the programs below are, with the command's other words kept, and where a PATH folder holds a link into the
+      worktree or the Git folder, or into `/proc` (`ssh -> /proc/self/cwd/ssh`, or `/dev/fd/../cwd/ssh`, the same through
+      `/dev/fd`; TOOLS-390), or itself leads there (Programs by name, below), the command's PATH leaves that folder
+      out, for a program it starts by name in turn (`timeout 30 ssh`, a wrapper script). A command whose program cannot
+      be told (shell syntax beyond words and quotes, an expansion, `env` by any name or started in turn, a shell
+      started from it, or anywhere in it a `PATH=` or a shell variable that runs code from elsewhere, below;
+      TOOLS-329), or an ssh PATH holds only as such a link, is swapped for one that says so and fails, so only a call
+      to an ssh remote stops. A link a build changes after that check is not caught there.
+
+    `kit pr` pushes to a folder remote (whose hooks
+    git runs without these settings) inside the key lock. It weighs every push address the remote lists, rewrites
+    applied, the global and system config's too, as the push reads them (TOOLS-320, TOOLS-329): a folder beside other
+    addresses (which need the credentials the lock hides), or an address on this machine itself
     (localhost, the machine's own name, or a host any of whose addresses is loopback or one of the machine's own, whose
     hooks run outside any lock), stops the push.
     `safe.directory` names only the worktree and its Git folder. The runner's own git calls also run inside the lock where
@@ -335,22 +411,70 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
     not exist (macOS, Windows) or `ASE_KEY_GUARD=off`, the checks run as before and the PR's test lines say `checks: not
     locked (…)`.
   - **Programs by name.** The runner and `kit pr` start git, `gh`, bubblewrap and a CLI by their full path, found only
-    in PATH's full-path folders outside the worktree and the repository's Git folder (links followed), and a script's
+    in PATH's full-path folders outside the worktree and the repository's Git folder (links followed, and a folder
+    reached through a link there, such as `<worktree>/tools-link -> /usr/bin`, or one that leads into `/proc`, through
+    `/dev` too (`/dev/fd/../cwd`), counts as inside; TOOLS-390), and a script's
     interpreter the same way: a `#!/usr/bin/env node` CLI, or the API route's `#!/usr/bin/env bash` wrapper, starts the
     interpreter by its full path, never a link someone made into the worktree (an `npm link`, a dotfiles `bin`). A
     `#!/usr/bin/env -S MODE=review node` first line is split as env splits it (quotes, escapes, `NAME=value` words, which
-    env still sets), and one env would expand (`${NAME}`) or that holds another env option is refused (TOOLS-320), as
-    is one with a `PATH=` word anywhere in it or env again as its program (TOOLS-326). The run's PATH leaves those folders out,
-    so `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
+    env still sets; blanks are space, tab, carriage return, vertical tab and form feed, as env reads them), and one env
+    would expand (`${NAME}`) or that holds another env option is refused (TOOLS-320), as is one that starts env again,
+    as its program or among its words (`busybox env`, `timeout 30 env`), or that sets anywhere in it (joined to an `-S`
+    option or inside one quoted string too) `PATH` or a shell variable that runs code from elsewhere: `BASH_ENV`, `ENV`,
+    a `BASH_FUNC_<name>%%` function, `SHELLOPTS`, `BASHOPTS`, `PS4`, `ZDOTDIR`, or `SHELL` (the shell ssh runs a
+    `ProxyJump` through) (TOOLS-326, TOOLS-329). An env under another name (GNU env installed as `gnuenv`) joins a
+    name split by quotes, so `'PA''TH=…'` counts as `PATH=` too, and
+    an `-S` string among the words (`--split` and other short forms of `--split-string` too) that holds `${…}`, which
+    that env could fill in as `PATH=`, is refused; so is a word, or a piece of a `sh -c '…'` string, with only name
+    characters before a `$` and an `=` after it (`"PA${EMPTY}TH=…"`), or with a `$(…)` or backtick in it, while
+    `ssh -i $HOME/…` still runs. A backtick counts even inside single quotes, where sh leaves it alone, so
+    ``ssh -o 'SetEnv=X=`…`'`` is refused too. (Git's ssh command meets these line rules only where it has no clean
+    room, Git calls above.) No shell starts from git's ssh command or from an env -S first line (Lex's
+    decision, TOOLS-329), since a shell can build `PATH=` out of pieces no word holds (`"$1$2"`, `"${1}${2}"`, `IFS=`
+    with `"$*"`): a line that names `sh`, `bash`, `dash`, `zsh`, `ksh` or another shell (by name, by a path or a link
+    that leads to one, a relative one counted from the worktree too, from a variable sh fills in such as `$SHELL`, or
+    inside a quoted string, also as an env -S string joins or ends it: `ba's'h`, `\_bash`, `sh\c`), behind a wrapper too
+    (`timeout 30 sh -c '…'`, `nice bash`, `busybox sh`, `gnuenv zsh`), is refused, and so is a pattern sh would expand
+    there (`*`, `?`, `[`, or a `{` outside quotes, which a bash run as sh expands). A `$NAME` counts as sh fills it in
+    (`"$E"sh` is `sh`), and a `$NAME` outside quotes whose value holds a pattern or a blank or is empty is refused, as
+    is a `~user` or `~+` path (only `~` and `~/…` are HOME), and so is a variable sh sets itself whatever the run holds
+    (`$BASH`, `$_`, `$PWD`, `$PPID` and the like, and `$SHELL` where the run has none). ssh's `ProxyCommand` or
+    `LocalCommand` is refused too, also in a bundle of flags (`-4oProxyCommand=…`) or with its name quoted (not a plain
+    `none`; a quoted `"none"` is a command), since ssh runs it through the user's shell. ssh runs `ProxyJump` (`-J`)
+    through that shell too, as a command of its own with the jump hosts written into it, so a `ProxyJump` with more
+    than `user@host:port` names in it is refused, and so is one beside a word with a `'` in it or an `-F` path with
+    more than plain characters (ssh writes a host written there and that path into the same command). `rc`, `es` and
+    `nu` count only where they name a program PATH or a path leads to, and a copy of a shell under a name of its own is not
+    recognised; a program file a path or PATH leads to in `/proc` or `/dev` counts as a shell (`/proc/self/exe` is whatever
+    program opens it, the shell itself when a shell runs it), and git's ssh, a first line's program and an env -S
+    line's program that are themselves a path into `/proc` or `/dev` are refused outright. A plain ssh command (`ssh -i ~/.ssh/key`, `timeout 30 ssh`, `-J git@jump.example.com`,
+    `PermitLocalCommand=no`) and an ssh wrapper script still run; an env -S first line may still name the script's own
+    shell (`#!/usr/bin/env -S bash -eu -o pipefail`), as long as it is not told to run a string (`-c` or `+c`, fish's
+    `-C` and any start of `--command` or `--init-command`, nu's `-e`, `--commands` and `--execute`, or pwsh's
+    `-Command` and its short forms) and gets only options: no script of its own, nothing after `--` or a lone `-`, and
+    no `-s` (a value after `-o` or `-O`, and after pwsh's options that take one, such as `-ExecutionPolicy`, still
+    counts). Options are read in order by that shell's rules, and a word taken as a value is never read as an option:
+    the sh family, zsh, fish and nu get only a short list of plain options that load no file (`-eu`, `+x`, `--norc`,
+    `--noprofile`; login and interactive options such as `-l`, `-i`, `--login` and `--interactive`, and pwsh's
+    `-Login` and `-l`, are refused, since they read start-up files; bash runs `—payload` as a script, `bash --rcfile -o payload` runs `payload`, and zsh's `-b` ends its
+    options), with a value only after the sh family's `-o` and `-O` and zsh's `-o`, never at the end of the line, and
+    only from a short list of names (`pipefail`, `errexit`, `nounset`, `extglob` and the like; `zsh -o shinstdin` is `-s`);
+    other shells (rc, es, csh, tcsh and the like) get no options at all; and pwsh only the option names and
+    short forms it documents, written out in full, apart from `-ConfigurationFile` and `-SettingsFile`, which load
+    code from a file (it runs `-payload.ps1`, or a `-File:` word, as a script). A plain first line that names a shell
+    (`#!/bin/bash -eu`) is read by the same rules, so `#!/bin/bash <worktree>/payload` and `#!/bin/bash -s` are refused. The run's PATH leaves those folders out, so
+    `<worktree>/node_modules/.bin` (which npm puts on PATH) supplies none of them; a link elsewhere stays on PATH,
     and the next program on PATH starts in its place, or the run stops and says so. `kit pr` puts links to the git,
     node, gh, bash and sh it found that way in a private folder in the temp folder, first on PATH (and `KIT_NODE` is
-    its own Node), so the kit's helpers in its process and the programs it starts
-    (`gh`, `kit review`, `kit release-check`) take those too; its own git and gh start by the real path. The checks see
-    that folder read-only where they run locked; checks that run unlocked (no bubblewrap), another build running
-    meanwhile, or one run without the lock can write it: `kit pr` checks the links before every program it starts and
-    after every check and stops if one changed, but a program it started (`gh` with its token among them) may take a
+    its own Node), so the kit's helpers in its process (the review and the second look, and the reviewer they start)
+    and the programs it starts (`gh` among them) take those too; its own git and gh, and the release check's git, start
+    by the real path. The checks see that folder read-only where they run locked; checks that run unlocked (no
+    bubblewrap), another build running meanwhile, or one run without the lock can write it: `kit pr` checks the links
+    before every program it starts and after every check and stops if one changed, but a program it started (`gh` with its token among them) may take a
     changed one in between. The API route's wrapper, which reads the key outside the lock, takes its own tools from the
-    system's folders (`command -p`).
+    system's folders (`command -p`). On Windows the system follows a PATH folder's links and junctions, also to a
+    folder not made yet, and letter case does not count: a folder counts as inside where it leads there or is written
+    there, but not where it only passes through a worktree link on the way, as before (TOOLS-390 SL-1).
   - **The machine's kit.** A locked build or review and `kit pr`'s locked checks see the kit copy that runs them and
     `${XDG_DATA_HOME:-~/.local/share}/agent-kit` (every copy `kit update` keeps, its `current` link and clone)
     read-only, so they cannot change the kit `kit pr` and the runner then run with the keys (TOOLS-320); a key path
@@ -359,13 +483,20 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   - **Start-up files.** `BASH_ENV` and `ENV` (the file every non-interactive bash or sh reads first) are dropped for a
     run and for everything `kit pr` starts (not with `ASE_KEY_GUARD=off`), and the file they name is locked like any
     start-up file when it sets a token.
-  What is still not covered: the lead's own commands outside the kit (a git or a shell the lead runs by hand reads what
-  a build wrote under HOME: `~/.gitconfig`, `~/.bashrc`, a PATH folder there), a Node kept under HOME (an nvm Node),
-  which a build or a check can change and `kit pr` then runs, the machine's kit copy where builds and checks run
+  What is still not covered: the lead's own commands outside the kit, files left by an earlier unlocked run (home setup,
+  a Node kept under HOME, or a global Git or ssh config), the machine's kit copy where builds and checks run
   unlocked (no bubblewrap, or `ASE_KEY_GUARD=off`; Codex's own sandbox keeps it read-only), a `kit pr` started through
-  `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), a fetch or push reading a global Git
-  config a build wrote, and what ssh itself starts from a config under HOME a build wrote (`~/.ssh/config`'s
-  `ProxyCommand`, `Match exec`, or a host name it maps to this machine), and a push host whose address changes between
+  `npm run` (its own `#!/usr/bin/env node` is found before `kit pr` can look), what a program an env -S first line or
+  git's ssh command without a clean room starts does with its own words (only the line's words are read, not the files
+  they name, so `node payload.js` there runs a file a build may have written in the worktree; a program other than a shell can
+  set PATH in its own way, and `timeout 30 node` looks node up by name on the run's PATH, where a link elsewhere into the worktree
+  stays), variables there that have a loader or a runtime load code (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `NODE_OPTIONS`,
+  `PYTHONPATH` and the like) or move another shell's start-up folder (`HOME` for zsh, `XDG_CONFIG_HOME` for fish), a
+  fetch or push reading an existing global Git config (its credential helper among it, for an https remote),
+  what git's ssh in the clean room reads from HOME, and what ssh itself starts from an existing config under HOME (`~/.ssh/config`'s
+  `ProxyCommand`, `Match exec`, or a host name it maps to this machine) or that `ssh -F` names, the host git adds from
+  a push address a build wrote, which an ssh older than 9.6 (unpatched for CVE-2023-51385) with a `ProxyJump` writes
+  into a command its shell runs, which shell that is (ssh starts the run's `SHELL` for a `ProxyJump`), and a push host whose address changes between
   `kit pr`'s check and the push. For those the lead's guard is the review before anything a build wrote is run (`kit
   review` is read-only).
 - Keyed steps happen only in the lead's own process, never inside a locked run. Already the lead's: `git push`, `kit pr`
@@ -569,18 +700,19 @@ two split, the next release conflicted, and a "sync main into dev" PR had to be 
   branch against the changed kit. A kit change lands only when both pass, because every project runs the kit
   once it is released to `main`.
 - After a release to `main`, `kit update` brings it to every project on the machine. `kit update --install-timer`
-  (once per machine, and again after a change to `systemd/` or to `KIT_REPO` or `XDG_DATA_HOME`, which the timer
-  keeps) runs it every 15 minutes through a `systemd --user` timer; `kit update --remove-timer` takes it out.
+  (once per machine, and again after a change to `systemd/`, `KIT_REPO`, `XDG_DATA_HOME` or the folder of the Node
+  24 it found, which the timer keeps) runs it every 15 minutes through a `systemd --user` timer; `kit update --remove-timer` takes it out.
 
 ## Layout
 
 | Path | What |
 | --- | --- |
-| `kit`, `kit-lib.sh`, `kit-lib.mjs` | the front door and the shared library |
+| `kit`, `kit-lib.sh`, `kit-lib.mjs` | the front door and the shared library (a rule the shell and Node both need has one copy, in `kit-lib.mjs`, which the shell asks through Node, the project root, the RESULT line and hiding a URL's user info included; the front door finds Node first and, without Node 24 or newer, or when `kit-lib.mjs` does not load, says so and runs nothing but `--home` and `kit update` (the way to repair the kit); in both cases `kit_result` keeps a small fallback of its own that writes the status and words but holds back each word with a URL; the Node lookup lives only in `kit-lib.sh`) |
 | `kit.d/` | one file per shared command, each with a `# kit:` summary line (an inside helper such as `version` says `# kit-inside:` and stays out of the list) |
 | `hooks/` | the guard hooks (`bash-guard`, `agent-cap`, `session-env`, `brief-guard`, `stop-guard`, and the opt-in `status-nudge`) and their `run.sh` |
 | `context-card.mjs`, `learn.mjs`, `worktree.sh`, `tickets.mjs`, `unit.sh`, `review-findings.mjs`, `second-look.json`, … | helpers beside `kit` that commands and a project's forwarders run through `kit --home` |
 | `orbit-client.mjs`, `ticket-store.mjs`, `orbit-setup.mjs`, `ticket-import.mjs` | the Orbit API client and its secrets file, the ticket store's rules and guards, `kit ticket setup`, and moving a project's ticket files to cards |
+| `ticket.mjs`, `ticket-cards.mjs` | the one seam `kit brief` and `kit pr` ask about the ticket a run works on, with its files adapter, and its Orbit adapter (reading, claiming and closing a card) |
 | `skills.json`, `skills.mjs`, `brief-lib.mjs` | the skills map (names and the kit's own one-line fallbacks, never a skill's text), and the brief `kit brief` writes |
 | `launcher/` | the two launchers `kit init` copies into a project |
 | `systemd/` | the update timer and service `kit update --install-timer` writes into `~/.config/systemd/user/` |
@@ -596,8 +728,19 @@ into this repo or any project. `.gitignore` keeps skill folders out; `skill-guar
 matches a line from the local skill files. Licence texts are shared word for word, so they are never compared:
 a skill's licence files (`LICENSE`, `UNLICENSE`, `COPYING`, `NOTICE`, a longer name ending in `LICENSE` such as
 `x-1.0.LICENSE.md`, or a font's `OFL.txt` / `Font-OFL.txt`) give no skill lines, and a project's own licence in its
-top folder (a licence name on its own, such as `LICENSE`, `LICENSE.md`, `LICENSE-MIT`, `COPYING` or `UNLICENSE`) is left out of the changed lines `kit pr` checks (`--history` still
-reads it). Tests use made-up skill text only.
+top folder (a licence name on its own, such as `LICENSE`, `LICENSE.md`, `LICENSE-MIT`, `COPYING` or `UNLICENSE`),
+or a font's `OFL.txt` or any filename ending in `-OFL.txt` (any case) in any folder, is left out of the changed
+lines `kit pr` checks.
+Those whole-file exceptions skip all content in those files; `--history` still reads them, and the skill path
+check still applies. The skill-side licence exclusion also accepts a dot before `OFL.txt`.
+Standard MIT, Apache-2.0, BSD-3-Clause and ISC text in any skill file is also left out of the
+index, including comment headers and different line wrapping. `licence-texts.json` holds the standard texts
+(MIT from tsx, Apache-2.0 and Regents BSD from Debian's common licences, generic BSD-3-Clause and ISC). Only lines contained in those texts
+are excluded; outside the whole-file exceptions, a copied skill line alongside a licence still fails, including
+in a vendored `LICENSE.txt`. Generic HTML headers (doctype, html, head, charset, viewport and http-equiv meta tags,
+outside font, stylesheet and icon links, and short titles) give no skill lines, even when combined on one line
+with either quote style, unquoted attributes or reordered meta/link attributes. Other content on that line remains skill text; a copied skill line inside a
+longer or minified page still fails. Tests use made-up skill text only.
 
 A private project may keep its own skill (not a paid one): list each such folder by its repo path in
 `"skillGuard": { "allow": [".claude/skills/<name>"] }` of `scripts/agents/kit.json` (a repo of skills lists

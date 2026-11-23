@@ -5,7 +5,10 @@
 // characters from a skill there. It never prints skill text: only the repo path and line, and the skill's name.
 // A project's own skill folders, listed by path in `skillGuard.allow` of scripts/agents/kit.json, pass the path
 // check; the line check still reads every line in them. A changed file that is the project's own licence (LICENSE,
-// LICENSE.md, COPYING, … in the top folder) is left out of the changed lines: licence texts are shared word for word by design.
+// LICENSE.md, COPYING, … in the top folder), or a font licence (OFL.txt or any name ending in -OFL.txt, any case,
+// in any folder), is left out
+// of the changed lines: licence texts are shared word for word by design.
+// Standard MIT, Apache-2.0, BSD and ISC text in any skill file is also left out of the index.
 // --history reads every blob.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -13,6 +16,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { kitSettingsFile } from "./kit-lib.mjs";
+import licenceTexts from "./licence-texts.json" with { type: "json" };
 
 const usage = "Usage: skill-guard.mjs [--base REF | --history] [--paths-only]";
 const minimum = 60, window = 32, largest = 1 << 20;
@@ -28,22 +32,54 @@ const generated = /(^|\/)(node_modules|\.git|\.venv|venv|site-packages|vendor)\/
 const licenceTail = String.raw`([-.](mit|apache|bsd|isc|mpl|gpl|lgpl|agpl|unlicense|ofl|zlib|lesser)([-.]?v?\d[\d.]*)?(-\d-clause)?)?(\.(md|txt|rst))?$`;
 const licence = new RegExp(String.raw`(^|\/)(licen[cs]e|unlicense|copying|notice|[^/]*[-.]licen[cs]e)${licenceTail}|(^|\/)([^/]*[-.])?ofl\.txt$`, "i");
 // A project's own licence file is in its top folder with a licence name on its own (LICENSE, LICENSE.md, COPYING,
-// UNLICENSE, LICENSE-MIT); a NOTICE, a longer name or a licence in any other folder is read, as it may hold anything.
+// UNLICENSE, LICENSE-MIT); other licence paths are read unless covered by the font exception below.
 const ownLicence = new RegExp(String.raw`^(licen[cs]e|unlicense|copying)${licenceTail}`, "i");
 /** A skill's file that holds a licence text, never read as a source of skill lines. */
 export const licencePath = (path) => licence.test(path);
 /** A project's own licence file, left out of the changed lines (licence texts are shared word for word by design). */
 export const ownLicencePath = (path) => ownLicence.test(path);
+// TOOLS-407 exempts whole font licence files in changed lines, just like own licences; history still reads them.
+const changedLicencePath = (path) => ownLicencePath(path) || /(^|\/)([^/]*-)?ofl\.txt$/i.test(path);
 const shared = (path) => generated.test(path) || licencePath(path);
 // Whole lines every web page shares with some skill's code, never skill text: a page's set-up tags (viewport,
 // charset or http-equiv meta; a link to an outside font, stylesheet or icon), in any attribute spelling.
 export const boilerplate = [
-  /^<meta (?:name="viewport"|charset=|http-equiv=)[^<>]*>$/i,
+  /^<meta (?:name=(?:"viewport"|'viewport'|viewport(?=[\s/>]))|charset=|http-equiv=)[^<>]*>$/i,
   /^<link rel="(?:preconnect|dns-prefetch|preload|stylesheet|icon)" href="https?:\/\/[^"<>]*"[^<>]*>$/i,
 ];
+// A header minified onto one line may use either quote style, omit quotes or reorder its attributes.
+// Body content, scripts and prose remain indexed; a title long enough to hold a skill line does too.
+const headerTags = String.raw`<!doctype html>|<html(?: lang=(?:"[a-z0-9-]+"|'[a-z0-9-]+'|[a-z0-9-]+))?\s*>|<\/?head\s*>|<title>[^<>]{0,${minimum - 1}}<\/title>`;
+const pageHeader = new RegExp(`^(?:${headerTags}|<(?:meta|link)\\s+[^<>]*>|\\s+)+$`, "i");
+
+function sharedSetupTag(tag, source) {
+  source = source.trim();
+  const attributes = [...source.matchAll(/(?:^|\s+)([a-z][\w:-]*)(?:\s*=\s*(?:"([^"<>]*)"|'([^'<>]*)'|([^\s"'=<>`]+)))?/gi)];
+  // Consume every attribute, so text inside a quoted value cannot masquerade as another attribute.
+  if (attributes.map(match => match[0]).join("") !== source) return false;
+  const values = new Map(attributes.map(match => [match[1].toLowerCase(), match[2] ?? match[3] ?? match[4] ?? ""]));
+  if (values.size !== attributes.length) return false;
+  if (tag.toLowerCase() === "meta") {
+    const selectors = ["name", "charset", "http-equiv"].filter(name => values.has(name));
+    if (selectors.length !== 1) return false;
+    return selectors[0] === "name" ? values.get("name").toLowerCase() === "viewport" : Boolean(values.get(selectors[0]));
+  }
+  return /^(?:preconnect|dns-prefetch|preload|stylesheet|icon)$/i.test(values.get("rel") || "") &&
+    /^https?:\/\//i.test(values.get("href") || "");
+}
+
+// Compare content, not filenames: licences also occur inside skill references and source headers.
+// Only exact standard text is shared; a licence title or filename cannot hide another skill line.
+const standardLicences = Object.values(licenceTexts).map(text => normalLine(text).toLowerCase());
+const licenceLine = (line) => normalLine(line.replace(/^\s*(?:\/\*+|\/\/|\*|<!--)\s?/, "").replace(/\s*(?:\*\/|-->)\s*$/, "")).toLowerCase();
+const isStandardLicenceLine = (line) => {
+  const text = licenceLine(line);
+  return text.length > 0 && standardLicences.some(licence => licence.includes(text));
+};
 
 /** A normalised line that is shared web boilerplate, never left in the index. */
-export const isBoilerplate = (line) => boilerplate.some(pattern => pattern.test(line));
+export const isBoilerplate = (line) => (boilerplate.some(pattern => pattern.test(line)) || pageHeader.test(line)) &&
+  [...line.matchAll(/<(meta|link)\s+([^<>]*?)\/?>/gi)].every(([, tag, source]) => sharedSetupTag(tag, source));
 
 /** A tracked path that is a skill: a SKILL.md anywhere, or anything under a folder named skills. */
 export const skillPath = (path) => /(^|\/)SKILL\.md$/i.test(path) || /(^|\/)skills\//i.test(path);
@@ -138,7 +174,7 @@ export function skillIndex(files) {
     if (text.includes("\0")) continue;
     for (const raw of text.split(/\r?\n/)) {
       const line = normalLine(raw);
-      if (line.length < minimum || isBoilerplate(line)) continue;
+      if (line.length < minimum || isBoilerplate(line) || isStandardLicenceLine(line)) continue;
       const key = line.slice(0, window), list = index.get(key) || [];
       if (!list.some(item => item.line === line)) { list.push({ line, skill }); count++; }
       index.set(key, list);
@@ -161,7 +197,7 @@ export function skillMatch(text, { index }) {
 
 const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 1 << 30, stdio: ["ignore", "pipe", "pipe"] });
 
-/** Added lines of base...HEAD plus staged, unstaged and untracked changes, as { path, line, text }; the project's own licence files are left out. */
+/** Added lines of base...HEAD plus staged, unstaged and untracked changes; own and font licence files are left out. */
 function changedLines(root, base) {
   const lines = [];
   const read = (diff) => {
@@ -173,13 +209,13 @@ function changedLines(root, base) {
       const hunk = /^@@ -\S+ \+(\d+)/.exec(text);
       if (hunk) { header = false; number = Number(hunk[1]); continue; }
       if (header) continue;
-      if (text.startsWith("+") && path !== "/dev/null" && !ownLicencePath(path)) lines.push({ path, line: number++, text: text.slice(1) });
+      if (text.startsWith("+") && path !== "/dev/null" && !changedLicencePath(path)) lines.push({ path, line: number++, text: text.slice(1) });
       else if (!text.startsWith("-") && !text.startsWith("\\")) number++;
     }
   };
   read(git(root, ["diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-U0", `${base}...HEAD`]));
   read(git(root, ["diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-U0", "HEAD"]));
-  for (const path of git(root, ["ls-files", "-z", "--others", "--exclude-standard"]).split("\0").filter(path => path && !ownLicencePath(path))) {
+  for (const path of git(root, ["ls-files", "-z", "--others", "--exclude-standard"]).split("\0").filter(path => path && !changedLicencePath(path))) {
     try {
       if (statSync(join(root, path)).size > largest) continue;
       const text = readFileSync(join(root, path), "utf8");

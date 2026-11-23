@@ -28,7 +28,7 @@ import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { sshCommand } from "./key-guard.mjs";
+import { sshCommand, sshRoom } from "./key-guard.mjs";
 
 /** The worktree's top folder, the nearest one from `start` up that holds .git, found without running git; or null. */
 export function gitTop(start) {
@@ -199,14 +199,18 @@ export function gitSafety({ worktree, env = process.env, network = false, git = 
   const start = Number.parseInt(env.GIT_CONFIG_COUNT ?? "", 10) || 0;
   pairs.forEach(([key, value], index) => { extra[`GIT_CONFIG_KEY_${start + index}`] = key; extra[`GIT_CONFIG_VALUE_${start + index}`] = value; });
   extra.GIT_CONFIG_COUNT = String(start + pairs.length);
-  // git's ssh, by its full path (sshCommand): never a bare name a link on PATH leads into the worktree for. Where it
-  // cannot be found that way, the command git gets says why and fails, so only a call to an ssh remote stops.
+  // git's ssh: on Linux in the clean room, where the worktrees and the Git folder do not exist (sshRoom); elsewhere by
+  // its full path (sshCommand), never a bare name a link on PATH leads into the worktree for. Where neither can start
+  // it, the command git gets says why and fails, so only a call to an ssh remote stops.
   if (network) {
     const lead = name => settings.filter(entry => !ownScope(entry.scope) && entry.key.toLowerCase() === name).at(-1)?.value;
-    const ssh = sshCommand(env, { worktree, common, configured: lead("core.sshcommand") });
+    const configured = lead("core.sshcommand");
+    const ssh = sshRoom(env, { worktree, common, configured, git }) ?? sshCommand(env, { worktree, common, configured });
     if (ssh.command) extra.GIT_SSH_COMMAND = ssh.command;
-    // The lead's own choice of ssh kind (the variable, or ssh.variant in their config) stays.
-    if (ssh.variant && !env.GIT_SSH_VARIANT && lead("ssh.variant") === undefined) extra.GIT_SSH_VARIANT = ssh.variant;
+    // The lead's own choice of ssh kind (the variable, or else ssh.variant in their config) stays; auto leaves it to git,
+    // which would tell it from the room's first word, so the kit tells it from the lead's command instead.
+    const chosen = env.GIT_SSH_VARIANT ?? lead("ssh.variant");
+    if (ssh.variant && (chosen === undefined || chosen === "auto")) extra.GIT_SSH_VARIANT = ssh.variant;
   }
   const problem = steering.size ? `the repository's own Git config holds ${[...steering].join(", ")}, which could send the credentials of a fetch or push elsewhere or start a remote helper (a build may have written ${steering.size === 1 ? "it" : "them"}); remove ${steering.size === 1 ? "it" : "them"} with git config --unset-all <name> and run it again` : null;
   return { env: extra, problem };
