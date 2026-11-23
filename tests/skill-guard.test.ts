@@ -100,6 +100,61 @@ test("lines compare without list marks, quotes, headings or extra spaces", () =>
   assert.equal(normalLine("12) step"), "step");
 });
 
+test("project font licences pass in every change state without exempting other paths or history", (t) => {
+  const f = fixture(t);
+  // A licence paragraph may also appear inside a skill reference with an unrelated filename.
+  f.put(join(f.home, ".claude/skills/crane/references/fonts.md"), `${licenceText}\n`);
+  f.put(join(f.repo, "public/fonts/OFL.txt"), `${licenceText}\n`);
+  f.git("add", "."); f.git("commit", "-q", "-m", "font licence");
+  f.put(join(f.repo, "assets/fonts/Crane-OFL.txt"), `${licenceText}\n`);
+  f.git("add", ".");
+  f.put(join(f.repo, "public/fonts/OFL.txt"), `${licenceText}\n${licenceText}\n`);
+  f.put(join(f.repo, "OFL.txt"), `${licenceText}\n`);
+  const clean = f.run(["--base", "HEAD~1"]);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /RESULT: ok skill-guard\n$/);
+  // Only font licence filenames are exempt. The path guard and history check remain active.
+  for (const path of ["fonts/OFL.md", "fonts/OFL.txt.js", "fonts/Crane-OFL-notes.txt", "fonts/OFL.txt/notes.md", "notes.md"])
+    f.put(join(f.repo, path), `${licenceText}\n`);
+  f.put(join(f.repo, "skills/crane/OFL.txt"), `${licenceText}\n`);
+  f.git("add", "-f", ".");
+  const copied = f.run(["--base", "HEAD~1"]);
+  assert.equal(copied.status, 1, copied.stderr);
+  for (const path of ["fonts/OFL.md", "fonts/OFL.txt.js", "fonts/Crane-OFL-notes.txt", "fonts/OFL.txt/notes.md", "notes.md"])
+    assert.ok(copied.stderr.includes(`problem: ${path}:1: holds a line from the local skill crane`), copied.stderr);
+  assert.match(copied.stderr, /problem: skills\/crane\/OFL\.txt: a skill file or skills\/ folder is tracked/);
+  const history = f.run(["--history"]);
+  assert.equal(history.status, 1, history.stderr);
+  assert.match(history.stderr, /problem: public\/fonts\/OFL\.txt@[0-9a-f]{9}:1: holds a line from the local skill crane/);
+});
+
+test("combined page headers pass but copied skill lines inside minified pages still fail", (t) => {
+  const f = fixture(t);
+  const header = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Crane gallery</title></head>';
+  const spaced = '<html> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> <title>Folded jars</title>';
+  f.put(join(f.home, ".claude/skills/crane/templates/header.html"), `${header}\n${spaced}\n`);
+  f.put(join(f.repo, "plate.html"), `${header}<body><p>Welcome</p></body></html>`);
+  f.put(join(f.repo, "gallery.mjs"), `const page = '${spaced}<body>Hello</body></html>';`);
+  f.git("add", "."); f.git("commit", "-q", "-m", "pages");
+  const clean = f.run(["--base", "HEAD~1"]);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /RESULT: ok skill-guard\n$/);
+  assert.equal(f.run(["--history"]).status, 0);
+
+  const mixed = `${header}<body><p>${secret}</p></body></html>`;
+  f.put(join(f.repo, "plate.html"), mixed);
+  // A meaningful HTML line from a skill remains indexed even when it starts with a generic header.
+  const template = `${header}<body><p>${other}</p></body></html>`;
+  f.put(join(f.home, ".claude/skills/crane/templates/mixed.html"), `${template}\n`);
+  f.put(join(f.repo, "gallery.mjs"), `const page = '${template}';`);
+  const copied = f.run(["--base", "HEAD~1"]);
+  assert.equal(copied.status, 1, copied.stderr);
+  assert.match(copied.stderr, /problem: plate\.html:1: holds a line from the local skill crane/);
+  assert.match(copied.stderr, /problem: gallery\.mjs:1: holds a line from the local skill crane/);
+  assert.match(copied.stdout, /RESULT: fail skill-guard 2 problem/);
+  assert.doesNotMatch(copied.stdout + copied.stderr, /paper crane|marbles/);
+});
+
 test("every file of a skill counts, but only lines of 60 or more characters that are not shared boilerplate", (t) => {
   const f = fixture(t);
   const { files, roots } = skillFiles([join(f.home, ".claude/skills"), join(f.home, ".codex/plugins"), join(f.home, "missing")]);
