@@ -68,13 +68,13 @@ Object.assign(process.env, { HOME: testHomeFolder, XDG_CONFIG_HOME: join(testHom
 // ASE_KEY_GUARD and KIT_KEY_PATHS from the shell that started the tests would change what the lock does in every
 // fixture (off: no lock is tested at all; a path: one more folder to search), so they are dropped; a test of either
 // sets it itself.
-for (const name of ["ASE_KEY_GUARD", "KIT_KEY_PATHS", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL"]) delete process.env[name];
+for (const name of ["ASE_KEY_GUARD", "KIT_KEY_PATHS", "KIT_NODE_PIN", "KIT_NODE_FOUND_FOR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL"]) delete process.env[name];
 // KIT_SKILL_HOME names a folder that never exists, so kit doctor's skills map note reads no real skill folder.
 const noSkills = resolve(import.meta.dirname, "../fixtures/no-skill-home");
 // KIT_TALK_STYLE=plain keeps briefs in plain English, and KIT_BG_SCOPE=off keeps kit bg jobs out of the user's
 // systemd; the tests of those two unset them.
 export function kitEnv(): NodeJS.ProcessEnv {
-  const { KIT_HOME: _home, KIT_HOME_DEFAULT: _default, GH_REPO: _repo, GH_HOST: _host, KIT_API_KEY_FILE: _key, KIT_API_CONFIG_DIR: _config, ASE_KEY_GUARD: _guard, KIT_KEY_PATHS: _paths, ...env } = process.env;
+  const { KIT_HOME: _home, KIT_HOME_DEFAULT: _default, KIT_NODE_PIN: _nodePin, KIT_NODE_FOUND_FOR: _nodeFoundFor, GH_REPO: _repo, GH_HOST: _host, KIT_API_KEY_FILE: _key, KIT_API_CONFIG_DIR: _config, ASE_KEY_GUARD: _guard, KIT_KEY_PATHS: _paths, ...env } = process.env;
   return { ...env, KIT_SKILL_DIRS: "", GH_CONFIG_DIR: ghConfig, XDG_STATE_HOME: testState(), KIT_TALK_STYLE: "plain", KIT_BG_SCOPE: "off", KIT_SKILL_HOME: noSkills };
 }
 
