@@ -420,7 +420,7 @@ async function main(args) {
       const chunks = [];
       let status;
       try {
-        if (name === "specs") {
+        if (name === "specs" && !argv.includes("--list")) {
           specsLock = lockFor([], { portLocks: true });
           noteLock(specsLock);
           [program, args] = specsLock.wrap(program, argv);

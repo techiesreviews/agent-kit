@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -5828,7 +5828,7 @@ exec ${JSON.stringify(join(f.bin, "fake-kit"))} "$@"
   assert.ok(realFakeKit.length > 0);
 
   // Also check that unit runs (where Wrangler starts local Workers) can write XDG_CONFIG_HOME/.wrangler/metrics.json
-  // without seeing the real ~/.config/.wrangler secret.
+  // without seeing the real ~/.config/.wrangler secret, and still cannot open the shared port lock files.
   const origNpm = join(f.bin, "npm-orig");
   renameSync(join(f.bin, "npm"), origNpm);
   writeFileSync(join(f.bin, "npm"), `#!/usr/bin/env bash
@@ -5838,6 +5838,10 @@ if [[ "\${1:-}" == "test" ]]; then
   printf '{"deviceId":"unit"}\\n' > "$XDG_CONFIG_HOME/.wrangler/metrics.json"
   if [[ -r ${JSON.stringify(wranglerSecret)} ]]; then
     echo "wrangler secret leaked in unit" >&2
+    exit 1
+  fi
+  if (exec 9>>"$ASE_LOCK_DIR/ase-5226.lock") 2>/dev/null; then
+    echo "port lock was writable in unit" >&2
     exit 1
   fi
 fi
@@ -5855,6 +5859,17 @@ exec ${JSON.stringify(origNpm)} "$@"
   assert.match(result.stdout, /^RESULT: ok merged #73/m);
   assert.equal(readFileSync(join(lockDir, "ase-5226.lock"), "utf8"), "specs-locked\n");
   assert.equal(existsSync(join(lockDir, "sibling.lock")), false);
+
+  // A refused shared port lock (such as a hard link) stops kit pr's specs step with a plain RESULT line.
+  const f2 = fixture(t);
+  const badLockDir = join(f2.dir, "bad-locks");
+  const decoy = join(f2.dir, "decoy");
+  mkdirSync(badLockDir, { recursive: true });
+  writeFileSync(decoy, "decoy\n");
+  linkSync(decoy, join(badLockDir, "ase-5226.lock"));
+  const refused = f2.run([], { ASE_LOCK_DIR: badLockDir, ASE_POOL: "5226" });
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout, /^RESULT: fail specs: shared port lock .*hard link/m);
 });
 
 // TOOLS-329 (SL-3): the push reads the global and system Git config, so their URL rewrites count in kit pr's check of

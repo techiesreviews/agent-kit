@@ -1116,19 +1116,21 @@ test("TOOLS-416: checkLock with portLocks shares ase-<port>.lock flocks while ke
   assert.equal(readFileSync(lockFile, "utf8"), "holder-ok\n");
   assert.equal(existsSync(join(lockDir, "ase-deploy-preview.lock")), false);
 
-  // Swapping a validated lock file for a symlink to ~/.bashrc is caught by wrap() and blocked at mount time.
+  // Swapping a validated lock file for a symlink to ~/.bashrc is caught by wrap() and (with --bind-fd) blocked at mount time.
   const [swappedCmd, swappedArgs] = lock.wrap("bash", ["-c", `echo planted > "$1/ase-5226.lock"`, "sh", lockDir]);
   renameSync(lockFile, `${lockFile}.aside`);
   symlinkSync(bashrc, lockFile);
   assert.throws(() => lock.wrap("bash", ["-c", "true"]), /shared lock file.*changed after validation/);
-  const raced = spawnSync(swappedCmd, swappedArgs, {
-    cwd: worktree,
-    env: { ...portEnv, ...lock.env },
-    stdio: ["ignore", "pipe", "pipe", ...(lock.fds ?? [])],
-    encoding: "utf8",
-    timeout: 30_000,
-  });
-  assert.notEqual(raced.status, 0, raced.stdout + raced.stderr);
+  if (lock.fds.length) {
+    const raced = spawnSync(swappedCmd, swappedArgs, {
+      cwd: worktree,
+      env: { ...portEnv, ...lock.env },
+      stdio: ["ignore", "pipe", "pipe", ...(lock.fds ?? [])],
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.notEqual(raced.status, 0, raced.stdout + raced.stderr);
+  }
   assert.equal(readFileSync(bashrc, "utf8"), "original\n");
   lock.close?.();
 
@@ -1150,22 +1152,78 @@ test("TOOLS-416: checkLock with portLocks shares ase-<port>.lock flocks while ke
   for (const unsafe of [home, dirname(home), "/", join(home, ".config"), "/etc"]) {
     assert.throws(() => checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: unsafe, ASE_POOL: "5226" }, portLocks: true }), /ASE_LOCK_DIR/, unsafe);
   }
-  // Default /tmp remains usable even when HOME sits under /tmp (as in isolated test runs), since /tmp stays read-only.
-  const defaultLock = checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: undefined, ASE_POOL: "5226" }, portLocks: true });
+
+  // Parsing ASE_PORTS / ASE_POOL: ASE_PORTS wins over ASE_POOL, port 65535 is allowed, duplicates collapse,
+  // bad lists and >64 ports fail in plain words.
+  const parseDir = join(dir, "parse-locks");
+  mkdirSync(parseDir);
+  const chosen = checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: parseDir, ASE_POOL: "5226 5236", ASE_PORTS: "65535 65535" }, portLocks: true });
+  t.after(() => chosen.close?.());
+  assert.equal(existsSync(join(parseDir, "ase-65535.lock")), true);
+  assert.equal(existsSync(join(parseDir, "ase-5226.lock")), false);
+  if (chosen.fds.length) assert.equal(chosen.fds.length, 1);
+  chosen.close?.();
+  assert.throws(() => checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: parseDir, ASE_PORTS: "5226,5236" }, portLocks: true }), /ASE_PORTS holds invalid port/);
+  assert.throws(() => checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: parseDir, ASE_POOL: "65536" }, portLocks: true }), /ASE_POOL holds invalid port/);
+  const tooMany = Array.from({ length: 65 }, (_, i) => String(5000 + i)).join(" ");
+  assert.throws(() => checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: parseDir, ASE_POOL: tooMany }, portLocks: true }), /too many shared port lock files/);
+
+  // Default /tmp remains usable even when HOME sits under /tmp, using a non-default high port cleaned up after.
+  const testPort = String(65100 + (process.pid % 400));
+  const tmpLockFile = `/tmp/ase-${testPort}.lock`;
+  t.after(() => rmSync(tmpLockFile, { force: true }));
+  const defaultLock = checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: undefined, ASE_POOL: testPort }, portLocks: true });
   t.after(() => defaultLock.close?.());
-  assert.ok(defaultLock.fds.length <= 1);
+  const [tmpCmd, tmpArgs] = defaultLock.wrap("bash", ["-c", `exec 9>>"$1" && flock -n 9 && echo OK; touch /tmp/kit-416-sibling-${process.pid} 2>/dev/null && echo WROTE || echo RO`, "sh", tmpLockFile]);
+  const tmpRun = spawnSync(tmpCmd, tmpArgs, {
+    cwd: worktree,
+    env: { ...env, ...defaultLock.env },
+    stdio: ["ignore", "pipe", "pipe", ...(defaultLock.fds ?? [])],
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(tmpRun.status, 0, tmpRun.stderr);
+  assert.equal(tmpRun.stdout.trim(), "OK\nRO");
   defaultLock.close?.();
+
+  // Older bubblewrap without --bind-fd falls back to --bind <lockFile> <lockFile> with empty lock.fds and working flock.
+  const oldLockDir = join(dir, "old-bwrap-locks");
+  mkdirSync(oldLockDir);
+  const shimDir = join(dir, "old-bwrap-bin-416"), shim = join(shimDir, "bwrap");
+  mkdirSync(shimDir, { recursive: true });
+  const realBwrap = runProgram("bwrap", env, { worktree, common });
+  writeFileSync(shim, `#!/bin/sh\nif [ "$1" = "--help" ]; then echo "usage: bwrap [OPTIONS...]"; exit 0; fi\nexec ${JSON.stringify(realBwrap)} "$@"\n`, { mode: 0o755 });
+  const oldEnv = { ...env, PATH: `${shimDir}:${env.PATH}`, ASE_LOCK_DIR: oldLockDir, ASE_POOL: "5226" };
+  t.after(() => resetBwrapProbe());
+  resetBwrapProbe();
+  const oldLock = checkLock({ worktree, common, env: oldEnv, portLocks: true });
+  t.after(() => oldLock.close?.());
+  assert.deepEqual(oldLock.fds, []);
+  const oldFile = join(oldLockDir, "ase-5226.lock");
+  const [oldCmd, oldArgs] = oldLock.wrap("bash", ["-c", `exec 9>>"$1" && flock -n 9 && echo OLD_OK`, "sh", oldFile]);
+  assert.ok(oldArgs.some((arg: string, i: number) => arg === "--bind" && oldArgs[i + 1] === oldFile && oldArgs[i + 2] === oldFile), oldArgs.join(" "));
+  const oldRun = spawnSync(oldCmd, oldArgs, { cwd: worktree, env: { ...oldEnv, ...oldLock.env }, encoding: "utf8", timeout: 30_000 });
+  assert.equal(oldRun.status, 0, oldRun.stderr);
+  assert.equal(oldRun.stdout.trim(), "OLD_OK");
+  oldLock.close?.();
   assert.equal(readFileSync(bashrc, "utf8"), "original\n");
 });
 
-test("TOOLS-416: checkLock gives checks a fresh writable XDG_CONFIG_HOME while keeping real ~/.config keys masked", { skip: noBwrap }, t => {
+test("TOOLS-416: checkLock gives checks a fresh writable XDG_CONFIG_HOME carrying non-secret git/fontconfig read-only while masking keys", { skip: noBwrap }, t => {
   const { home, worktree, common, env } = workspace(t);
   const wranglerSecret = join(home, ".config/.wrangler/config/default.toml");
   const ghSecret = join(home, ".config/gh/hosts.yml");
-  mkdirSync(dirname(wranglerSecret), { recursive: true });
-  mkdirSync(dirname(ghSecret), { recursive: true });
+  const gitConfig = join(home, ".config/git/config");
+  const gitIgnore = join(home, ".config/git/ignore");
+  const gitCreds = join(home, ".config/git/credentials");
+  const fontConfig = join(home, ".config/fontconfig/fonts.conf");
+  for (const p of [wranglerSecret, ghSecret, gitConfig, gitIgnore, gitCreds, fontConfig]) mkdirSync(dirname(p), { recursive: true });
   writeFileSync(wranglerSecret, 'oauth_token = "cf-secret"\n');
   writeFileSync(ghSecret, "github.com:\n  oauth_token: gh-secret\n");
+  writeFileSync(gitConfig, "[user]\n\tname = Safe Config\n");
+  writeFileSync(gitIgnore, "*.tmp\n");
+  writeFileSync(gitCreds, "https://user:secret@example.com\n");
+  writeFileSync(fontConfig, "<fontconfig/>\n");
 
   const lock1 = checkLock({ worktree, common, env });
   t.after(() => lock1.close?.());
@@ -1183,20 +1241,40 @@ test("TOOLS-416: checkLock gives checks a fresh writable XDG_CONFIG_HOME while k
     }
     try { fs.writeFileSync(${JSON.stringify(join(home, ".config/.wrangler/metrics.json"))}, "x"); results.realWrite = "WROTE"; }
     catch (e) { results.realWrite = e.code; }
+    results.gitConfig = fs.readFileSync(path.join(process.env.XDG_CONFIG_HOME, "git/config"), "utf8").trim();
+    results.gitIgnore = fs.readFileSync(path.join(process.env.XDG_CONFIG_HOME, "git/ignore"), "utf8").trim();
+    results.fontConfig = fs.readFileSync(path.join(process.env.XDG_CONFIG_HOME, "fontconfig/fonts.conf"), "utf8").trim();
+    try { results.gitCreds = "LEAKED:" + fs.readFileSync(path.join(process.env.XDG_CONFIG_HOME, "git/credentials"), "utf8"); }
+    catch (e) { results.gitCreds = e.code; }
+    try { fs.writeFileSync(path.join(process.env.XDG_CONFIG_HOME, "git/config"), "mutated"); results.gitConfigWrite = "WROTE"; }
+    catch (e) { results.gitConfigWrite = e.code; }
     console.log(JSON.stringify(results));
   `;
   const [cmd1, args1] = lock1.wrap(process.execPath, ["-e", probe]);
   const res1 = spawnSync(cmd1, args1, { cwd: worktree, env: { ...env, ...lock1.env }, encoding: "utf8", timeout: 30_000 });
   assert.equal(res1.status, 0, res1.stdout + res1.stderr);
-  assert.deepEqual(JSON.parse(res1.stdout.trim()), { wranglerSecret: "ENOENT", ghSecret: "ENOENT", realWrite: "EROFS" });
+  assert.deepEqual(JSON.parse(res1.stdout.trim()), {
+    wranglerSecret: "ENOENT",
+    ghSecret: "ENOENT",
+    realWrite: "EROFS",
+    gitConfig: "[user]\n\tname = Safe Config",
+    gitIgnore: "*.tmp",
+    fontConfig: "<fontconfig/>",
+    gitCreds: "ENOENT",
+    gitConfigWrite: "EROFS",
+  });
   assert.equal(existsSync(join(cfg1, ".wrangler/metrics.json")), true);
+  assert.equal(readFileSync(gitConfig, "utf8"), "[user]\n\tname = Safe Config\n");
 
   lock1.close?.();
   assert.equal(existsSync(cfg1), false, "checkLock.close must remove its private XDG_CONFIG_HOME");
 
+  // A git config that holds a token URL is masked and NOT carried into the fresh XDG_CONFIG_HOME.
+  writeFileSync(gitConfig, '[url "https://ghp_secret@github.com/"]\n\tinsteadOf = https://github.com/\n');
   const lock2 = checkLock({ worktree, common, env });
   t.after(() => lock2.close?.());
   assert.notEqual(lock2.env.XDG_CONFIG_HOME, cfg1);
   assert.equal(existsSync(join(lock2.env.XDG_CONFIG_HOME, ".wrangler")), false);
+  assert.equal(existsSync(join(lock2.env.XDG_CONFIG_HOME, "git/config")), false);
   lock2.close?.();
 });
