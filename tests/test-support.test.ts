@@ -86,8 +86,8 @@ test("kit-env hides newer host Nodes on PATH while keeping sibling tools reachab
     import assert from "node:assert/strict";
     import { spawnSync } from "node:child_process";
     import { realpathSync } from "node:fs";
-    import { kitEnv } from ${JSON.stringify(pathToFileURL(resolve("tests/support/kit-env.ts")).href)};
-    import { nodeEnv } from ${JSON.stringify(pathToFileURL(resolve("kit-lib.mjs")).href)};
+    import { kitEnv } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "support/kit-env.ts")).href)};
+    import { nodeEnv } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "../kit-lib.mjs")).href)};
     const env = kitEnv();
     const chosen = nodeEnv(env);
     assert.equal(chosen.PATH, env.PATH);

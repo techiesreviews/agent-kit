@@ -50,8 +50,8 @@ function cleanTestPath(rawPath: string | undefined) {
       if (resolved !== own) {
         let supported = seen.get(resolved);
         if (supported === undefined) {
-          const out = spawnSync(resolved, ["--version"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
-          const match = /^v(\d+)\.\d+\.\d+\r?$/.exec((out.stdout ?? "").trim());
+          const out = spawnSync(candidate, ["--version"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+          const match = /^v(\d+)\.\d+\.\d+$/.exec((out.stdout ?? "").trim());
           supported = out.status === 0 && Boolean(match) && Number(match![1]) >= 24;
           seen.set(resolved, supported);
         }
@@ -75,7 +75,6 @@ function cleanTestPath(rawPath: string | undefined) {
   }
   return [testNode(), ...folders].join(":");
 }
-process.env.PATH = cleanTestPath(process.env.PATH);
 // HOME and the XDG config, cache and data folders are one temporary folder per test process as well. The key lock
 // (key-guard.mjs) searches the key folders under HOME before every agent run, so a fixture with the real HOME would
 // list the developer's own key folders and read their git config and shell start-up files, and a dotfiles link there
@@ -106,6 +105,8 @@ Object.assign(process.env, { TMPDIR: testTemporary, TMP: testTemporary, TEMP: te
 export const testHomeFolder = testHome();
 Object.assign(process.env, { HOME: testHomeFolder, XDG_CONFIG_HOME: join(testHomeFolder, ".config"), XDG_CACHE_HOME: join(testHomeFolder, ".cache"),
   XDG_DATA_HOME: join(testHomeFolder, ".local/share"), XDG_STATE_HOME: testState() });
+// Clean PATH only after HOME and XDG_* point at temporary folders so probing a host Node shim never touches real user state.
+process.env.PATH = cleanTestPath(process.env.PATH);
 // ASE_KEY_GUARD and KIT_KEY_PATHS from the shell that started the tests would change what the lock does in every
 // fixture (off: no lock is tested at all; a path: one more folder to search), and KIT_NODE_PIN and KIT_NODE_FOUND_FOR
 // from a guarded kit pr or front door would pin or cache Node lookup across fixtures, so they are dropped; a test of
