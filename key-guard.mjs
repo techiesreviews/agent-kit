@@ -1567,8 +1567,14 @@ const maxPortLocks = 64;
 const portLockFileFlags = constants.O_RDWR | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 function sharedPortNumbers(env) {
-  const raw = (env.ASE_PORTS?.trim() || env.ASE_POOL?.trim() || defaultPortPool.join(" ")).split(/\s+/).filter(Boolean);
-  const ports = [...new Set(raw.filter(port => /^[1-9][0-9]{0,4}$/.test(port) && Number(port) < 65535))];
+  const source = env.ASE_PORTS?.trim() ? "ASE_PORTS" : env.ASE_POOL?.trim() ? "ASE_POOL" : null;
+  const raw = (source ? env[source].trim() : defaultPortPool.join(" ")).split(/\s+/).filter(Boolean);
+  const valid = port => /^[1-9][0-9]{0,4}$/.test(port) && Number(port) <= 65535;
+  const invalid = raw.filter(port => !valid(port));
+  if (invalid.length) {
+    throw new Error(`${source} holds invalid port${invalid.length === 1 ? "" : "s"} (${invalid.join(", ")}); use space-separated port numbers between 1 and 65535`);
+  }
+  const ports = [...new Set(raw)];
   if (ports.length > maxPortLocks) {
     throw new Error(`too many shared port lock files (${ports.length}; at most ${maxPortLocks}); narrow ASE_PORTS or ASE_POOL`);
   }
@@ -1585,7 +1591,7 @@ function openPortLockTargets(env = process.env, { worktree, common, cwd = proces
   const rawDir = env.ASE_LOCK_DIR ? resolve(baseCwd, env.ASE_LOCK_DIR) : "/tmp";
   const writableRoots = buildFolders(worktree, common);
   if (writableRoots.some(root => inside(real(rawDir), root))) return [];
-  const refuseDir = reason => new Error(`ASE_LOCK_DIR (${rawDir}) ${reason}; use /tmp or a folder outside HOME, or set ASE_KEY_GUARD=off to run without the lock`);
+  const refuseDir = reason => new Error(`ASE_LOCK_DIR (${rawDir}) ${reason}; use /tmp or a folder outside your home setup folders, or set ASE_KEY_GUARD=off to run without the lock`);
   const base = real(home(env));
   let dirFd = null;
   const opened = [];
@@ -1746,7 +1752,7 @@ function ephemeralTempDir(env, allRoots, base) {
 // builds keep their session under the kit's state folder (surviving reboots). Direct callers get a private temporary
 // folder, removed by close(). CLI resources remain readable through links; settings and the CLI's own login are private
 // copies so an atomic refresh changes no home file.
-function writeFence(cli, env, { worktree, common, state, writable = [], session, privateConfig = false } = {}) {
+function writeFence(cli, env, { worktree, common, state, writable = [], session, privateConfig = false, maskedPaths = [] } = {}) {
   const work = [worktree, common].filter(Boolean).map(real), base = real(home(env));
   if (work.some(root => inside(base, root))) throw new Error("the write fence cannot make HOME or one of its parents writable; use a worktree and Git folder of their own");
   const pinnedDestinations = [], stringDestinations = [];
@@ -1831,6 +1837,21 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session,
       return path;
     };
     const folders = Object.fromEntries((privateConfig ? ["tmp", "cache", "config"] : ["tmp", "cache"]).map(name => [name, folderAt(join(dir, name))]));
+    if (privateConfig) {
+      // Carry non-secret git config and fontconfig read-only into the fresh XDG_CONFIG_HOME so checks keep git
+      // identity, global ignore rules and font rendering while real ~/.config keys stay masked.
+      const configSource = isAbsolute(env.XDG_CONFIG_HOME ?? "") ? env.XDG_CONFIG_HOME : join(home(env), ".config");
+      const hidden = path => maskedPaths.some(mask => inside(resolve(path), resolve(mask)) || inside(real(path), real(mask)));
+      const linkConfig = (rel, targetRel = rel) => {
+        const src = join(configSource, rel);
+        if (!existingPaths([src]).length || hidden(src) || shutIn(src, allRoots)) return;
+        const dst = join(folders.config, targetRel);
+        mkdirSync(dirname(dst), { recursive: true });
+        symlinkSync(resolve(src), dst);
+      };
+      for (const name of ["config", "ignore", "attributes"]) linkConfig(join("git", name));
+      linkConfig("fontconfig");
+    }
     const extra = { TMPDIR: folders.tmp, TMP: folders.tmp, TEMP: folders.tmp, XDG_CACHE_HOME: folders.cache,
       ...(privateConfig ? { XDG_CONFIG_HOME: folders.config } : {}),
       npm_config_cache: join(folders.cache, "npm"), ...(process.platform === "linux" && env.PLAYWRIGHT_BROWSERS_PATH === undefined
@@ -2288,7 +2309,7 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [], 
   const sharedLocks = portLocks ? openPortLockTargets(env, { worktree, common }) : [];
   let fence;
   try {
-    fence = writeFence("", env, { worktree, common, writable: [...writable, ...sharedLocks], privateConfig: true });
+    fence = writeFence("", env, { worktree, common, writable: [...writable, ...sharedLocks], privateConfig: true, maskedPaths: paths });
   } catch (error) {
     for (const target of sharedLocks) target.close();
     throw error;

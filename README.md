@@ -309,6 +309,17 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   transcript from the original Claude folder into its new private state. `worktrees.sh --prune` removes saved fence folders belonging to pruned worktrees;
   when removing artifacts by hand, read the `cli-state` link and remove that state folder too. A removed session gives a message to start a new build. The lead must check a real Claude login refresh
   before merging a change to this isolation. Checks' private temporary folders are removed when `kit pr` exits.
+  Locked `kit pr` checks also get a fresh per-run `XDG_CONFIG_HOME` inside their private folder so tools such as Wrangler
+  can write local state (for example `metrics.json`) while the real `~/.config` key folders stay masked; non-secret
+  `git/config`, `git/ignore`, `git/attributes` and `fontconfig` entries from the user's config folder are linked in
+  read-only (other `~/.config` settings are not seen by checks).
+  `kit pr`'s browser specs step (`specs`, except `--list`) also allows writes to the shared port lock files
+  (`$ASE_LOCK_DIR/ase-<port>.lock`, default `/tmp`, ports from `ASE_PORTS`, else `ASE_POOL`, else the 8-slot pool
+  `5226`–`5296`, at most 64 space-separated port numbers between 1 and 65535). `ASE_LOCK_DIR` must be a direct folder
+  with no links on the way, outside home setup and system folders, owned by the current user or sticky root-owned (such
+  as `/tmp`); each lock file must be a single-link regular file owned by the current user. The lock folder itself stays
+  read-only while each lock file is mounted by open handle (`--bind-fd`, or `--bind` on older bubblewrap) so `flock`
+  coordinates across runs on the host.
   A push to a folder remote allows writes only when the destination is a direct bare Git repository folder outside home
   setup and system folders with no links on the way, validated through an open directory handle and re-checked up to
   launch. A destination already inside the worktree or Git common folder needs no separate mount. For an outside folder,
@@ -320,7 +331,8 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   `$TMPDIR`. On Linux, installed Playwright browsers remain readable at their original cache path when `PLAYWRIGHT_BROWSERS_PATH`
   is unset. There is no bubblewrap fence where the lock is off or runs unwrapped (macOS and Windows); Codex keeps its native profile there.
 - **What the key lock does not do.** On Linux with bubblewrap, a locked build and `kit pr`'s locked checks write only to
-  their worktree, Git common folder and private run state (Write fence, above), and what a build leaves inside its
+  their worktree, Git common folder, private run state and — for `kit pr`'s browser specs step only — the validated
+  shared `ase-<port>.lock` files (Write fence, above), and what a build leaves inside its
   worktree and Git folder still runs later with whoever starts it. Where the lock is off or runs unwrapped (macOS,
   Windows, or `ASE_KEY_GUARD=off`), a build writes wherever the user can (the worktree, the repository's Git folder and
   settings, files under HOME). The kit's own later steps are covered (TOOLS-303):
