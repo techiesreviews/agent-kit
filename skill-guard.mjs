@@ -5,7 +5,8 @@
 // characters from a skill there. It never prints skill text: only the repo path and line, and the skill's name.
 // A project's own skill folders, listed by path in `skillGuard.allow` of scripts/agents/kit.json, pass the path
 // check; the line check still reads every line in them. A changed file that is the project's own licence (LICENSE,
-// LICENSE.md, COPYING, … in the top folder), or a font licence (OFL.txt or Font-OFL.txt in any folder), is left out
+// LICENSE.md, COPYING, … in the top folder), or a font licence (OFL.txt or any name ending in -OFL.txt, any case,
+// in any folder), is left out
 // of the changed lines: licence texts are shared word for word by design.
 // Standard MIT, Apache-2.0, BSD and ISC text in any skill file is also left out of the index.
 // --history reads every blob.
@@ -58,8 +59,11 @@ function sharedSetupTag(tag, source) {
   if (attributes.map(match => match[0]).join("") !== source) return false;
   const values = new Map(attributes.map(match => [match[1].toLowerCase(), match[2] ?? match[3] ?? match[4] ?? ""]));
   if (values.size !== attributes.length) return false;
-  if (tag.toLowerCase() === "meta")
-    return values.has("charset") || values.has("http-equiv") || values.get("name")?.toLowerCase() === "viewport";
+  if (tag.toLowerCase() === "meta") {
+    const selectors = ["name", "charset", "http-equiv"].filter(name => values.has(name));
+    if (selectors.length !== 1) return false;
+    return selectors[0] === "name" ? values.get("name").toLowerCase() === "viewport" : Boolean(values.get(selectors[0]));
+  }
   return /^(?:preconnect|dns-prefetch|preload|stylesheet|icon)$/i.test(values.get("rel") || "") &&
     /^https?:\/\//i.test(values.get("href") || "");
 }
@@ -74,8 +78,8 @@ const isStandardLicenceLine = (line) => {
 };
 
 /** A normalised line that is shared web boilerplate, never left in the index. */
-export const isBoilerplate = (line) => boilerplate.some(pattern => pattern.test(line)) ||
-  (pageHeader.test(line) && [...line.matchAll(/<(meta|link)\s+([^<>]*?)\/?>/gi)].every(([, tag, source]) => sharedSetupTag(tag, source)));
+export const isBoilerplate = (line) => (boilerplate.some(pattern => pattern.test(line)) || pageHeader.test(line)) &&
+  [...line.matchAll(/<(meta|link)\s+([^<>]*?)\/?>/gi)].every(([, tag, source]) => sharedSetupTag(tag, source));
 
 /** A tracked path that is a skill: a SKILL.md anywhere, or anything under a folder named skills. */
 export const skillPath = (path) => /(^|\/)SKILL\.md$/i.test(path) || /(^|\/)skills\//i.test(path);

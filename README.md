@@ -729,9 +729,11 @@ matches a line from the local skill files. Licence texts are shared word for wor
 a skill's licence files (`LICENSE`, `UNLICENSE`, `COPYING`, `NOTICE`, a longer name ending in `LICENSE` such as
 `x-1.0.LICENSE.md`, or a font's `OFL.txt` / `Font-OFL.txt`) give no skill lines, and a project's own licence in its
 top folder (a licence name on its own, such as `LICENSE`, `LICENSE.md`, `LICENSE-MIT`, `COPYING` or `UNLICENSE`),
-or a font's `OFL.txt` / `Font-OFL.txt` in any folder, is left out of the changed lines `kit pr` checks.
+or a font's `OFL.txt` or any filename ending in `-OFL.txt` (any case) in any folder, is left out of the changed
+lines `kit pr` checks.
 Those whole-file exceptions skip all content in those files; `--history` still reads them, and the skill path
-check still applies. Standard MIT, Apache-2.0, BSD-3-Clause and ISC text in any skill file is also left out of the
+check still applies. The skill-side licence exclusion also accepts a dot before `OFL.txt`.
+Standard MIT, Apache-2.0, BSD-3-Clause and ISC text in any skill file is also left out of the
 index, including comment headers and different line wrapping. `licence-texts.json` holds the standard texts
 (MIT from tsx, Apache-2.0 and Regents BSD from Debian's common licences, generic BSD-3-Clause and ISC). Only lines contained in those texts
 are excluded; outside the whole-file exceptions, a copied skill line alongside a licence still fails, including
