@@ -274,7 +274,7 @@ export function kitRegisterProject(name, root, env = process.env, during = () =>
 
 /**
  * Copy env with a supported Node first on PATH, or throw when unavailable. The Node is the one kit_node_find in
- * kit-lib.sh picks for env's PATH and search folder (CLAUDE_NODE_SEARCH_ROOT, else HOME): system Node >=24 first, then
+ * kit-lib.sh picks for env's PATH and search folder (CLAUDE_NODE_SEARCH_ROOT, else HOME): highest Node >=24 on PATH, then
  * the highest installed npx/nvm version. That rule has one copy, in the shell, as the front door must run it before
  * there is a Node.
  */
