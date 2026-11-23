@@ -144,14 +144,18 @@ test("combined page headers pass but copied skill lines inside minified pages st
   const mixed = `${header}<body><p>${secret}</p></body></html>`;
   f.put(join(f.repo, "plate.html"), mixed);
   // A meaningful HTML line from a skill remains indexed even when it starts with a generic header.
-  const template = `${header}<body><p>${other}</p></body></html>`;
+  const template = `${header}<body><p>Arrange the folded lanterns beside the silver teapot until every shadow faces north</p></body></html>`;
   f.put(join(f.home, ".claude/skills/crane/templates/mixed.html"), `${template}\n`);
   f.put(join(f.repo, "gallery.mjs"), `const page = '${template}';`);
+  const title = '<html><head><title>Carry the painted teapot across the moonlit bridge and leave it beside the sleeping lantern</title></head>';
+  f.put(join(f.home, ".claude/skills/crane/templates/title.html"), `${title}\n`);
+  f.put(join(f.repo, "title.html"), `${title}<body>Welcome</body></html>`);
   const copied = f.run(["--base", "HEAD~1"]);
   assert.equal(copied.status, 1, copied.stderr);
   assert.match(copied.stderr, /problem: plate\.html:1: holds a line from the local skill crane/);
   assert.match(copied.stderr, /problem: gallery\.mjs:1: holds a line from the local skill crane/);
-  assert.match(copied.stdout, /RESULT: fail skill-guard 2 problem/);
+  assert.match(copied.stderr, /problem: title\.html:1: holds a line from the local skill crane/);
+  assert.match(copied.stdout, /RESULT: fail skill-guard 3 problem/);
   assert.doesNotMatch(copied.stdout + copied.stderr, /paper crane|marbles/);
 });
 
