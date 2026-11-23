@@ -80,7 +80,12 @@ function nodeFound(env: NodeJS.ProcessEnv) {
 function fixtureEnv(directory: string) {
   const current = join(directory, "current/node");
   fakeNode(current, "v22.15.0");
-  return { PATH: `${dirname(current)}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: directory };
+  const tools = join(directory, "tools");
+  mkdirSync(tools);
+  symlinkSync("/bin/bash", join(tools, "bash"));
+  symlinkSync("/bin/cat", join(tools, "cat"));
+  symlinkSync("/usr/bin/dirname", join(tools, "dirname"));
+  return { PATH: `${dirname(current)}:${tools}`, CLAUDE_NODE_SEARCH_ROOT: directory };
 }
 
 test("kit lists executable commands by name and reads only the first 15 summary lines", (t) => {
@@ -431,6 +436,13 @@ test("bash and mjs select the same highest numeric Node and prefer a supported s
   assert.equal(result.stdout.split("\n")[0], nvm);
   fakeNode(join(directory, "current/node"), "v24.0.0");
   assertLookup(join(directory, "current/node"));
+});
+
+test("Node lookup fixtures expose no uncontrolled Node installations", (t) => {
+  const directory = temp(t);
+  const env = fixtureEnv(directory);
+  const nodes = env.PATH.split(":").map(folder => join(folder, "node")).filter(existsSync);
+  assert.deepEqual(nodes, [join(directory, "current/node")]);
 });
 
 test("Node lookup finds Node 24 later on PATH when an older Node comes first", (t) => {
