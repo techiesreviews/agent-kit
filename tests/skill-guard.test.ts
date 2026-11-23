@@ -139,6 +139,8 @@ test("combined page headers pass but copied skill lines inside minified pages st
     "<!doctype html><html lang='en'><head><link href='https://fonts.example.com/crane.css' rel='stylesheet'></head>",
     '<!doctype html><html lang=en><head><link rel=stylesheet href=https://fonts.example.com/crane.css></head>',
     '<html><head><meta content="width=device-width, initial-scale=1" name="viewport"><title>Folded jars</title></head>',
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="icon" href="https://cdn.example.com/crane.ico"/></head>',
+    `<html><head><title>${"t".repeat(59)}</title></head>`,
   ];
   f.put(join(f.home, ".claude/skills/crane/templates/header.html"), [header, spaced, linked, unquoted, ...variants].join("\n"));
   f.put(join(f.repo, "plate.html"), `${header}<body><p>Welcome</p></body></html>`);
@@ -167,6 +169,10 @@ test("combined page headers pass but copied skill lines inside minified pages st
   const meaningful = [
     '<html><head><meta name="description" content="name=viewport describes the crane gallery beside the moonlit bridge"></head>',
     '<html><head><link rel="stylesheet" href="/crane-gallery/styles/folded-lantern-pattern.css"></head>',
+    '<meta charset="utf-8" name="description" content="A folded lantern beside the teapot lights the moonlit bridge for paper birds">',
+    '<html><head><meta charset="utf-8" name="description" content="A folded lantern beside the teapot lights the moonlit bridge for paper birds"></head>',
+    '<html><head><meta name="viewport" name="description" content="A folded lantern beside the teapot lights the moonlit bridge for paper birds"></head>',
+    `<html><head><title>${"t".repeat(60)}</title></head>`,
   ];
   f.put(join(f.home, ".claude/skills/crane/templates/meaningful.html"), meaningful.join("\n"));
   for (const [index, line] of meaningful.entries())
@@ -180,7 +186,7 @@ test("combined page headers pass but copied skill lines inside minified pages st
     assert.ok(copied.stderr.includes(`problem: variant-${index}.html:1: holds a line from the local skill crane`), copied.stderr);
   for (const index of meaningful.keys())
     assert.ok(copied.stderr.includes(`problem: meaningful-${index}.html:1: holds a line from the local skill crane`), copied.stderr);
-  assert.match(copied.stdout, /RESULT: fail skill-guard 8 problem/);
+  assert.match(copied.stdout, /RESULT: fail skill-guard 14 problem/);
   assert.doesNotMatch(copied.stdout + copied.stderr, /paper crane|marbles/);
 });
 
