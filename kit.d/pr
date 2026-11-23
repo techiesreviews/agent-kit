@@ -367,12 +367,17 @@ async function main(args) {
       }
       return { local: folders.length > 0, writable };
     };
-    // The checks' lock, made when the first check starts; a note says where they run unlocked. A push to a folder remote
-    // takes the plain lock (it starts no sandbox of its own).
+    // The checks' lock, made when the first check starts; a note says where they run unlocked. Browser specs take a
+    // per-call lock that also pins the shared port lock files, and a push to a folder remote takes the plain lock.
     let checksLocked;
     const lockNotes = [];
-    const lockFor = (writable = []) => {
-      const lock = checkLock({ worktree: root, common, env: { ...env, ...startupFiles }, readOnly: programs ? [programs] : [], writable });
+    const noteLock = lock => {
+      if (!lock.note) return;
+      const item = `- checks: ${lock.note}`;
+      if (!lockNotes.includes(item)) { console.log(`checks: ${lock.note}`); lockNotes.push(item); }
+    };
+    const lockFor = (writable = [], { portLocks = false } = {}) => {
+      const lock = checkLock({ worktree: root, common, env: { ...env, ...startupFiles }, readOnly: programs ? [programs] : [], writable, portLocks });
       if (lock.close) {
         const orig = lock.close;
         let closed = false;
@@ -390,7 +395,7 @@ async function main(args) {
     const checksLock = () => {
       if (checksLocked) return checksLocked;
       checksLocked = lockFor();
-      if (checksLocked.note) { console.log(`checks: ${checksLocked.note}`); lockNotes.push(`- checks: ${checksLocked.note}`); }
+      noteLock(checksLocked);
       return checksLocked;
     };
     // Spec files that failed in a full run and passed alone (ticket ke-88), named on the RESULT line.
@@ -409,13 +414,18 @@ async function main(args) {
       // check, the review and the second look run in this process (inProcess) and take the same settings there.
       // node is this process's own, never a bare name PATH may resolve to a link into the worktree.
       let program = command === "node" ? process.execPath : command === "gh" && linked.gh ? linked.gh : command, args = argv, childEnv = { ...(command === "gh" ? ghEnv : env), ...extraEnv };
-      let pushLock = null, pushTargets = [];
+      let pushLock = null, pushTargets = [], specsLock = null;
       let fd = null, logged = null;
       let stdout = "", stderr = "", failure;
       const chunks = [];
       let status;
       try {
-        if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
+        if (name === "specs") {
+          specsLock = lockFor([], { portLocks: true });
+          noteLock(specsLock);
+          [program, args] = specsLock.wrap(program, argv);
+          Object.assign(childEnv, specsLock.env);
+        } else if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
         else if (command === "git") {
           [program, args] = gitArgs(argv);
           const network = gitNetworkCall(argv);
@@ -440,7 +450,7 @@ async function main(args) {
         fd = openSync(log, "a");
         // Logs get any url's user-info hidden, so a token in a remote's url never reaches .scratch.
         logged = kitHidingLog(text => appendFileSync(fd, text));
-        const extraFds = pushLock?.fds ?? [];
+        const extraFds = specsLock?.fds ?? pushLock?.fds ?? [];
         status = await new Promise(accept => {
           const child = spawn(program, args, { cwd: root, env: childEnv, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe", ...extraFds] });
           if (child.stdin) {
@@ -467,6 +477,7 @@ async function main(args) {
       } finally {
         logged?.end();
         if (fd !== null) closeSync(fd);
+        specsLock?.close?.();
         pushLock?.close?.();
         for (const target of pushTargets) target.close?.();
         if (checkNames.has(name)) shieldProcess();

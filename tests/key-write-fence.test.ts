@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -1062,4 +1062,141 @@ test("TOOLS-406: checkLock picks a short temp root when inherited TMPDIR would c
     lock.close?.();
   }
   assert.equal(existsSync(privateDir), false, "checkLock.close must remove its private folder");
+});
+
+test("TOOLS-416: checkLock with portLocks shares ase-<port>.lock flocks while keeping the lock folder read-only and refusing unsafe targets", { skip: noBwrap }, async t => {
+  const { dir, home, worktree, common, env } = workspace(t);
+  const lockDir = join(dir, "locks");
+  mkdirSync(lockDir, { recursive: true });
+  const portEnv = { ...env, ASE_LOCK_DIR: lockDir, ASE_POOL: "5226 5236" };
+  const bashrc = join(home, ".bashrc");
+  writeFileSync(bashrc, "original\n");
+
+  const lock = checkLock({ worktree, common, env: portEnv, portLocks: true });
+  t.after(() => lock.close?.());
+  const lockFile = join(lockDir, "ase-5226.lock");
+
+  // While a host process holds flock on ase-5226.lock, the sandboxed check sees BUSY on the shared inode.
+  const holder = spawn("bash", ["-c", `exec 9>>"$1"; flock -n 9 || exit 9; echo ready; sleep 10`, "sh", lockFile], { stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => { try { holder.kill(); } catch {} });
+  await new Promise<void>((resolveReady, rejectReady) => {
+    holder.stdout.once("data", () => resolveReady());
+    holder.once("exit", code => rejectReady(new Error(`host holder exited early: ${code}`)));
+  });
+
+  const runInLock = (script: string) => {
+    const [cmd, args] = lock.wrap("bash", ["-c", script, "sh", lockDir]);
+    return spawnSync(cmd, args, {
+      cwd: worktree,
+      env: { ...portEnv, ...lock.env },
+      stdio: ["ignore", "pipe", "pipe", ...(lock.fds ?? [])],
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+  };
+
+  const whileHeld = runInLock(`exec 9>>"$1/ase-5226.lock" && if flock -n 9; then echo FREE; else echo BUSY; fi`);
+  assert.equal(whileHeld.status, 0, whileHeld.stderr);
+  assert.equal(whileHeld.stdout.trim(), "BUSY");
+
+  holder.kill();
+  await new Promise<void>(resolveExit => holder.once("close", () => resolveExit()));
+
+  // Once released, the check takes the lock, writes holder info, and still cannot create sibling files in lockDir.
+  const afterRelease = runInLock(`
+    set -e
+    exec 9>>"$1/ase-5226.lock"
+    flock -n 9
+    printf 'holder-ok\\n' > "$1/ase-5226.lock"
+    exec 9>&-
+    if touch "$1/ase-deploy-preview.lock" 2>/dev/null; then echo SIBLING_WROTE; else echo SIBLING_RO; fi
+  `);
+  assert.equal(afterRelease.status, 0, afterRelease.stderr);
+  assert.equal(afterRelease.stdout.trim(), "SIBLING_RO");
+  assert.equal(readFileSync(lockFile, "utf8"), "holder-ok\n");
+  assert.equal(existsSync(join(lockDir, "ase-deploy-preview.lock")), false);
+
+  // Swapping a validated lock file for a symlink to ~/.bashrc is caught by wrap() and blocked at mount time.
+  const [swappedCmd, swappedArgs] = lock.wrap("bash", ["-c", `echo planted > "$1/ase-5226.lock"`, "sh", lockDir]);
+  renameSync(lockFile, `${lockFile}.aside`);
+  symlinkSync(bashrc, lockFile);
+  assert.throws(() => lock.wrap("bash", ["-c", "true"]), /shared lock file.*changed after validation/);
+  const raced = spawnSync(swappedCmd, swappedArgs, {
+    cwd: worktree,
+    env: { ...portEnv, ...lock.env },
+    stdio: ["ignore", "pipe", "pipe", ...(lock.fds ?? [])],
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.notEqual(raced.status, 0, raced.stdout + raced.stderr);
+  assert.equal(readFileSync(bashrc, "utf8"), "original\n");
+  lock.close?.();
+
+  // Refuses symlinked lock files, hard-linked lock files, symlinked ASE_LOCK_DIR, and HOME/config/system ASE_LOCK_DIR.
+  const symDir = join(dir, "sym-locks");
+  mkdirSync(symDir);
+  symlinkSync(bashrc, join(symDir, "ase-5226.lock"));
+  assert.throws(() => checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: symDir, ASE_POOL: "5226" }, portLocks: true }), /shared port lock/);
+
+  const hardDir = join(dir, "hard-locks");
+  mkdirSync(hardDir);
+  linkSync(bashrc, join(hardDir, "ase-5226.lock"));
+  assert.throws(() => checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: hardDir, ASE_POOL: "5226" }, portLocks: true }), /shared port lock/);
+
+  const dirLink = join(dir, "dir-link");
+  symlinkSync(lockDir, dirLink);
+  assert.throws(() => checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: dirLink, ASE_POOL: "5226" }, portLocks: true }), /ASE_LOCK_DIR/);
+
+  for (const unsafe of [home, dirname(home), "/", join(home, ".config"), "/etc"]) {
+    assert.throws(() => checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: unsafe, ASE_POOL: "5226" }, portLocks: true }), /ASE_LOCK_DIR/, unsafe);
+  }
+  // Default /tmp remains usable even when HOME sits under /tmp (as in isolated test runs), since /tmp stays read-only.
+  const defaultLock = checkLock({ worktree, common, env: { ...env, ASE_LOCK_DIR: undefined, ASE_POOL: "5226" }, portLocks: true });
+  t.after(() => defaultLock.close?.());
+  assert.ok(defaultLock.fds.length <= 1);
+  defaultLock.close?.();
+  assert.equal(readFileSync(bashrc, "utf8"), "original\n");
+});
+
+test("TOOLS-416: checkLock gives checks a fresh writable XDG_CONFIG_HOME while keeping real ~/.config keys masked", { skip: noBwrap }, t => {
+  const { home, worktree, common, env } = workspace(t);
+  const wranglerSecret = join(home, ".config/.wrangler/config/default.toml");
+  const ghSecret = join(home, ".config/gh/hosts.yml");
+  mkdirSync(dirname(wranglerSecret), { recursive: true });
+  mkdirSync(dirname(ghSecret), { recursive: true });
+  writeFileSync(wranglerSecret, 'oauth_token = "cf-secret"\n');
+  writeFileSync(ghSecret, "github.com:\n  oauth_token: gh-secret\n");
+
+  const lock1 = checkLock({ worktree, common, env });
+  t.after(() => lock1.close?.());
+  const cfg1 = lock1.env.XDG_CONFIG_HOME;
+  assert.ok(cfg1 && cfg1 !== env.XDG_CONFIG_HOME, `expected fresh XDG_CONFIG_HOME, got ${cfg1}`);
+
+  const probe = `
+    const fs = require("node:fs"), path = require("node:path");
+    const wranglerDir = path.join(process.env.XDG_CONFIG_HOME, ".wrangler");
+    fs.mkdirSync(wranglerDir, { recursive: true });
+    fs.writeFileSync(path.join(wranglerDir, "metrics.json"), JSON.stringify({ deviceId: "fresh" }));
+    const results = {};
+    for (const [k, p] of Object.entries(${JSON.stringify({ wranglerSecret, ghSecret })})) {
+      try { results[k] = "LEAKED:" + fs.readFileSync(p, "utf8"); } catch (e) { results[k] = e.code; }
+    }
+    try { fs.writeFileSync(${JSON.stringify(join(home, ".config/.wrangler/metrics.json"))}, "x"); results.realWrite = "WROTE"; }
+    catch (e) { results.realWrite = e.code; }
+    console.log(JSON.stringify(results));
+  `;
+  const [cmd1, args1] = lock1.wrap(process.execPath, ["-e", probe]);
+  const res1 = spawnSync(cmd1, args1, { cwd: worktree, env: { ...env, ...lock1.env }, encoding: "utf8", timeout: 30_000 });
+  assert.equal(res1.status, 0, res1.stdout + res1.stderr);
+  assert.deepEqual(JSON.parse(res1.stdout.trim()), { wranglerSecret: "ENOENT", ghSecret: "ENOENT", realWrite: "EROFS" });
+  assert.equal(existsSync(join(cfg1, ".wrangler/metrics.json")), true);
+
+  lock1.close?.();
+  assert.equal(existsSync(cfg1), false, "checkLock.close must remove its private XDG_CONFIG_HOME");
+
+  const lock2 = checkLock({ worktree, common, env });
+  t.after(() => lock2.close?.());
+  assert.notEqual(lock2.env.XDG_CONFIG_HOME, cfg1);
+  assert.equal(existsSync(join(lock2.env.XDG_CONFIG_HOME, ".wrangler")), false);
+  lock2.close?.();
 });
