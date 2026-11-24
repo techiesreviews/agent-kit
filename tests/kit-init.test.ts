@@ -883,6 +883,82 @@ test("--all skips a project with no origin or no settings on origin, names old k
   assert.equal(existsSync(`${slow}-kit-init-pieces`), true);
 });
 
+for (const broken of ["blocked-parent", "dangling-link"]) {
+  test(`--all reports a failed worktreeLinks entry (${broken}) and does not run kit pr`, (t) => {
+    const f = fixture(t);
+    Object.assign(f.env, ident);
+    const main = olderProject(f, broken, (work) => {
+      const settings = join(work, "scripts/agents/kit.json");
+      writeFileSync(settings, JSON.stringify({ ...JSON.parse(readFileSync(settings, "utf8")), worktreeLinks: ["public/preview"] }));
+      if (broken === "blocked-parent") writeFileSync(join(work, "public"), "blocked\n");
+      else {
+        mkdirSync(join(work, "public"));
+        symlinkSync(join(f.directory, "missing-preview"), join(work, "public/preview"));
+      }
+    });
+    const { records, all } = standInKit(f);
+    const run = all();
+    assert.match(run.stdout, new RegExp(`^RESULT: fail init ${broken}: .*worktreeLinks.*public/preview.*E(?:EXIST|NOTDIR)`, "m"));
+    assert.equal(run.status, 1, run.stdout + run.stderr);
+    assert.equal(existsSync(join(records, `${broken}-kit-init-pieces`)), false);
+    assert.equal(existsSync(`${main}-kit-init-pieces`), false);
+    assert.equal(f.git(main, "branch", "--list", "kit/init-pieces"), "");
+  });
+}
+
+for (const broken of ["modules-file", "modules-missing", "modules-unreadable", "modules-dangling", "modules-partial"]) {
+  test(`--all reports failed node_modules setup (${broken}) and removes its own partial links`, (t) => {
+    const f = fixture(t);
+    Object.assign(f.env, ident);
+    const shared = join(f.directory, "shared-modules");
+    if (broken === "modules-file") writeFileSync(shared, "not a directory\n");
+    else if (broken !== "modules-missing") {
+      mkdirSync(join(shared, "a"), { recursive: true });
+      mkdirSync(join(shared, "b"));
+      writeFileSync(join(shared, "a/keep"), "shared dependencies\n");
+    }
+    const main = olderProject(f, broken, (work) => {
+      const settings = join(work, "scripts/agents/kit.json");
+      writeFileSync(settings, JSON.stringify({ ...JSON.parse(readFileSync(settings, "utf8")), sharedNodeModules: shared }));
+      if (broken === "modules-dangling") symlinkSync(join(f.directory, "missing-modules"), join(work, "node_modules"));
+      else writeFileSync(join(work, ".gitignore"), "node_modules/\n");
+    });
+    // Fail the second entry after the first link was made. Record cleanup before the worktree goes away.
+    const preload = join(f.directory, "fail-link.mjs"), cleanup = join(f.directory, "cleanup.json");
+    if (broken === "modules-partial") writeFileSync(preload, `
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const link = fs.symlinkSync, remove = fs.rmSync;
+fs.symlinkSync = (target, path, ...args) => {
+  if (path.endsWith("-kit-init-pieces/node_modules/b")) throw new Error("second dependency link failed");
+  return link(target, path, ...args);
+};
+fs.rmSync = (path, ...args) => {
+  const partial = path.endsWith("-kit-init-pieces/node_modules") && fs.lstatSync(path).isDirectory();
+  const entries = partial ? fs.readdirSync(path) : [];
+  const result = remove(path, ...args);
+  if (partial) fs.writeFileSync(${JSON.stringify(cleanup)}, JSON.stringify({ entries, exists: fs.existsSync(path) }));
+  return result;
+};
+syncBuiltinESMExports();
+`);
+    const { records, all } = standInKit(f);
+    if (broken === "modules-unreadable") chmodSync(shared, 0);
+    let run: ReturnType<typeof all>;
+    try { run = all(broken === "modules-partial" ? { NODE_OPTIONS: `--import=${preload}` } : {}); }
+    finally { if (broken === "modules-unreadable") chmodSync(shared, 0o755); }
+    assert.match(run.stdout, new RegExp(`^RESULT: fail init ${broken}: .*node_modules.*${shared}.*(?:ENOTDIR|ENOENT|EEXIST|EACCES|second dependency link failed)`, "m"));
+    assert.equal(run.status, 1, run.stdout + run.stderr);
+    assert.equal(existsSync(join(records, `${broken}-kit-init-pieces`)), false);
+    assert.equal(existsSync(`${main}-kit-init-pieces`), false);
+    if (broken === "modules-partial") assert.deepEqual(JSON.parse(readFileSync(cleanup, "utf8")), { entries: ["a"], exists: false });
+    if (["modules-dangling", "modules-partial"].includes(broken)) {
+      assert.deepEqual(readdirSync(shared), ["a", "b"]);
+      assert.equal(readFileSync(join(shared, "a/keep"), "utf8"), "shared dependencies\n");
+    }
+  });
+}
+
 test("kitRegisterProject lists nothing when during() throws, and a failed write leaves no temporary file or lock", (t) => {
   const f = fixture(t);
   const env = { ...f.env, XDG_STATE_HOME: f.state };
