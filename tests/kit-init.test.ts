@@ -896,6 +896,7 @@ for (const broken of ["blocked-parent", "dangling-link"]) {
         symlinkSync(join(f.directory, "missing-preview"), join(work, "public/preview"));
       }
     });
+    if (broken === "blocked-parent") olderProject(f, "healthy");
     const { records, all } = standInKit(f);
     const run = all();
     assert.match(run.stdout, new RegExp(`^RESULT: fail init ${broken}: .*worktreeLinks.*public/preview.*E(?:EXIST|NOTDIR)`, "m"));
@@ -903,11 +904,17 @@ for (const broken of ["blocked-parent", "dangling-link"]) {
     assert.equal(existsSync(join(records, `${broken}-kit-init-pieces`)), false);
     assert.equal(existsSync(`${main}-kit-init-pieces`), false);
     assert.equal(f.git(main, "branch", "--list", "kit/init-pieces"), "");
+    if (broken === "blocked-parent") {
+      assert.match(run.stdout, /^RESULT: ok init healthy: .*through kit pr into main: merged #7 abc1234$/m);
+      assert.match(result(run), /1 updated \(healthy\).*1 failed \(blocked-parent\)$/);
+      assert.equal(existsSync(join(records, "healthy-kit-init-pieces")), true);
+    }
   });
 }
 
 for (const broken of ["modules-file", "modules-missing", "modules-unreadable", "modules-dangling", "modules-partial"]) {
   test(`--all reports failed node_modules setup (${broken}) and removes its own partial links`, (t) => {
+    if (broken === "modules-unreadable" && process.getuid?.() === 0) return t.skip("root reads unreadable folders");
     const f = fixture(t);
     Object.assign(f.env, ident);
     const shared = join(f.directory, "shared-modules");
@@ -951,6 +958,7 @@ syncBuiltinESMExports();
     assert.equal(run.status, 1, run.stdout + run.stderr);
     assert.equal(existsSync(join(records, `${broken}-kit-init-pieces`)), false);
     assert.equal(existsSync(`${main}-kit-init-pieces`), false);
+    assert.equal(f.git(main, "branch", "--list", "kit/init-pieces"), "");
     if (broken === "modules-partial") assert.deepEqual(JSON.parse(readFileSync(cleanup, "utf8")), { entries: ["a"], exists: false });
     if (["modules-dangling", "modules-partial"].includes(broken)) {
       assert.deepEqual(readdirSync(shared), ["a", "b"]);

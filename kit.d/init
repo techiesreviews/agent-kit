@@ -962,7 +962,7 @@ function all() {
         mkdirSync(dirname(join(path, link)), { recursive: true });
         symlinkSync(target, join(path, link));
       } catch (error) {
-        throw new Error(`worktreeLinks ${link} could not link to ${target}: ${error.message}`);
+        throw new Error(`worktreeLinks ${link} could not link to ${target}; fix the path or worktreeLinks in ${kitSettingsFile}, then rerun: ${error.message}`);
       }
     }
     // kit pr wants a clean tree, so node_modules must be one git ignores: a link, or, where .gitignore names
@@ -989,7 +989,7 @@ function all() {
         }
       } catch (error) {
         if (created) rmSync(modules, { recursive: true, force: true });
-        throw new Error(`node_modules could not link to ${shared}: ${error.message}`);
+        throw new Error(`node_modules could not link to ${shared}; restore the shared folder or fix sharedNodeModules in ${kitSettingsFile}, then rerun: ${error.message}`);
       }
     }
     const log = join(logs, `${name}.log`);
