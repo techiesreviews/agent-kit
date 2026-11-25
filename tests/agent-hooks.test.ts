@@ -524,7 +524,7 @@ const gitEnv = {
   GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
 };
 // A project with a remote, its settings and both branches pushed; the checkout is on `branch`.
-function pushProject(t: { after: (fn: () => void) => void }, branches: Record<string, string> | undefined, branch = "main") {
+function pushProject(t: { after: (fn: () => void) => void }, branches: Record<string, string | boolean> | undefined, branch = "main") {
   const dir = temp(t), work = join(dir, "work");
   const git = (...args: string[]) => {
     const result = spawnSync("git", ["-C", work, ...args], { encoding: "utf8", env: { ...process.env, ...gitEnv } });
@@ -573,7 +573,7 @@ test("the push guard reads the settings of the repo the push reaches: a subfolde
 
 test("direct: false and a direct that is not true keep the normal release advice", (t) => {
   for (const direct of [false, "yes"]) {
-    const { work } = pushProject(t, { land: "dev", release: "main", direct } as unknown as Record<string, string>);
+    const { work } = pushProject(t, { land: "dev", release: "main", direct });
     assert.equal(pushGuard("git push origin main", work).stderr, pushRefused("main"), String(direct));
   }
 });

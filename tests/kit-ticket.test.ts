@@ -2097,8 +2097,8 @@ test("a write never sends an Origin that is not the saved Orbit origin: an addre
   const orbit = await fakeOrbit(t);
   for (const origin of [`${orbit.origin}/`, `${orbit.origin}/api`, "https://user:pw@board.example.test", "ftp://board.example.test"]) {
     const client = orbitClient({ origin, workspace_id: fakeWorkspace, token: fakeToken, cf_access_client_id: fakeCfId, cf_access_client_secret: fakeCfSecret }, { timeoutMs: 2_000 });
-    await assert.rejects(() => client.patchTask("TOOLS-1", { title: "x" }), (error: Error) => /saved Orbit address/.test(error.message) && !error.message.includes(fakeToken) && (error as any).code === "bad-origin" && (error as any).noAnswer === false && /--from-mcp-config/.test(error.message));
-    await assert.rejects(() => client.createTask({ project_id: "x", title: "x" }), (error: Error) => (error as any).code === "bad-origin" && !/may or may not/.test(error.message));
+    await assert.rejects(() => client.patchTask("TOOLS-1", { title: "x" }), (error: Error & { code?: string; noAnswer?: boolean }) => /saved Orbit address/.test(error.message) && !error.message.includes(fakeToken) && error.code === "bad-origin" && error.noAnswer === false && /--from-mcp-config/.test(error.message));
+    await assert.rejects(() => client.createTask({ project_id: "x", title: "x" }), (error: Error & { code?: string }) => error.code === "bad-origin" && !/may or may not/.test(error.message));
   }
   assert.equal(orbit.requests.length, 0, "nothing reached the server");
 });
