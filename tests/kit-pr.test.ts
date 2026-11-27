@@ -918,20 +918,24 @@ test("PR body includes ordered commits, checks, ticket and conditional Claude cr
 
 test("a PR body whose Summary would pass GitHub's limit keeps the subjects that fit and says how many more there are (TOOLS-495)", t => {
   // GitHub refuses a body over 65,536 characters ("Body is too long"); the Site Editor release of 1,658 commits wrote 121,013.
-  const f = fixture(t), long = (n: number) => `Change ${n} ${"x".repeat(990)}`;
-  for (let n = 1; n <= 70; n++) f.git("commit", "--allow-empty", "-m", long(n));
-  const result = f.run(["--no-merge"], { FAKE_EXISTING: "1" });
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-  const body = f.body(), base = f.git("rev-parse", "origin/dev"), head = f.git("rev-parse", "HEAD");
-  assert.ok(Buffer.byteLength(body) <= bodyCap, `body is ${Buffer.byteLength(body)} bytes`);
-  assert.match(body, /## Summary\n\n- First change\n- Second change\n- Change 1 x+\n/);
-  const kept = body.split("\n").filter(line => /^- Change \d+ x+$/.test(line)).length;
-  assert.ok(kept > 50 && kept < 70, `kept ${kept}`);
-  const more = 70 - kept;
-  assert.ok(body.includes(`\n- …and ${more} more commits (git log --oneline ${base.slice(0, 12)}..${head.slice(0, 12)})\n\n## Tests\n`), body.slice(-2000));
-  assert.match(body, /- npm test: ok/);
-  // Every body kit pr sends (the PATCH of the open PR, and the review-loop block after it) stays under the cap.
-  for (const call of f.apiCalls().filter(call => call.body)) assert.ok(Buffer.byteLength(call.body!) <= bodyCap);
+  // A new PR (gh pr create --body-file) and an open one (the PATCH of its body) alike.
+  for (const existing of ["", "1"]) {
+    const f = fixture(t), long = (n: number) => `Change ${n} ${"x".repeat(990)}`;
+    for (let n = 1; n <= 70; n++) f.git("commit", "--allow-empty", "-m", long(n));
+    const result = f.run(["--no-merge"], { FAKE_EXISTING: existing });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(f.ghCalls("create").length, existing ? 0 : 1);
+    const body = existing ? f.apiCalls()[0].body! : f.ghCalls("create")[0].body!, base = f.git("rev-parse", "origin/dev"), head = f.git("rev-parse", "HEAD");
+    assert.ok(Buffer.byteLength(body) <= bodyCap, `body is ${Buffer.byteLength(body)} bytes`);
+    assert.match(body, /## Summary\n\n- First change\n- Second change\n- Change 1 x+\n/);
+    const kept = body.split("\n").filter(line => /^- Change \d+ x+$/.test(line)).length;
+    assert.ok(kept > 50 && kept < 70, `kept ${kept}`);
+    const more = 70 - kept;
+    assert.ok(body.includes(`\n- …and ${more} more commits (git log --oneline ${base.slice(0, 12)}..${head.slice(0, 12)})\n\n## Tests\n`), body.slice(-2000));
+    assert.match(body, /- npm test: ok/);
+    // Every body kit pr sends (the PATCH of the open PR, and the review-loop block after it) stays under the cap.
+    for (const call of f.apiCalls().filter(call => call.body)) assert.ok(Buffer.byteLength(call.body!) <= bodyCap);
+  }
 });
 
 test("fitBody leaves a body that fits alone, cuts only the Summary list, and cuts it again when later text grows the body (TOOLS-495)", () => {
