@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { checkSteps, classify, docsOnly, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
 import { coverageHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
 import { sameReviewPatch } from "../review-findings.mjs";
+import { bodyCap, fitBody } from "../pr-body.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
 import { tempOutsideGit } from "./support/temp-outside-git.ts";
@@ -913,6 +914,58 @@ test("PR body includes ordered commits, checks, ticket and conditional Claude cr
     assert.deepEqual(f.calls().filter(call => call.tool === "fake-kit").slice(-2).map(call => call.args), [["review", "--base", "origin/dev", "--pr", "73", "--ticket", "ticket.md"],
       ["review", "--base", "origin/dev", "--pr", "73", "--ticket", "ticket.md", "--second-look"]]);
   }
+});
+
+test("a PR body whose Summary would pass GitHub's limit keeps the subjects that fit and says how many more there are (TOOLS-495)", t => {
+  // GitHub refuses a body over 65,536 characters ("Body is too long"); the Site Editor release of 1,658 commits wrote 121,013.
+  const f = fixture(t), long = (n: number) => `Change ${n} ${"x".repeat(990)}`;
+  for (let n = 1; n <= 70; n++) f.git("commit", "--allow-empty", "-m", long(n));
+  const result = f.run(["--no-merge"], { FAKE_EXISTING: "1" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const body = f.body(), base = f.git("rev-parse", "origin/dev"), head = f.git("rev-parse", "HEAD");
+  assert.ok(Buffer.byteLength(body) <= bodyCap, `body is ${Buffer.byteLength(body)} bytes`);
+  assert.match(body, /## Summary\n\n- First change\n- Second change\n- Change 1 x+\n/);
+  const kept = body.split("\n").filter(line => /^- Change \d+ x+$/.test(line)).length;
+  assert.ok(kept > 50 && kept < 70, `kept ${kept}`);
+  const more = 70 - kept;
+  assert.ok(body.includes(`\n- …and ${more} more commits (git log --oneline ${base.slice(0, 12)}..${head.slice(0, 12)})\n\n## Tests\n`), body.slice(-2000));
+  assert.match(body, /- npm test: ok/);
+  // Every body kit pr sends (the PATCH of the open PR, and the review-loop block after it) stays under the cap.
+  for (const call of f.apiCalls().filter(call => call.body)) assert.ok(Buffer.byteLength(call.body!) <= bodyCap);
+});
+
+test("fitBody leaves a body that fits alone, cuts only the Summary list, and cuts it again when later text grows the body (TOOLS-495)", () => {
+  const range = "aaaaaaaaaaaa..bbbbbbbbbbbb";
+  const make = (count: number, tail = "") => `Ticket: T (KEY)\n\n## Summary\n\n${Array.from({ length: count }, (_, i) => `- Subject ${i + 1} ${"é".repeat(40)}`).join("\n")}\n\n## Tests\n\n- npm test: ok\n${tail}`;
+  const small = make(3);
+  assert.equal(fitBody(small, { cap: 1000, range }), small);
+  // Bytes, not UTF-16 units: "é" is 2 bytes, so a body that fits by .length can still pass a byte cap.
+  const big = make(40), cap = 2000;
+  assert.ok(big.length < Buffer.byteLength(big));
+  const fitted = fitBody(big, { cap, range });
+  assert.ok(Buffer.byteLength(fitted) <= cap, String(Buffer.byteLength(fitted)));
+  const kept = fitted.split("\n").filter(line => line.startsWith("- Subject")).length;
+  assert.ok(kept > 0 && kept < 40);
+  assert.ok(fitted.startsWith(`Ticket: T (KEY)\n\n## Summary\n\n- Subject 1 `));
+  assert.ok(fitted.includes(`\n- …and ${40 - kept} more commits (git log --oneline ${range})\n\n## Tests\n\n- npm test: ok\n`));
+  // The most lines that fit: one more subject would pass the cap.
+  const nextLine = big.split("\n").filter(line => line.startsWith("- Subject"))[kept];
+  assert.ok(Buffer.byteLength(fitted) + Buffer.byteLength(nextLine) + 1 > cap);
+  // A later block (the review-loop ledger) grows the body: the list is cut again and the count adds up.
+  const grown = fitBody(`${fitted}\n<!-- review-loop -->\n${"z".repeat(600)}\n<!-- /review-loop -->\n`, { cap, range });
+  assert.ok(Buffer.byteLength(grown) <= cap);
+  const keptAgain = grown.split("\n").filter(line => line.startsWith("- Subject")).length;
+  assert.ok(keptAgain < kept);
+  assert.ok(grown.includes(`- …and ${40 - keptAgain} more commits (git log --oneline ${range})\n\n## Tests`));
+  assert.equal(grown.match(/more commits/g)!.length, 1);
+  assert.ok(grown.includes("z".repeat(600)));
+  // One commit left out says "commit".
+  const one = make(2), oneCap = Buffer.byteLength(one) - 10;
+  assert.match(fitBody(one, { cap: oneCap, range }), /- …and 1 more commit \(git log/);
+  // A Summary with no list (a sync) is left as it is.
+  const sync = `## Summary\n\nThis joins origin/main into dev.\n\n## Tests\n\n${"t".repeat(300)}\n`;
+  assert.equal(fitBody(sync, { cap: 100, range }), sync);
+  assert.equal(bodyCap, 60000);
 });
 
 test("explicit title wins; latest subject is the fallback; existing PR body is updated", t => {

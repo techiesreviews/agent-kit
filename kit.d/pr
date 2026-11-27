@@ -13,6 +13,7 @@ import { projectCommand, spoken } from "../review-brief.mjs";
 import { releaseCheck as releaseCheckRun } from "../release-check.mjs";
 import { resultLine, review as reviewRun, secondLook as secondLookRun } from "../review-run.mjs";
 import { prTicket, withFollowups } from "../ticket.mjs";
+import { fitBody } from "../pr-body.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -1244,7 +1245,15 @@ async function main(args) {
     const trailers = await git("body", ["log", "--format=%(trailers:key=Co-Authored-By,valueonly)", range]);
     const claude = env.CLAUDECODE === "1" || /^\s*Claude\b/im.test(trailers);
     const body = join(directory, "body.md");
-    writeFileSync(body, `${flags.ticket ? `Ticket: ${title || prTitle} (${flags.ticket})\n\n` : ""}## Summary\n\n${summary}\n\n## Tests\n\n${tests.join("\n")}\n${claude ? "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n" : ""}`);
+    // GitHub refuses a body over its limit: a long Summary keeps the subjects that fit and names the range for the rest (TOOLS-495).
+    const bodyRange = `${(await git("body", ["rev-parse", `origin/${flags.base}`])).slice(0, 12)}..${head.slice(0, 12)}`;
+    const fitted = text => fitBody(text, { range: bodyRange });
+    // Every PATCH sends the body cut to fit the same way, so a review-loop block or a ledger added later never passes the limit.
+    const patchBody = async (name, pr) => {
+      writeFileSync(body, fitted(readFileSync(body, "utf8")));
+      await gh(name, ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${pr}`, "-F", `body=@${body}`]);
+    };
+    writeFileSync(body, fitted(`${flags.ticket ? `Ticket: ${title || prTitle} (${flags.ticket})\n\n` : ""}## Summary\n\n${summary}\n\n## Tests\n\n${tests.join("\n")}\n${claude ? "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n" : ""}`));
     ok("body");
     const pushArgs = () => ["push", `--force-with-lease=refs/heads/${branch}:${pushed}`, "origin", `HEAD:refs/heads/${branch}`];
     const createArgs = ["pr", "create", "--base", flags.base, "--head", branch, "--title", prTitle, "--body-file", body];
@@ -1286,7 +1295,7 @@ async function main(args) {
     let number = existing[0]?.number;
     // `gh pr edit` fails on this repo: it queries the retired Projects (classic) field
     // (repository.pullRequest.projectCards). The REST endpoint updates only the body.
-    if (number) await gh("open", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+    if (number) await patchBody("open", number);
     else {
       const created = await gh("open", createArgs);
       number = /\/pull\/(\d+)/.exec(created)?.[1];
@@ -1317,7 +1326,7 @@ async function main(args) {
       const summary = heading + shortLines.join("\n");
       const oldSummary = heading + oldLines.join("\n");
       if (!readFileSync(body, "utf8").includes(summary)) appendFileSync(body, `\n${summary}\n`);
-      await gh("follow-ups", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+      await patchBody("follow-ups", number);
       const comments = JSON.parse(await gh("follow-ups", ["pr", "view", number, "--json", "comments"]));
       if (!comments.comments?.some(comment => [summary, oldSummary].includes(comment.body))) {
         const comment = join(directory, "follow-ups.md");
@@ -1382,7 +1391,7 @@ async function main(args) {
       const next = current.replace(/(## Summary\n\n)[\s\S]*?(\n\n## Tests)/, (_, open, close) => `${open}${summary}${close}`);
       if (next === current) return;
       writeFileSync(body, next);
-      await gh("summary", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+      await patchBody("summary", number);
     }
     // The text between the review-loop markers of a PR that already has them; `text` null takes the block away. Nothing else
     // is touched, and a PR with no block gets none here (recordReviewLoop writes the first one).
@@ -1393,7 +1402,7 @@ async function main(args) {
       const next = current.replace(marked, () => text === null ? "\n" : `\n<!-- review-loop -->\n${text}\n<!-- /review-loop -->\n`);
       if (next === current) return;
       writeFileSync(body, next);
-      await gh("review-loop", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+      await patchBody("review-loop", number);
     }
     // Rule: the PR says how it was reviewed. The block sits between markers, so a later run (a "behind" merge, a new head)
     // replaces it instead of adding a second line and ledger.
@@ -1406,7 +1415,7 @@ async function main(args) {
         ? current.replace(/<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/, () => block) : `${current.replace(/\n*$/, "\n")}\n${block}\n`;
       if (next !== current) {
         writeFileSync(body, next);
-        await gh("review-loop", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+        await patchBody("review-loop", number);
       }
       console.log(line);
     }
@@ -1517,7 +1526,7 @@ async function main(args) {
       const { waived } = gate;
       const what = [waived && `with ${waived} waived findings`, featuresWaived && "without a feature-list update"].filter(Boolean).join(" and ");
       appendFileSync(body, `\nmerged ${what}: ${reason}\n`);
-      await gh("waiver", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+      await patchBody("waiver", number);
       const comment = join(directory, "waiver.md");
       writeFileSync(comment, `Merged ${what}: ${reason}`);
       await gh("waiver", ["pr", "comment", number, "--body-file", comment]);
