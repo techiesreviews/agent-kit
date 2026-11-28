@@ -100,10 +100,85 @@ kit_node_version() {
   printf '%s\n' "${version%$'\r'}"
 }
 
+# The folders a build can write that kit_node_find never takes a Node from (README, "Programs by name"; TOOLS-412):
+# the worktree around the current folder and KIT_ROOT, and each one's Git folder and shared Git folder, found from the
+# worktree's own files (a .git folder, or a .git file naming one and its commondir file), never by running git, which
+# PATH could lead into those folders too. It adds their physical paths to the caller's places array (none outside a
+# worktree without KIT_ROOT), starts no program and leaves the current folder as it found it.
+kit_node_places() {
+  local here=$PWD start dir git line common CDPATH=''
+  for start in "$here" "${KIT_ROOT:-}"; do
+    cd -- "$here" 2> /dev/null || return 0
+    [[ -n $start ]] && cd -P -- "$start" 2> /dev/null || continue
+    # The machine's top folder is never a place: it would hold every Node.
+    dir=${PWD%/}
+    [[ -n $dir && $start == "${KIT_ROOT:-}" ]] && places+=("$dir")
+    while [[ -n $dir && ! -e $dir/.git ]]; do dir=${dir%/*}; done
+    [[ -n $dir ]] || continue
+    places+=("$dir")
+    git=$dir/.git
+    if [[ -f $git ]]; then
+      line=''
+      IFS= read -r line < "$git" || :
+      line=${line%$'\r'}
+      [[ $line == 'gitdir: '* ]] || continue
+      line=${line#gitdir: }
+      [[ $line == /* ]] || line=$dir/$line
+      git=$line
+    fi
+    cd -P -- "$git" 2> /dev/null && [[ $PWD != / ]] || continue
+    git=$PWD
+    places+=("$git")
+    [[ -f $git/commondir ]] || continue
+    common=''
+    IFS= read -r common < "$git/commondir" || :
+    common=${common%$'\r'}
+    [[ -n $common ]] || continue
+    [[ $common == /* ]] || common=${git%/}/$common
+    cd -P -- "$common" 2> /dev/null && [[ $PWD != / ]] && places+=("$PWD")
+  done
+  cd -- "$here" 2> /dev/null || :
+}
+
+# Whether the node at $1, a full path, stays outside every place named after it: the PATH folder it sits in, each link
+# on the way to the program and the program's own folder, each taken physically, lie outside them and outside /proc
+# and /dev (whose links lead anywhere). A relative path, or one whose folder cannot be read, counts as inside. It leaves
+# the current folder as it found it, and starts readlink only for a link, by its full path (one found on PATH could be
+# a build's too); without one, a link counts as inside.
+kit_node_outside() {
+  local here=$PWD file=$1 dir target place hops=0 outside=1 CDPATH='' readlink=
+  shift
+  [[ $file == /* ]] || return 1
+  while :; do
+    dir=${file%/*}
+    dir=${dir:-/}
+    [[ $dir != /proc && $dir != /proc/* && $dir != /dev && $dir != /dev/* ]] || break
+    cd -P -- "$dir" 2> /dev/null || break
+    dir=$PWD
+    [[ $dir != /proc && $dir != /proc/* && $dir != /dev && $dir != /dev/* ]] || break
+    for place in "$@"; do
+      [[ $dir == "$place" || $dir == "${place%/}"/* ]] && break 2
+    done
+    file=${dir%/}/${file##*/}
+    if [[ ! -L $file ]]; then outside=0; break; fi
+    (( ++hops <= 40 )) || break
+    if [[ -z $readlink ]]; then
+      for readlink in /usr/bin/readlink /bin/readlink /run/current-system/sw/bin/readlink ''; do [[ -x $readlink ]] && break; done
+      [[ -n $readlink ]] || break
+    fi
+    target=$("$readlink" -- "$file") || break
+    [[ $target == /* ]] || target=${dir%/}/$target
+    file=$target
+  done
+  cd -- "$here" 2> /dev/null || :
+  return "$outside"
+}
+
 # The first Node on PATH when it is >=24; else the newest Node >=24 later on PATH (an older Node can come first, as
 # Homebrew's does on a Mac where CI installs Node 24, TOOLS-412); else the newest in the npx or nvm caches. A good first
-# Node stops the search, so a node a build plants in a later PATH folder (a worktree's node_modules/.bin, a direnv
-# bin) never runs. When KIT_NODE_PIN is set (by a guarded kit pr to its own trusted Node), only that path is checked
+# Node stops the search. A node in the worktree or its Git folder (kit_node_places: a worktree's node_modules/.bin, a
+# direnv bin there, a link leading there) is dropped before it runs, so a build cannot plant the Node the kit runs, even
+# when an older Node comes first and every later one is asked for its version. When KIT_NODE_PIN is set (by a guarded kit pr to its own trusted Node), only that path is checked
 # so later PATH entries are never executed.
 # When KIT_NODE_FOUND_FOR matches the current KIT_NODE, PATH and search root, that already-verified Node
 # is reused without spawning node --version again so nested kit calls stay fast (an in-place Node swap
@@ -111,7 +186,7 @@ kit_node_version() {
 kit_node_find() (
   local candidate version root best='' major=0 minor=0 patch=0
   local next_major next_minor next_patch tier dir prev
-  local -a tried=()
+  local -a tried=() places=()
   if [[ -n ${KIT_NODE_PIN:-} ]]; then
     candidate=$KIT_NODE_PIN
     [[ $candidate == [A-Za-z]:\\* ]] && candidate=${candidate//\\//}
@@ -123,9 +198,10 @@ kit_node_find() (
     printf '%s/%s\n' "${dir%/}" "${candidate##*/}"
     return 0
   fi
+  kit_node_places
   if [[ -n ${KIT_NODE:-} && -n ${KIT_NODE_FOUND_FOR:-} &&
     $KIT_NODE_FOUND_FOR == "${KIT_NODE}"$'\x1f'"${PATH-}"$'\x1f'"${CLAUDE_NODE_SEARCH_ROOT:-${HOME:-}}" &&
-    -f $KIT_NODE && -x $KIT_NODE ]]; then
+    -f $KIT_NODE && -x $KIT_NODE ]] && kit_node_outside "$KIT_NODE" ${places[@]+"${places[@]}"}; then
     printf '%s\n' "$KIT_NODE"
     return 0
   fi
@@ -139,6 +215,8 @@ kit_node_find() (
       [[ -f $candidate && -x $candidate ]] || continue
       # Only the first PATH Node has run so far and it is >=24: keep it.
       [[ $tier == path && -n $best && ${#tried[@]} == 1 ]] && break
+      # A node in the worktree or its Git folder never runs, not even for its version.
+      kit_node_outside "$candidate" ${places[@]+"${places[@]}"} || continue
       for prev in ${tried[@]+"${tried[@]}"}; do [[ $candidate -ef $prev ]] && continue 2; done
       tried+=("$candidate")
       version=$(kit_node_version "$candidate") || continue

@@ -492,6 +492,63 @@ test("the front door keeps a good first Node and never runs a planted Node later
   assert.equal(existsSync(marker), false, "the planted Node later on PATH never ran");
 });
 
+// When the first PATH Node is older than 24 the lookup asks every later one for its version, so a node a build plants
+// in the worktree or the repository's Git folder must be dropped before it runs, during front-door startup too
+// (README, "Programs by name"; TOOLS-412 second look).
+test("the front door never runs a Node planted in the worktree or Git folder when an older Node comes first", (t) => {
+  const directory = temp(t);
+  const old = join(directory, "old/node");
+  fakeNode(old, "v22.15.0");
+  const trusted = join(directory, "trusted");
+  mkdirSync(trusted);
+  symlinkSync(process.execPath, join(trusted, "node"));
+  const good = join(realpathSync(trusted), "node");
+  const main = join(directory, "main"), worktree = join(directory, "worktree");
+  for (const args of [["init", "-q", main], ["-C", main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"], ["-C", main, "worktree", "add", "-q", worktree]]) {
+    const done = spawnSync("git", args, { encoding: "utf8" });
+    assert.equal(done.status, 0, done.stderr);
+  }
+  const marker = join(directory, "planted-node-ran");
+  const plant = (file: string) => {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `#!/bin/sh\necho ${JSON.stringify(file)} >> ${JSON.stringify(marker)}\necho v99.0.0\n`);
+    chmodSync(file, 0o755);
+    return dirname(file);
+  };
+  const linked = join(directory, "tools-link");
+  const nodeLink = join(directory, "node-link");
+  mkdirSync(nodeLink);
+  symlinkSync(join(worktree, "node_modules/.bin/node"), join(nodeLink, "node"));
+  const planted = [
+    plant(join(worktree, "node_modules/.bin/node")),
+    plant(join(main, ".git/worktrees/worktree/bin/node")),
+    plant(join(main, ".git/bin/node")),
+    plant(join(worktree, "direnv/node")),
+  ];
+  symlinkSync(planted[3], linked);
+  const commands = join(directory, "commands");
+  mkdirSync(commands);
+  command(commands, "show-node", 'printf "%s\\n" "$KIT_NODE"');
+  const env = {
+    ...kitEnv(), PATH: `${dirname(old)}:${planted[0]}:${linked}:${nodeLink}:${trusted}:${planted.slice(1).join(":")}:${process.env.PATH}`,
+    KIT_COMMANDS_DIR: commands, CLAUDE_NODE_SEARCH_ROOT: join(directory, "empty"), KIT_NODE: undefined, KIT_NODE_FOUND_FOR: undefined,
+    KIT_NODE_PIN: undefined, KIT_ROOT: undefined,
+  };
+  for (const cwd of [worktree, join(worktree, "node_modules")]) {
+    const shown = spawnSync("/bin/bash", [kit, "show-node"], { encoding: "utf8", env, cwd, timeout: 5000 });
+    assert.equal(shown.status, 0, shown.stderr);
+    assert.equal(shown.stdout, `${good}\nRESULT: ok show-node finished\n`);
+    assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
+  }
+  // Outside the worktree its own folders are ordinary PATH folders again, unless KIT_ROOT names it.
+  const outside = spawnSync("/bin/bash", ["-c", `source "$1"; kit_node_find`, "kit", library], { encoding: "utf8", env, cwd: directory, timeout: 5000 });
+  assert.equal(outside.stdout, `${join(worktree, "node_modules/.bin/node")}\n`);
+  rmSync(marker);
+  const rooted = spawnSync("/bin/bash", ["-c", `source "$1"; kit_node_find`, "kit", library], { encoding: "utf8", env: { ...env, KIT_ROOT: worktree }, cwd: directory, timeout: 5000 });
+  assert.equal(rooted.stdout, `${good}\n`);
+  assert.equal(existsSync(marker), false, "KIT_ROOT keeps the worktree's Nodes out of the lookup");
+});
+
 test("Node lookup picks the newest supported PATH Node before npm and nvm", (t) => {
   const directory = temp(t);
   const env = fixtureEnv(directory);
