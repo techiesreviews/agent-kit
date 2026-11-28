@@ -285,8 +285,8 @@ function sameExecutable(a, b) {
 
 /**
  * Copy env with a supported Node first on PATH, or throw when unavailable. Node selection has one copy, in
- * kit-lib.sh's kit_node_find (KIT_NODE_PIN alone when set by a guarded kit pr, else the highest Node >=24 on PATH,
- * then the highest installed npx/nvm version); PATH stays unchanged when its first absolute folder already holds
+ * kit-lib.sh's kit_node_find (KIT_NODE_PIN alone when set by a guarded kit pr, else the first PATH Node when it is >=24,
+ * else the highest Node >=24 later on PATH, then the highest installed npx/nvm version); PATH stays unchanged when its first absolute folder already holds
  * the same node executable (matching kit_node's -ef check).
  */
 export function nodeEnv(env = process.env) {

@@ -938,6 +938,24 @@ test("a PR body whose Summary would pass GitHub's limit keeps the subjects that 
   }
 });
 
+test("a cut PR body names the current head's range after a behind retry moves the head (TOOLS-412 release review)", t => {
+  const f = fixture(t), peer = f.peer(), long = (n: number) => `Change ${n} ${"x".repeat(990)}`;
+  for (let n = 1; n <= 70; n++) f.git("commit", "--allow-empty", "-m", long(n));
+  const before = f.git("rev-parse", "HEAD");
+  // A saved review gives the PR its review-loop block, so the new head's review PATCHes the body again after the rebase.
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: before, findings: [] }));
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const head = f.git("rev-parse", "HEAD"), base = f.git("rev-parse", "origin/dev");
+  assert.notEqual(head, before, "the behind retry rebased the branch");
+  const patches = f.apiCalls().filter(call => call.body);
+  assert.ok(patches.length > 0);
+  const last = patches.at(-1)!.body!;
+  assert.match(last, /more commits \(git log --oneline /);
+  assert.ok(last.includes(`(git log --oneline ${base.slice(0, 12)}..${head.slice(0, 12)})`), last.split("\n").find(line => line.includes("more commit")));
+});
+
 test("fitBody leaves a body that fits alone, cuts only the Summary list, and cuts it again when later text grows the body (TOOLS-495)", () => {
   const range = "aaaaaaaaaaaa..bbbbbbbbbbbb";
   const make = (count: number, tail = "") => `Ticket: T (KEY)\n\n## Summary\n\n${Array.from({ length: count }, (_, i) => `- Subject ${i + 1} ${"é".repeat(40)}`).join("\n")}\n\n## Tests\n\n- npm test: ok\n${tail}`;
@@ -963,6 +981,9 @@ test("fitBody leaves a body that fits alone, cuts only the Summary list, and cut
   assert.ok(grown.includes(`- …and ${40 - keptAgain} more commits (git log --oneline ${range})\n\n## Tests`));
   assert.equal(grown.match(/more commits/g)!.length, 1);
   assert.ok(grown.includes("z".repeat(600)));
+  // A cut body that still fits names the range it is given now: the head moved since the cut.
+  const moved = "aaaaaaaaaaaa..cccccccccccc";
+  assert.equal(fitBody(grown, { cap, range: moved }), grown.replace(range, moved));
   // One commit left out says "commit".
   const one = make(2), oneCap = Buffer.byteLength(one) - 10;
   assert.match(fitBody(one, { cap: oneCap, range }), /- …and 1 more commit \(git log/);

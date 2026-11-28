@@ -100,8 +100,11 @@ kit_node_version() {
   printf '%s\n' "${version%$'\r'}"
 }
 
-# The newest Node >=24 on PATH, else in the npx or nvm caches. When KIT_NODE_PIN is set (by a guarded
-# kit pr to its own trusted Node), only that path is checked so later PATH entries are never executed.
+# The first Node on PATH when it is >=24; else the newest Node >=24 later on PATH (an older Node can come first, as
+# Homebrew's does on a Mac where CI installs Node 24, TOOLS-412); else the newest in the npx or nvm caches. A good first
+# Node stops the search, so a node a build plants in a later PATH folder (a worktree's node_modules/.bin, a direnv
+# bin) never runs. When KIT_NODE_PIN is set (by a guarded kit pr to its own trusted Node), only that path is checked
+# so later PATH entries are never executed.
 # When KIT_NODE_FOUND_FOR matches the current KIT_NODE, PATH and search root, that already-verified Node
 # is reused without spawning node --version again so nested kit calls stay fast (an in-place Node swap
 # or a newer Node added to an already-listed PATH folder waits until the variables change).
@@ -134,6 +137,8 @@ kit_node_find() (
     fi
     while IFS= read -r candidate; do
       [[ -f $candidate && -x $candidate ]] || continue
+      # Only the first PATH Node has run so far and it is >=24: keep it.
+      [[ $tier == path && -n $best && ${#tried[@]} == 1 ]] && break
       for prev in ${tried[@]+"${tried[@]}"}; do [[ $candidate -ef $prev ]] && continue 2; done
       tried+=("$candidate")
       version=$(kit_node_version "$candidate") || continue
