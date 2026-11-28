@@ -569,8 +569,18 @@ test("the front door never runs a Node planted in the worktree or Git folder whe
   // When the only Node 24 sits in the worktree, the kit says why it found none.
   const tools = fixtureEnv(join(directory, "fixture")).PATH;
   const only = bash("kit_node", { ...env, PATH: `${tools}:${planted[0]}` }, worktree);
-  assert.notEqual(only.status, 0);
-  assert.match(only.stderr, new RegExp(`${nodeError.replace(/[()]/g, "\\$&")}\nkit: a node inside this worktree or its Git folder was skipped`));
+  const lib = bash("kit_lib_node 'console.log(1)'", { ...env, PATH: `${tools}:${planted[0]}` }, worktree);
+  for (const run of [only, lib]) {
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, new RegExp(`${nodeError.replace(/[()]/g, "\\$&")}\nkit: a node the kit does not trust was skipped \\(one inside this worktree`));
+  }
+  assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
+  // A home folder inside the worktree leaves the worktree a place: its nvm Node never runs either.
+  const insideHome = join(worktree, ".home");
+  plant(join(insideHome, ".nvm/versions/node/v99.0.0/bin/node"));
+  const homed = find({ HOME: insideHome, CLAUDE_NODE_SEARCH_ROOT: insideHome, PATH: `${dirname(old)}:${planted[0]}:${tools}` }, worktree);
+  assert.notEqual(homed.status, 0);
+  assert.equal(homed.stdout, "");
   assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
 });
 

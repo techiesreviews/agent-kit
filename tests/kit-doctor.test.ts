@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -518,6 +518,30 @@ test("doctor reports Node below 24 without searching the user's installations", 
   rmSync(join(f.build, "scripts/agents/kit.json"));
   const missing = f.run([], f.build, { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty }, true);
   assert.ok(missing.stdout.includes('✗ settings: no scripts/agents/kit.json; fix: add scripts/agents/kit.json with "project" and "branches": { "land": "<branch>" }\n'), missing.stdout);
+});
+
+test("doctor says a Node it skipped in the worktree is why it found none, not that Node is missing", (t) => {
+  const f = fixture(t);
+  const bin = join(f.directory, "bin");
+  const empty = join(f.directory, "empty");
+  const planted = join(f.build, "planted");
+  const marker = join(f.directory, "planted-node-ran");
+  mkdirSync(bin); mkdirSync(empty); mkdirSync(planted);
+  executable(join(bin, "node"), "printf 'v22.0.0\\n'");
+  executable(join(planted, "node"), `echo "ran $* from $(cat /proc/$PPID/cmdline | tr "\\\\0" " ")" >> ${JSON.stringify(marker)}; printf 'v99.0.0\\n'`);
+  const env = { PATH: `${bin}:${planted}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: empty };
+  const result = f.run([], f.build, env, true);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.equal(result.stdout.trimEnd().split("\n").at(-1), "RESULT: fail doctor 1 failed: node");
+  assert.match(result.stderr, /^kit: no Node >=24 found \(system, npx cache or nvm\)\nkit: a node the kit does not trust was skipped/);
+  assert.match(result.stdout, /✗ node: Node >=24 not found; fix: a node the kit does not trust was skipped \(one inside this worktree/);
+  const rootless = f.run([], f.build, { ...env, KIT_ROOT: undefined, KIT_MAIN_ROOT: undefined }, true);
+  assert.equal(rootless.status, 1, rootless.stderr);
+  assert.match(rootless.stdout, /^RESULT: fail doctor cannot find the project without Node >=24: a node the kit does not trust was skipped/);
+  // Doctor's own lookup never runs it. Its kit home check starts a kit in another project, where this worktree is an
+  // ordinary PATH folder; run through the front door, that kit reuses the Node the front door found instead.
+  const ran = existsSync(marker) ? readFileSync(marker, "utf8") : "";
+  assert.equal(ran.split("\n").filter(line => line.includes("kit.d/doctor")).join("\n"), "", ran);
 });
 
 test("doctor shows the Node version without the carriage return Node on Windows ends it with", (t) => {
