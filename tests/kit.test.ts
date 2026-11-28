@@ -541,12 +541,52 @@ test("the front door never runs a Node planted in the worktree or Git folder whe
     assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
   }
   // Outside the worktree its own folders are ordinary PATH folders again, unless KIT_ROOT names it.
-  const outside = spawnSync("/bin/bash", ["-c", `source "$1"; kit_node_find`, "kit", library], { encoding: "utf8", env, cwd: directory, timeout: 5000 });
+  const find = (more: NodeJS.ProcessEnv, cwd: string) =>
+    spawnSync("/bin/bash", ["-c", `source "$1"; kit_node_find`, "kit", library], { encoding: "utf8", env: { ...env, ...more }, cwd, timeout: 5000 });
+  const outside = find({}, directory);
+  assert.equal(outside.status, 0, outside.stderr);
   assert.equal(outside.stdout, `${join(worktree, "node_modules/.bin/node")}\n`);
   rmSync(marker);
-  const rooted = spawnSync("/bin/bash", ["-c", `source "$1"; kit_node_find`, "kit", library], { encoding: "utf8", env: { ...env, KIT_ROOT: worktree }, cwd: directory, timeout: 5000 });
+  const rooted = find({ KIT_ROOT: worktree }, directory);
   assert.equal(rooted.stdout, `${good}\n`);
   assert.equal(existsSync(marker), false, "KIT_ROOT keeps the worktree's Nodes out of the lookup");
+  // A Node a parent kit call already checked is reused without running it, but never one in the worktree.
+  const foundFor = (node: string) => `${node}\x1f${env.PATH}\x1f${env.CLAUDE_NODE_SEARCH_ROOT}`;
+  const checked = join(directory, "checked/node");
+  plant(checked);
+  const reused = find({ KIT_NODE: checked, KIT_NODE_FOUND_FOR: foundFor(checked) }, worktree);
+  assert.equal(reused.stdout, `${checked}\n`);
+  assert.equal(existsSync(marker), false, "a Node already checked is reused without running it");
+  const cachedPlant = join(worktree, "node_modules/.bin/node");
+  const refused = find({ KIT_NODE: cachedPlant, KIT_NODE_FOUND_FOR: foundFor(cachedPlant) }, worktree);
+  assert.equal(refused.stdout, `${good}\n`);
+  assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
+  // A relative gitdir line in the worktree's .git file leads to the same Git folder.
+  writeFileSync(join(worktree, ".git"), "gitdir: ../main/.git/worktrees/worktree\n");
+  const relative = find({}, worktree);
+  assert.equal(relative.stdout, `${good}\n`);
+  assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
+  // When the only Node 24 sits in the worktree, the kit says why it found none.
+  const tools = fixtureEnv(join(directory, "fixture")).PATH;
+  const only = bash("kit_node", { ...env, PATH: `${tools}:${planted[0]}` }, worktree);
+  assert.notEqual(only.status, 0);
+  assert.match(only.stderr, new RegExp(`${nodeError.replace(/[()]/g, "\\$&")}\nkit: a node inside this worktree or its Git folder was skipped`));
+  assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
+});
+
+test("a home folder kept in Git is never a place the Node lookup skips", (t) => {
+  const home = temp(t);
+  const init = spawnSync("git", ["init", "-q", home], { encoding: "utf8" });
+  assert.equal(init.status, 0, init.stderr);
+  const env = fixtureEnv(join(home, "fixture"));
+  const nvm = join(home, ".nvm/versions/node/v24.0.0/bin/node");
+  mkdirSync(dirname(nvm), { recursive: true });
+  symlinkSync(process.execPath, nvm);
+  const elsewhere = join(home, "elsewhere");
+  mkdirSync(elsewhere);
+  const found = bash("kit_node_find", { ...env, HOME: home, CLAUDE_NODE_SEARCH_ROOT: home, KIT_ROOT: undefined, KIT_NODE: undefined, KIT_NODE_FOUND_FOR: undefined, KIT_NODE_PIN: undefined }, elsewhere);
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(found.stdout, `${join(realpathSync(dirname(nvm)), "node")}\n`);
 });
 
 test("Node lookup picks the newest supported PATH Node before npm and nvm", (t) => {
