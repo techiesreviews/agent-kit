@@ -106,8 +106,9 @@ kit_node_version() {
 # PATH could lead into those folders too. It adds their physical paths to the caller's places array (none outside a
 # worktree without KIT_ROOT), starts no program and leaves the current folder as it found it. The home folder itself
 # is never a place: a home kept in Git (`git init` in ~) would hold every nvm, volta or ~/.local/bin Node, and a build
-# runs in a worktree, whose own .git is found first (a worktree that holds the home folder stays a place). The .git and commondir files are the build's to
-# write, so the Git folder part trusts them (the worktree itself stays a place while any .git entry is in it).
+# runs in a worktree, whose own .git is found first (a worktree that holds the home folder stays a place). The .git
+# and commondir files are the build's to write, so the Git folder part trusts them (the worktree itself stays a place
+# while any .git entry is in it).
 kit_node_places() {
   local here=$PWD start dir git line common home='' place CDPATH=''
   local -a found=()
@@ -248,7 +249,7 @@ kit_node_find() (
 
 # Why kit_node_find found no Node when its status is 3: it skipped a node it does not trust, so the person is not sent
 # to install a Node they have. kit_node_none and kit doctor say it.
-kit_node_skipped='a node the kit does not trust was skipped (one inside this worktree or its Git folder, which a build could have put there, or one on a path it cannot check); install Node 24 outside the worktree'
+kit_node_skipped='a node the kit does not trust was skipped (one inside this worktree or its Git folder, which a build could have put there, or one on a path it cannot check); install Node 24 outside this worktree and its Git folder, and put its folder on PATH as a full path'
 
 # What kit says on stderr when kit_node_find found no Node, given its status ($1).
 kit_node_none() {
