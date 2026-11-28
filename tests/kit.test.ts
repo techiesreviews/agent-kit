@@ -460,6 +460,34 @@ test("Node lookup finds Node 24 later on PATH when an older Node comes first", (
   assert.equal(selected.stdout, `${supported}\n${dirname(supported)}:${env.PATH}\n`);
 });
 
+// A build can write a worktree's node_modules/.bin or a direnv bin folder later on PATH; the real front door, unpinned,
+// keeps a good first Node and never runs the one a build planted there (TOOLS-412 release review).
+test("the front door keeps a good first Node and never runs a planted Node later on PATH", (t) => {
+  const directory = temp(t);
+  const first = (process.env.PATH ?? "").split(":")[0];
+  const good = join(realpathSync(first), "node");
+  const worktree = join(directory, "worktree");
+  const initialized = spawnSync("git", ["init", "-q", worktree], { encoding: "utf8" });
+  assert.equal(initialized.status, 0, initialized.stderr);
+  const marker = join(directory, "planted-node-ran");
+  const planted = join(worktree, "node_modules/.bin/node");
+  mkdirSync(dirname(planted), { recursive: true });
+  writeFileSync(planted, `#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\necho v99.0.0\n`);
+  chmodSync(planted, 0o755);
+  const commands = join(directory, "commands");
+  mkdirSync(commands);
+  command(commands, "show-node", 'printf "%s\\n" "$KIT_NODE"');
+  const env = {
+    ...kitEnv(), PATH: `${first}:${dirname(planted)}:${process.env.PATH}`, KIT_COMMANDS_DIR: commands,
+    CLAUDE_NODE_SEARCH_ROOT: join(directory, "empty"), KIT_NODE: undefined, KIT_NODE_FOUND_FOR: undefined, KIT_NODE_PIN: undefined,
+  };
+  const shown = spawnSync("/bin/bash", [kit, "show-node"], { encoding: "utf8", env, cwd: worktree, timeout: 5000 });
+  assert.equal(shown.status, 0, shown.stderr);
+  assert.equal(shown.stdout, `${good}\nRESULT: ok show-node finished\n`);
+  assert.equal(nodeFound(env), good);
+  assert.equal(existsSync(marker), false, "the planted Node later on PATH never ran");
+});
+
 test("Node lookup picks the newest supported PATH Node before npm and nvm", (t) => {
   const directory = temp(t);
   const env = fixtureEnv(directory);
@@ -538,8 +566,9 @@ test("Node lookup deduplicates symlinked PATH entries and invalidates its cache 
   symlinkSync(real, join(alias, "node"));
   const newer = join(directory, "newer/node");
   fakeNode(newer, "v25.0.0");
-  const dupEnv = { ...env, PATH: `${alias}:${dirname(real)}:${alias}:${dirname(other)}:${env.PATH}` };
-  const result = bash(`kit_node; mapfile -t a < ${JSON.stringify(count)}; kit_node_find; mapfile -t b < ${JSON.stringify(otherCount)}; printf 'dedup=%s cached=%s\\n' "\${#a[@]}" "\${#b[@]}"; PATH="${dirname(newer)}:$PATH" kit_node_find`, dupEnv);
+  // The older Node comes first, so the lookup looks past it to the later ones.
+  const dupEnv = { ...env, PATH: `${dirname(other)}:${alias}:${dirname(real)}:${alias}:${env.PATH}` };
+  const result = bash(`kit_node; mapfile -t a < ${JSON.stringify(count)}; kit_node_find; mapfile -t b < ${JSON.stringify(otherCount)}; printf 'dedup=%s cached=%s\\n' "\${#a[@]}" "\${#b[@]}"; PATH="${dirname(other)}:$PATH:${dirname(newer)}" kit_node_find`, dupEnv);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, `${join(alias, "node")}\ndedup=1 cached=1\n${newer}\n`);
   assert.equal(readFileSync(otherCount, "utf8").trim().split("\n").length, 2, "PATH change invalidated the cache and rescanned other PATH entries");

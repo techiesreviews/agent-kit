@@ -1246,14 +1246,14 @@ async function main(args) {
     const claude = env.CLAUDECODE === "1" || /^\s*Claude\b/im.test(trailers);
     const body = join(directory, "body.md");
     // GitHub refuses a body over its limit: a long Summary keeps the subjects that fit and names the range for the rest (TOOLS-495).
-    const bodyRange = `${(await git("body", ["rev-parse", `origin/${flags.base}`])).slice(0, 12)}..${head.slice(0, 12)}`;
-    const fitted = text => fitBody(text, { range: bodyRange });
+    // The range is worked out at each write: the head moves after the first one (a follow-ups commit, a "behind" rebase).
+    const fitted = async text => fitBody(text, { range: `${(await git("body", ["rev-parse", `origin/${flags.base}`])).slice(0, 12)}..${head.slice(0, 12)}` });
     // Every PATCH sends the body cut to fit the same way, so a review-loop block or a ledger added later never passes the limit.
     const patchBody = async (name, pr) => {
-      writeFileSync(body, fitted(readFileSync(body, "utf8")));
+      writeFileSync(body, await fitted(readFileSync(body, "utf8")));
       await gh(name, ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${pr}`, "-F", `body=@${body}`]);
     };
-    writeFileSync(body, fitted(`${flags.ticket ? `Ticket: ${title || prTitle} (${flags.ticket})\n\n` : ""}## Summary\n\n${summary}\n\n## Tests\n\n${tests.join("\n")}\n${claude ? "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n" : ""}`));
+    writeFileSync(body, await fitted(`${flags.ticket ? `Ticket: ${title || prTitle} (${flags.ticket})\n\n` : ""}## Summary\n\n${summary}\n\n## Tests\n\n${tests.join("\n")}\n${claude ? "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n" : ""}`));
     ok("body");
     const pushArgs = () => ["push", `--force-with-lease=refs/heads/${branch}:${pushed}`, "origin", `HEAD:refs/heads/${branch}`];
     const createArgs = ["pr", "create", "--base", flags.base, "--head", branch, "--title", prTitle, "--body-file", body];
