@@ -25,8 +25,12 @@ command -v jq > /dev/null || jq_missing=true
 # With a Node whose kit-lib.mjs does not load, kit_result's own attempt prints that error, which the silenced
 # kit_root here does not.
 if ! root=$(kit_root 2>/dev/null); then
-  if kit_node_find > /dev/null; then
+  node_status=0
+  kit_node_find > /dev/null || node_status=$?
+  if (( node_status == 0 )); then
     kit_result fail 'doctor cannot find the project: kit-lib.mjs did not load (its error is above); run scripts/agents/kit update to repair the kit' || :
+  elif (( node_status == 3 )); then
+    kit_result fail "doctor cannot find the project without Node >=24: $kit_node_skipped" || :
   else
     kit_result fail 'doctor cannot find the project without Node >=24 (system, npx cache or nvm); install Node 24 (nvm) or fix PATH' || :
   fi
@@ -168,8 +172,12 @@ else
   fail 'hooks live' "bash-guard returned status $status (expected 2)" "check jq and the kit's hooks/bash-guard.sh"
 fi
 
-if node=$(kit_node_find); then
+node_status=0
+node=$(kit_node_find) || node_status=$?
+if (( node_status == 0 )); then
   pass node "$(kit_node_version "$node")"
+elif (( node_status == 3 )); then
+  fail node 'Node >=24 not found' "$kit_node_skipped"
 else
   fail node 'Node >=24 not found' 'install Node 24 (nvm) or fix PATH'
 fi

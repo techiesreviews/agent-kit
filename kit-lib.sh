@@ -104,16 +104,16 @@ kit_node_version() {
 # the worktree around the current folder and KIT_ROOT, and each one's Git folder and shared Git folder, found from the
 # worktree's own files (a .git folder, or a .git file naming one and its commondir file), never by running git, which
 # PATH could lead into those folders too. It adds their physical paths to the caller's places array (none outside a
-# worktree without KIT_ROOT), starts no program and leaves the current folder as it found it. A place that is the home
-# folder or holds it is left out: a home kept in Git (`git init` in ~) would hold every nvm, volta or ~/.local/bin Node,
-# and a build runs in a worktree, whose own .git is found first. The .git and commondir files are the build's to
+# worktree without KIT_ROOT), starts no program and leaves the current folder as it found it. The home folder itself
+# is never a place: a home kept in Git (`git init` in ~) would hold every nvm, volta or ~/.local/bin Node, and a build
+# runs in a worktree, whose own .git is found first (a worktree that holds the home folder stays a place). The .git and commondir files are the build's to
 # write, so the Git folder part trusts them (the worktree itself stays a place while any .git entry is in it).
 kit_node_places() {
   local here=$PWD start dir git line common home='' place CDPATH=''
   local -a found=()
   [[ -n ${HOME:-} ]] && cd -P -- "$HOME" 2> /dev/null && home=${PWD%/}
   for start in "$here" "${KIT_ROOT:-}"; do
-    cd -- "$here" 2> /dev/null || return 0
+    cd -- "$here" 2> /dev/null || break
     [[ -n $start ]] && cd -P -- "$start" 2> /dev/null || continue
     # The machine's top folder is never a place: it would hold every Node.
     dir=${PWD%/}
@@ -144,7 +144,7 @@ kit_node_places() {
   done
   cd -- "$here" 2> /dev/null || :
   for place in ${found[@]+"${found[@]}"}; do
-    [[ -n $home && ( $home == "$place" || $home == "${place%/}"/* ) ]] || places+=("$place")
+    [[ -n $home && $home == "$place" ]] || places+=("$place")
   done
 }
 
@@ -246,11 +246,14 @@ kit_node_find() (
   return "$none"
 )
 
-# What kit says on stderr when kit_node_find found no Node, given its status ($1): 3 adds that a node was dropped for
-# sitting in the worktree or its Git folder, so the person is not sent to install a Node they have.
+# Why kit_node_find found no Node when its status is 3: it skipped a node it does not trust, so the person is not sent
+# to install a Node they have. kit_node_none and kit doctor say it.
+kit_node_skipped='a node the kit does not trust was skipped (one inside this worktree or its Git folder, which a build could have put there, or one on a path it cannot check); install Node 24 outside the worktree'
+
+# What kit says on stderr when kit_node_find found no Node, given its status ($1).
 kit_node_none() {
   printf '%s\n' 'kit: no Node >=24 found (system, npx cache or nvm)' >&2
-  [[ $1 != 3 ]] || printf '%s\n' 'kit: a node inside this worktree or its Git folder was skipped: the kit never runs one there, since a build could have put it there; install Node 24 outside them' >&2
+  [[ $1 != 3 ]] || printf 'kit: %s\n' "$kit_node_skipped" >&2
 }
 
 kit_node() {
