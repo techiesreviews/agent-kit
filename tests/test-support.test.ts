@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 // @ts-expect-error The kit's helpers are plain JavaScript without declarations.
 import { orbitWorkTreeAround } from "../orbit-client.mjs";
 import { kitCleanLimit, loadBesides, loadLimit } from "./support/machine-load.ts";
@@ -69,4 +71,35 @@ test("a test's own temp folder is outside every git work tree, even when the sys
   process.env.KIT_TEST_SHM = clean;
   try { assert.equal(dirname(tempOutsideGit("kit-ticket-")), clean); }
   finally { if (saved === undefined) delete process.env.KIT_TEST_SHM; else process.env.KIT_TEST_SHM = saved; }
+});
+
+test("kit-env hides newer host Nodes on PATH while keeping sibling tools reachable", t => {
+  const scratch = tempOutsideGit("kit-env-host-node-");
+  t.after(() => rmSync(scratch, { recursive: true, force: true }));
+  const hostBin = join(scratch, "host-bin");
+  mkdirSync(hostBin);
+  writeFileSync(join(hostBin, "node"), "#!/bin/sh\necho v99.0.0\n");
+  chmodSync(join(hostBin, "node"), 0o755);
+  writeFileSync(join(hostBin, "sibling-tool"), "#!/bin/sh\necho sibling-ok\n");
+  chmodSync(join(hostBin, "sibling-tool"), 0o755);
+  const script = `
+    import assert from "node:assert/strict";
+    import { spawnSync } from "node:child_process";
+    import { realpathSync } from "node:fs";
+    import { kitEnv } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "support/kit-env.ts")).href)};
+    import { nodeEnv } from ${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "../kit-lib.mjs")).href)};
+    const env = kitEnv();
+    const chosen = nodeEnv(env);
+    assert.equal(chosen.PATH, env.PATH);
+    assert.equal(realpathSync(chosen.KIT_NODE), realpathSync(process.execPath));
+    const tool = spawnSync("sibling-tool", [], { env, encoding: "utf8" });
+    assert.equal(tool.status, 0, tool.stderr);
+    assert.equal(tool.stdout.trim(), "sibling-ok");
+  `;
+  const ran = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    env: { ...process.env, PATH: `${hostBin}:${process.env.PATH}` },
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
 });

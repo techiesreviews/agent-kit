@@ -96,8 +96,10 @@ function text(file) {
 // stand before a command (a test with && or ||, a ;, then, do, else, an opening brace or bracket). The path ends at a
 // blank or at what ends a command; quotes are taken off by expand.
 const sourced = /(?:^|&&|\|\||[;({]|\b(?:then|do|else))\s*(?:source|\.)\s+("[^"\n]*"|'[^'\n]*'|[^\s;&|)}]+)/gm;
-// A path as a config file writes it: ~ and $HOME are the home, a relative one counts from `from`.
-const expand = (path, base, from) => resolve(from, (/^"[\s\S]*"$/.test(path) ? path.slice(1, -1).replace(/\\(.)/g, "$1") : path.replace(/^["']|["']$/g, "")).replace(/^~(?=\/|$)/, base).replace(/^\$(HOME|\{HOME\})(?=\/|$)/, base));
+// A path as a config file writes it, its quotes taken off; expand also makes ~ and $HOME the home and counts a relative
+// one from `from`.
+const unquote = path => /^"[\s\S]*"$/.test(path) ? path.slice(1, -1).replace(/\\(.)/g, "$1") : path.replace(/^["']|["']$/g, "");
+const expand = (path, base, from) => resolve(from, unquote(path).replace(/^~(?=\/|$)/, base).replace(/^\$(HOME|\{HOME\})(?=\/|$)/, base));
 // A git include (include.path, includeIf's path): the whole value as git reads it, so a path with a space counts in
 // full (SL-1, TOOLS-303): a quoted value up to its closing quote, a bare one up to a comment or the line's end.
 const gitIncludePath = /^[ \t]*path[ \t]*=[ \t]*("(?:[^"\\\n]|\\.)*"|[^\n#;]*[^\s#;])/gim;
@@ -1542,19 +1544,127 @@ function isPinnedTarget(entry) {
 }
 
 function verifyPinnedTarget(target) {
-  const { path, fd, dev, ino } = target;
+  const { path, fd, dev, ino, kind = "dir" } = target;
   if (typeof fd !== "number") return false;
+  const matchKind = info => kind === "file" ? info.isFile() : info.isDirectory();
   try {
     const fdInfo = fstatSync(fd);
-    if (!fdInfo.isDirectory() || fdInfo.dev !== dev || fdInfo.ino !== ino) return false;
+    if (!matchKind(fdInfo) || fdInfo.dev !== dev || fdInfo.ino !== ino) return false;
+    if (kind === "file" && (fdInfo.nlink !== 1 || (typeof process.getuid === "function" && fdInfo.uid !== process.getuid()))) return false;
     if (process.platform === "linux" && readlinkSync(`/proc/self/fd/${fd}`) !== path) return false;
     const now = lstatSync(path);
-    if (now.isSymbolicLink() || !now.isDirectory() || now.dev !== dev || now.ino !== ino) return false;
+    if (now.isSymbolicLink() || !matchKind(now) || now.dev !== dev || now.ino !== ino) return false;
+    if (kind === "file" && (now.nlink !== 1 || (typeof process.getuid === "function" && now.uid !== process.getuid()))) return false;
     return realpathSync(path) === path;
   } catch { return false; }
 }
 
 const pushRefusal = reason => new Error(`${reason}; push to a repository folder of its own, or set ASE_KEY_GUARD=off to run without the lock`);
+const pinnedRefusal = target => target.kind === "file"
+  ? new Error(`the shared lock file (${target.path}) changed after validation; run again, or set ASE_KEY_GUARD=off to run without the lock`)
+  : pushRefusal("this push destination changed after validation");
+
+const defaultPortPool = ["5226", "5236", "5246", "5256", "5266", "5276", "5286", "5296"];
+const maxPortLocks = 64;
+const portLockFileFlags = constants.O_RDWR | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+
+function sharedPortNumbers(env) {
+  const source = env.ASE_PORTS?.trim() ? "ASE_PORTS" : env.ASE_POOL?.trim() ? "ASE_POOL" : null;
+  const raw = (source ? env[source].trim() : defaultPortPool.join(" ")).split(/\s+/).filter(Boolean);
+  const valid = port => /^[1-9][0-9]{0,4}$/.test(port) && Number(port) <= 65535;
+  const invalid = raw.filter(port => !valid(port));
+  if (invalid.length) {
+    throw new Error(`${source} holds invalid port${invalid.length === 1 ? "" : "s"} (${invalid.join(", ")}); use space-separated port numbers between 1 and 65535`);
+  }
+  const ports = [...new Set(raw)];
+  if (ports.length > maxPortLocks) {
+    throw new Error(`too many shared port lock files (${ports.length}; at most ${maxPortLocks}); narrow ASE_PORTS or ASE_POOL`);
+  }
+  return ports;
+}
+
+// Validate and pin the shared port lock files (`$ASE_LOCK_DIR/ase-<port>.lock`, default `/tmp`) with open regular-file
+// handles so browser checks inside the write fence share the host's port-slot flock coordination while the lock folder
+// itself stays read-only.
+function openPortLockTargets(env = process.env, { worktree, common, cwd = process.cwd() } = {}) {
+  const ports = sharedPortNumbers(env);
+  if (!ports.length) return [];
+  const baseCwd = worktree || cwd;
+  const rawDir = env.ASE_LOCK_DIR ? resolve(baseCwd, env.ASE_LOCK_DIR) : "/tmp";
+  const writableRoots = buildFolders(worktree, common);
+  if (writableRoots.some(root => inside(real(rawDir), root))) return [];
+  const refuseDir = reason => new Error(`ASE_LOCK_DIR (${rawDir}) ${reason}; use /tmp or a folder outside your home setup folders, or set ASE_KEY_GUARD=off to run without the lock`);
+  const base = real(home(env));
+  let dirFd = null;
+  const opened = [];
+  const closeAll = () => {
+    for (const target of opened) target.close();
+    if (dirFd !== null) {
+      const toClose = dirFd;
+      dirFd = null;
+      try { closeSync(toClose); } catch { /* Already closed. */ }
+    }
+  };
+  try {
+    try { dirFd = openSync(rawDir, noFollowDirFlags); }
+    catch (error) {
+      if (error.code === "ELOOP") throw refuseDir("is a link, not a direct folder");
+      if (error.code === "ENOENT") throw refuseDir("does not exist");
+      if (error.code === "ENOTDIR") throw refuseDir("is not a folder");
+      throw refuseDir(`cannot be opened (${error.code || error.message})`);
+    }
+    const dirInfo = fstatSync(dirFd);
+    if (!dirInfo.isDirectory()) throw refuseDir("is not a folder");
+    if (process.platform === "linux" && readlinkSync(`/proc/self/fd/${dirFd}`) !== rawDir) {
+      throw refuseDir("passes through a link, not a direct folder");
+    }
+    if (realpathSync(rawDir) !== rawDir) throw refuseDir("passes through a link, not a direct folder");
+    if (rawDir === base || (inside(base, rawDir) && rawDir !== "/tmp")) throw refuseDir("is or holds your home folder");
+    if (isHomeSetup(rawDir, env, baseCwd) || isSystemFolder(rawDir)) throw refuseDir("is a home setup or system folder");
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    if (uid !== null && dirInfo.uid !== uid && !(dirInfo.uid === 0 && (dirInfo.mode & 0o1000) !== 0)) {
+      throw refuseDir("is owned by another user without the sticky bit");
+    }
+    const at = process.platform === "linux" ? `/proc/self/fd/${dirFd}` : rawDir;
+    for (const port of ports) {
+      const name = `ase-${port}.lock`;
+      const filePath = join(rawDir, name);
+      const refuseFile = reason => new Error(`shared port lock (${filePath}) ${reason}; remove or replace it, or set ASE_KEY_GUARD=off to run without the lock`);
+      let handle = null;
+      const close = () => {
+        if (handle !== null) {
+          const toClose = handle;
+          handle = null;
+          try { closeSync(toClose); } catch { /* Already closed. */ }
+        }
+      };
+      try {
+        handle = openSync(join(at, name), portLockFileFlags, 0o644);
+      } catch (error) {
+        if (error.code === "ELOOP") throw refuseFile("is a link, not a regular file");
+        if (error.code === "EISDIR") throw refuseFile("is a folder, not a regular file");
+        throw refuseFile(`cannot be opened (${error.code || error.message})`);
+      }
+      const info = fstatSync(handle);
+      const pinned = { path: filePath, kind: "file", get fd() { return handle; }, dev: info.dev, ino: info.ino, close };
+      opened.push(pinned);
+      if (!info.isFile()) throw refuseFile("is not a regular file");
+      if (uid !== null && info.uid !== uid) throw refuseFile("is owned by another user");
+      if (info.nlink !== 1) throw refuseFile("is a hard link, not a plain lock file");
+      if (!verifyPinnedTarget(pinned)) throw refuseFile("changed while opening");
+    }
+    const nowDir = lstatSync(rawDir);
+    if (nowDir.isSymbolicLink() || !nowDir.isDirectory() || nowDir.dev !== dirInfo.dev || nowDir.ino !== dirInfo.ino) {
+      throw refuseDir("changed while opening its lock files");
+    }
+    closeSync(dirFd);
+    dirFd = null;
+    return opened;
+  } catch (error) {
+    closeAll();
+    throw error;
+  }
+}
 
 /**
  * Validate and pin a local bare Git push target with an open directory handle so a concurrent process cannot swap it
@@ -1644,14 +1754,14 @@ function ephemeralTempDir(env, allRoots, base) {
 // builds keep their session under the kit's state folder (surviving reboots). Direct callers get a private temporary
 // folder, removed by close(). CLI resources remain readable through links; settings and the CLI's own login are private
 // copies so an atomic refresh changes no home file.
-function writeFence(cli, env, { worktree, common, state, writable = [], session } = {}) {
+function writeFence(cli, env, { worktree, common, state, writable = [], session, privateConfig = false, maskedPaths = [] } = {}) {
   const work = [worktree, common].filter(Boolean).map(real), base = real(home(env));
   if (work.some(root => inside(base, root))) throw new Error("the write fence cannot make HOME or one of its parents writable; use a worktree and Git folder of their own");
   const pinnedDestinations = [], stringDestinations = [];
   for (const entry of writable) {
     if (!entry) continue;
     if (isPinnedTarget(entry)) {
-      if (!verifyPinnedTarget(entry)) throw pushRefusal("this push destination changed after validation");
+      if (!verifyPinnedTarget(entry)) throw pinnedRefusal(entry);
       if (inside(base, entry.path)) throw pushRefusal("this push goes to a folder that holds your home folder");
       if (isHomeSetup(entry.path, env, worktree) || isSystemFolder(entry.path)) throw pushRefusal("this push goes to a home setup or system folder");
       pinnedDestinations.push(entry);
@@ -1728,8 +1838,46 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session 
       if (actual !== path) throw new Error("this build's saved session has a changed folder; start a new build");
       return path;
     };
-    const folders = Object.fromEntries(["tmp", "cache"].map(name => [name, folderAt(join(dir, name))]));
+    const folders = Object.fromEntries((privateConfig ? ["tmp", "cache", "config"] : ["tmp", "cache"]).map(name => [name, folderAt(join(dir, name))]));
+    if (privateConfig) {
+      // Carry non-secret git config and fontconfig read-only into the fresh XDG_CONFIG_HOME so checks keep git
+      // identity, global ignore rules and font rendering while real ~/.config keys stay masked.
+      const configSource = isAbsolute(env.XDG_CONFIG_HOME ?? "") ? env.XDG_CONFIG_HOME : join(home(env), ".config");
+      const hidden = path => maskedPaths.some(mask => inside(resolve(path), resolve(mask)) || inside(real(path), real(mask)));
+      const linkConfig = (rel, targetRel = rel) => {
+        const src = join(configSource, rel);
+        if (!existingPaths([src]).length || hidden(src) || shutIn(src, allRoots)) return;
+        const dst = join(folders.config, targetRel);
+        mkdirSync(dirname(dst), { recursive: true });
+        symlinkSync(resolve(src), dst);
+      };
+      for (const name of ["config", "ignore", "attributes"]) linkConfig(join("git", name));
+      // fontconfig first, so an include that leads into it finds its place taken and is left to the link.
+      linkConfig("fontconfig");
+      // Git reads a relative include (include.path, includeIf's path) from the folder of the file that names it, which
+      // is now the fresh folder: each file the chain pulls in that way is linked there at the same relative path, as
+      // read-only as git/config, so the identity it holds stays; one holding a key is masked and stays out (TOOLS-416).
+      // An include that climbs out of the fresh folder, or whose place is taken already, is left out.
+      const includes = [[join(configSource, "git/config"), join(folders.config, "git/config")]];
+      if (existingPaths([includes[0][1]]).length) {
+        for (let next = 0; next < includes.length && next < 100; next++) {
+          const [source, placed] = includes[next];
+          for (const match of text(source).matchAll(gitIncludePath)) {
+            const path = unquote(match[1]);
+            if (!path || isAbsolute(path) || /^[~%]/.test(path)) continue;
+            const src = resolve(dirname(source), path), dst = resolve(dirname(placed), path);
+            if (!inside(dst, folders.config) || dst === folders.config || existingPaths([dst]).length) continue;
+            try { if (!statSync(src).isFile()) continue; } catch { continue; }
+            if (hidden(src) || shutIn(src, allRoots)) continue;
+            mkdirSync(dirname(dst), { recursive: true });
+            symlinkSync(src, dst);
+            includes.push([src, dst]);
+          }
+        }
+      }
+    }
     const extra = { TMPDIR: folders.tmp, TMP: folders.tmp, TEMP: folders.tmp, XDG_CACHE_HOME: folders.cache,
+      ...(privateConfig ? { XDG_CONFIG_HOME: folders.config } : {}),
       npm_config_cache: join(folders.cache, "npm"), ...(process.platform === "linux" && env.PLAYWRIGHT_BROWSERS_PATH === undefined
         ? { PLAYWRIGHT_BROWSERS_PATH: resolve(worktree || process.cwd(), env.XDG_CACHE_HOME || join(home(env), ".cache"), "ms-playwright") } : {}) };
     const claudeSource = env.CLAUDE_CONFIG_DIR ? resolve(worktree || process.cwd(), env.CLAUDE_CONFIG_DIR) : join(home(env), ".claude");
@@ -2164,7 +2312,7 @@ export function cleanRoomReport(env = process.env, { worktree = process.cwd(), c
  * a mark only it can place (outerLock): a run inside it starts no sandbox of its own, since this one already hides the
  * key files.
  */
-export function checkLock({ worktree, common, env = process.env, readOnly = [], writable = [] }) {
+export function checkLock({ worktree, common, env = process.env, readOnly = [], writable = [], portLocks = false }) {
   const plain = (command, args) => [command, args];
   if (!keyGuardOn(env)) return { env: {}, fds: [], wrap: plain, note: "not locked (ASE_KEY_GUARD=off)" };
   const shut = buildFolders(worktree, common);
@@ -2174,7 +2322,7 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [], 
   // Inside kit pr's own lock for its checks the checks are locked already: no second sandbox, and nothing to note.
   if (bwrapWorks(env, shut) && outerLock(env)) {
     const pinned = writable.filter(isPinnedTarget);
-    for (const target of pinned) if (!verifyPinnedTarget(target)) throw pushRefusal("this push destination changed after validation");
+    for (const target of pinned) if (!verifyPinnedTarget(target)) throw pinnedRefusal(target);
     return { env: scrub, fds: [], wrap: plain, note: null, close() { for (const target of pinned) target.close?.(); } };
   }
   const refuse = problem => { throw new Error(`cannot lock the key files for kit pr's checks: ${problem}`); };
@@ -2182,7 +2330,14 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [], 
   if (problem) refuse(`${problem}; or set ASE_KEY_GUARD=off to run without the lock`);
   const { paths, problem: refusal, glue } = searchedPaths("", env, { worktree, common });
   if (refusal) refuse(`${refusal}${glue} set ASE_KEY_GUARD=off to run without the lock`);
-  const fence = writeFence("", env, { worktree, common, writable });
+  const sharedLocks = portLocks ? openPortLockTargets(env, { worktree, common }) : [];
+  let fence;
+  try {
+    fence = writeFence("", env, { worktree, common, writable: [...writable, ...sharedLocks], privateConfig: true, maskedPaths: paths });
+  } catch (error) {
+    for (const target of sharedLocks) target.close();
+    throw error;
+  }
   let fenceParent;
   try {
     fenceParent = ensureFenceStateDir(env, {
@@ -2197,11 +2352,17 @@ export function checkLock({ worktree, common, env = process.env, readOnly = [], 
   const parent = fence.parent ?? fenceParent;
   const maskedPaths = parent && !paths.includes(parent) ? [...paths, parent] : paths;
   const outer = bwrapArgs(maskedPaths, { writable: fence.writable, writableFds: fence.writableFds, writableAfter: fence.writableAfter, fence: true, readOnly: kitFolders(env, { worktree, common }), readOnlyAfter: readOnly });
-  const mark = outerMark(env, outer, dirname(fence.dir));
+  let mark;
+  try {
+    mark = outerMark(env, outer, dirname(fence.dir));
+  } catch (error) {
+    fence.close();
+    throw error;
+  }
   // The command starts inside, found there on the run's PATH: whatever it is, it runs locked.
   const wrap = (command, args) => {
     for (const target of fence.pinned) {
-      if (!verifyPinnedTarget(target)) throw pushRefusal("this push destination changed after validation");
+      if (!verifyPinnedTarget(target)) throw pinnedRefusal(target);
     }
     return [bwrap, [...outer, ...mark.args, "--", command, ...args]];
   };

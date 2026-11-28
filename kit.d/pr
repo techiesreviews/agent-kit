@@ -13,6 +13,7 @@ import { projectCommand, spoken } from "../review-brief.mjs";
 import { releaseCheck as releaseCheckRun } from "../release-check.mjs";
 import { resultLine, review as reviewRun, secondLook as secondLookRun } from "../review-run.mjs";
 import { prTicket, withFollowups } from "../ticket.mjs";
+import { fitBody } from "../pr-body.mjs";
 
 const { kitBranch, kitGhEnv, kitHideUserInfo, kitHidingLog, kitHome, kitMachineLock, kitRoot, kitMainRoot, kitOwner, kitResult, kitSettings, kitStateDir, nodeEnv, kitScore } = await import(
   pathToFileURL(process.env.KIT_LIB_MJS || resolve(import.meta.dirname, "../kit-lib.mjs")).href
@@ -268,7 +269,8 @@ async function main(args) {
     // The project's checks (check, unit, lint, specs...), the build's own code, run inside the key lock (checkLock).
     // The programs this process and the kit commands it starts find by their bare names (git, node, gh, bash, sh) are
     // found once, past any link a PATH folder elsewhere holds into the worktree or its Git folder, and stand first on
-    // PATH through a private folder of links; KIT_NODE is this very Node.
+    // PATH through a private folder of links; KIT_NODE and KIT_NODE_PIN are this very Node so kit_node_find never runs
+    // another node on PATH.
     const guarded = keyGuardOn(process.env);
     const top = gitTop(process.env.KIT_ROOT || process.cwd());
     // The start-up files they name are still locked for the checks (checkLock reads these).
@@ -288,6 +290,8 @@ async function main(args) {
       for (const [name, target] of Object.entries(linked)) symlinkSync(target, join(programs, name));
       process.env.PATH = `${programs}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
       process.env.KIT_NODE = process.execPath;
+      process.env.KIT_NODE_PIN = process.execPath;
+      delete process.env.KIT_NODE_FOUND_FOR;
     }
     const root = resolve(kitRoot()), common = gitCommonDir(root) ?? undefined;
     // The real git, never the link in the private folder: kit pr starts it by that path, and a git script by its
@@ -367,12 +371,17 @@ async function main(args) {
       }
       return { local: folders.length > 0, writable };
     };
-    // The checks' lock, made when the first check starts; a note says where they run unlocked. A push to a folder remote
-    // takes the plain lock (it starts no sandbox of its own).
+    // The checks' lock, made when the first check starts; a note says where they run unlocked. Browser specs take a
+    // per-call lock that also pins the shared port lock files, and a push to a folder remote takes the plain lock.
     let checksLocked;
     const lockNotes = [];
-    const lockFor = (writable = []) => {
-      const lock = checkLock({ worktree: root, common, env: { ...env, ...startupFiles }, readOnly: programs ? [programs] : [], writable });
+    const noteLock = lock => {
+      if (!lock.note) return;
+      const item = `- checks: ${lock.note}`;
+      if (!lockNotes.includes(item)) { console.log(`checks: ${lock.note}`); lockNotes.push(item); }
+    };
+    const lockFor = (writable = [], { portLocks = false } = {}) => {
+      const lock = checkLock({ worktree: root, common, env: { ...env, ...startupFiles }, readOnly: programs ? [programs] : [], writable, portLocks });
       if (lock.close) {
         const orig = lock.close;
         let closed = false;
@@ -390,7 +399,7 @@ async function main(args) {
     const checksLock = () => {
       if (checksLocked) return checksLocked;
       checksLocked = lockFor();
-      if (checksLocked.note) { console.log(`checks: ${checksLocked.note}`); lockNotes.push(`- checks: ${checksLocked.note}`); }
+      noteLock(checksLocked);
       return checksLocked;
     };
     // Spec files that failed in a full run and passed alone (ticket ke-88), named on the RESULT line.
@@ -409,13 +418,18 @@ async function main(args) {
       // check, the review and the second look run in this process (inProcess) and take the same settings there.
       // node is this process's own, never a bare name PATH may resolve to a link into the worktree.
       let program = command === "node" ? process.execPath : command === "gh" && linked.gh ? linked.gh : command, args = argv, childEnv = { ...(command === "gh" ? ghEnv : env), ...extraEnv };
-      let pushLock = null, pushTargets = [];
+      let pushLock = null, pushTargets = [], specsLock = null;
       let fd = null, logged = null;
       let stdout = "", stderr = "", failure;
       const chunks = [];
       let status;
       try {
-        if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
+        if (name === "specs" && !argv.includes("--list")) {
+          specsLock = lockFor([], { portLocks: true });
+          noteLock(specsLock);
+          [program, args] = specsLock.wrap(program, argv);
+          Object.assign(childEnv, specsLock.env);
+        } else if (checkNames.has(name)) { const lock = checksLock(); [program, args] = lock.wrap(program, argv); Object.assign(childEnv, lock.env); }
         else if (command === "git") {
           [program, args] = gitArgs(argv);
           const network = gitNetworkCall(argv);
@@ -440,7 +454,7 @@ async function main(args) {
         fd = openSync(log, "a");
         // Logs get any url's user-info hidden, so a token in a remote's url never reaches .scratch.
         logged = kitHidingLog(text => appendFileSync(fd, text));
-        const extraFds = pushLock?.fds ?? [];
+        const extraFds = specsLock?.fds ?? pushLock?.fds ?? [];
         status = await new Promise(accept => {
           const child = spawn(program, args, { cwd: root, env: childEnv, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe", ...extraFds] });
           if (child.stdin) {
@@ -467,6 +481,7 @@ async function main(args) {
       } finally {
         logged?.end();
         if (fd !== null) closeSync(fd);
+        specsLock?.close?.();
         pushLock?.close?.();
         for (const target of pushTargets) target.close?.();
         if (checkNames.has(name)) shieldProcess();
@@ -1230,7 +1245,15 @@ async function main(args) {
     const trailers = await git("body", ["log", "--format=%(trailers:key=Co-Authored-By,valueonly)", range]);
     const claude = env.CLAUDECODE === "1" || /^\s*Claude\b/im.test(trailers);
     const body = join(directory, "body.md");
-    writeFileSync(body, `${flags.ticket ? `Ticket: ${title || prTitle} (${flags.ticket})\n\n` : ""}## Summary\n\n${summary}\n\n## Tests\n\n${tests.join("\n")}\n${claude ? "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n" : ""}`);
+    // GitHub refuses a body over its limit: a long Summary keeps the subjects that fit and names the range for the rest (TOOLS-495).
+    // The range is worked out at each write: the head moves after the first one (a follow-ups commit, a "behind" rebase).
+    const fitted = async text => fitBody(text, { range: `${(await git("body", ["rev-parse", `origin/${flags.base}`])).slice(0, 12)}..${head.slice(0, 12)}` });
+    // Every PATCH sends the body cut to fit the same way, so a review-loop block or a ledger added later never passes the limit.
+    const patchBody = async (name, pr) => {
+      writeFileSync(body, await fitted(readFileSync(body, "utf8")));
+      await gh(name, ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${pr}`, "-F", `body=@${body}`]);
+    };
+    writeFileSync(body, await fitted(`${flags.ticket ? `Ticket: ${title || prTitle} (${flags.ticket})\n\n` : ""}## Summary\n\n${summary}\n\n## Tests\n\n${tests.join("\n")}\n${claude ? "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n" : ""}`));
     ok("body");
     const pushArgs = () => ["push", `--force-with-lease=refs/heads/${branch}:${pushed}`, "origin", `HEAD:refs/heads/${branch}`];
     const createArgs = ["pr", "create", "--base", flags.base, "--head", branch, "--title", prTitle, "--body-file", body];
@@ -1272,7 +1295,7 @@ async function main(args) {
     let number = existing[0]?.number;
     // `gh pr edit` fails on this repo: it queries the retired Projects (classic) field
     // (repository.pullRequest.projectCards). The REST endpoint updates only the body.
-    if (number) await gh("open", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+    if (number) await patchBody("open", number);
     else {
       const created = await gh("open", createArgs);
       number = /\/pull\/(\d+)/.exec(created)?.[1];
@@ -1303,7 +1326,7 @@ async function main(args) {
       const summary = heading + shortLines.join("\n");
       const oldSummary = heading + oldLines.join("\n");
       if (!readFileSync(body, "utf8").includes(summary)) appendFileSync(body, `\n${summary}\n`);
-      await gh("follow-ups", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+      await patchBody("follow-ups", number);
       const comments = JSON.parse(await gh("follow-ups", ["pr", "view", number, "--json", "comments"]));
       if (!comments.comments?.some(comment => [summary, oldSummary].includes(comment.body))) {
         const comment = join(directory, "follow-ups.md");
@@ -1368,7 +1391,7 @@ async function main(args) {
       const next = current.replace(/(## Summary\n\n)[\s\S]*?(\n\n## Tests)/, (_, open, close) => `${open}${summary}${close}`);
       if (next === current) return;
       writeFileSync(body, next);
-      await gh("summary", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+      await patchBody("summary", number);
     }
     // The text between the review-loop markers of a PR that already has them; `text` null takes the block away. Nothing else
     // is touched, and a PR with no block gets none here (recordReviewLoop writes the first one).
@@ -1379,7 +1402,7 @@ async function main(args) {
       const next = current.replace(marked, () => text === null ? "\n" : `\n<!-- review-loop -->\n${text}\n<!-- /review-loop -->\n`);
       if (next === current) return;
       writeFileSync(body, next);
-      await gh("review-loop", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+      await patchBody("review-loop", number);
     }
     // Rule: the PR says how it was reviewed. The block sits between markers, so a later run (a "behind" merge, a new head)
     // replaces it instead of adding a second line and ledger.
@@ -1392,7 +1415,7 @@ async function main(args) {
         ? current.replace(/<!-- review-loop -->[\s\S]*?<!-- \/review-loop -->/, () => block) : `${current.replace(/\n*$/, "\n")}\n${block}\n`;
       if (next !== current) {
         writeFileSync(body, next);
-        await gh("review-loop", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+        await patchBody("review-loop", number);
       }
       console.log(line);
     }
@@ -1503,7 +1526,7 @@ async function main(args) {
       const { waived } = gate;
       const what = [waived && `with ${waived} waived findings`, featuresWaived && "without a feature-list update"].filter(Boolean).join(" and ");
       appendFileSync(body, `\nmerged ${what}: ${reason}\n`);
-      await gh("waiver", ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-F", `body=@${body}`]);
+      await patchBody("waiver", number);
       const comment = join(directory, "waiver.md");
       writeFileSync(comment, `Merged ${what}: ${reason}`);
       await gh("waiver", ["pr", "comment", number, "--body-file", comment]);

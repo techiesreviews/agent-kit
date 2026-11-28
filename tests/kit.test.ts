@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, globSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -80,7 +80,12 @@ function nodeFound(env: NodeJS.ProcessEnv) {
 function fixtureEnv(directory: string) {
   const current = join(directory, "current/node");
   fakeNode(current, "v22.15.0");
-  return { PATH: `${dirname(current)}:/usr/bin:/bin`, CLAUDE_NODE_SEARCH_ROOT: directory };
+  const tools = join(directory, "tools");
+  mkdirSync(tools);
+  symlinkSync("/bin/bash", join(tools, "bash"));
+  symlinkSync("/bin/cat", join(tools, "cat"));
+  symlinkSync("/usr/bin/dirname", join(tools, "dirname"));
+  return { PATH: `${dirname(current)}:${tools}`, CLAUDE_NODE_SEARCH_ROOT: directory };
 }
 
 test("kit lists executable commands by name and reads only the first 15 summary lines", (t) => {
@@ -431,6 +436,285 @@ test("bash and mjs select the same highest numeric Node and prefer a supported s
   assert.equal(result.stdout.split("\n")[0], nvm);
   fakeNode(join(directory, "current/node"), "v24.0.0");
   assertLookup(join(directory, "current/node"));
+});
+
+test("Node lookup fixtures expose no uncontrolled Node installations", (t) => {
+  const directory = temp(t);
+  const env = fixtureEnv(directory);
+  const nodes = env.PATH.split(":").map(folder => join(folder, "node")).filter(existsSync);
+  assert.deepEqual(nodes, [join(directory, "current/node")]);
+});
+
+test("Node lookup finds Node 24 later on PATH when an older Node comes first", (t) => {
+  const directory = join(temp(t), "space $dollar `tick` quote");
+  const env = fixtureEnv(directory);
+  const supported = join(directory, "later/node");
+  fakeNode(supported, "v24.0.0");
+  env.PATH += `:${dirname(supported)}`;
+  const found = bash("kit_node_find", env);
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(found.stdout, `${supported}\n`);
+  assert.equal(nodeFound(env), supported);
+  const selected = bash('kit_node; printf "%s\\n%s\\n" "$KIT_NODE" "$PATH"', env);
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.equal(selected.stdout, `${supported}\n${dirname(supported)}:${env.PATH}\n`);
+});
+
+// A build can write a worktree's node_modules/.bin or a direnv bin folder later on PATH; the real front door, unpinned,
+// keeps a good first Node and never runs the one a build planted there (TOOLS-412 release review).
+test("the front door keeps a good first Node and never runs a planted Node later on PATH", (t) => {
+  const directory = temp(t);
+  const first = join(directory, "good");
+  mkdirSync(first);
+  symlinkSync(process.execPath, join(first, "node"));
+  const good = join(realpathSync(first), "node");
+  const goodVersion = spawnSync(good, ["--version"], { encoding: "utf8" }).stdout?.trim() ?? "";
+  assert.ok(Number(/^v(\d+)\./.exec(goodVersion)?.[1]) >= 24, `the good first Node ${good} prints ${JSON.stringify(goodVersion)}, not v24 or newer`);
+  const worktree = join(directory, "worktree");
+  const initialized = spawnSync("git", ["init", "-q", worktree], { encoding: "utf8" });
+  assert.equal(initialized.status, 0, initialized.stderr);
+  const marker = join(directory, "planted-node-ran");
+  const planted = join(worktree, "node_modules/.bin/node");
+  mkdirSync(dirname(planted), { recursive: true });
+  writeFileSync(planted, `#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\necho v99.0.0\n`);
+  chmodSync(planted, 0o755);
+  const commands = join(directory, "commands");
+  mkdirSync(commands);
+  command(commands, "show-node", 'printf "%s\\n" "$KIT_NODE"');
+  const env = {
+    ...kitEnv(), PATH: `${first}:${dirname(planted)}:${process.env.PATH}`, KIT_COMMANDS_DIR: commands,
+    CLAUDE_NODE_SEARCH_ROOT: join(directory, "empty"), KIT_NODE: undefined, KIT_NODE_FOUND_FOR: undefined, KIT_NODE_PIN: undefined,
+  };
+  const shown = spawnSync("/bin/bash", [kit, "show-node"], { encoding: "utf8", env, cwd: worktree, timeout: 5000 });
+  assert.equal(shown.status, 0, shown.stderr);
+  assert.equal(shown.stdout, `${good}\nRESULT: ok show-node finished\n`);
+  assert.equal(nodeFound(env), good);
+  assert.equal(existsSync(marker), false, "the planted Node later on PATH never ran");
+});
+
+// When the first PATH Node is older than 24 the lookup asks every later one for its version, so a node a build plants
+// in the worktree or the repository's Git folder must be dropped before it runs, during front-door startup too
+// (README, "Programs by name"; TOOLS-412 second look).
+test("the front door never runs a Node planted in the worktree or Git folder when an older Node comes first", (t) => {
+  const directory = temp(t);
+  const old = join(directory, "old/node");
+  fakeNode(old, "v22.15.0");
+  const trusted = join(directory, "trusted");
+  mkdirSync(trusted);
+  symlinkSync(process.execPath, join(trusted, "node"));
+  const good = join(realpathSync(trusted), "node");
+  const main = join(directory, "main"), worktree = join(directory, "worktree");
+  for (const args of [["init", "-q", main], ["-C", main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"], ["-C", main, "worktree", "add", "-q", worktree]]) {
+    const done = spawnSync("git", args, { encoding: "utf8" });
+    assert.equal(done.status, 0, done.stderr);
+  }
+  const marker = join(directory, "planted-node-ran");
+  const plant = (file: string) => {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `#!/bin/sh\necho ${JSON.stringify(file)} >> ${JSON.stringify(marker)}\necho v99.0.0\n`);
+    chmodSync(file, 0o755);
+    return dirname(file);
+  };
+  const linked = join(directory, "tools-link");
+  const nodeLink = join(directory, "node-link");
+  mkdirSync(nodeLink);
+  symlinkSync(join(worktree, "node_modules/.bin/node"), join(nodeLink, "node"));
+  const planted = [
+    plant(join(worktree, "node_modules/.bin/node")),
+    plant(join(main, ".git/worktrees/worktree/bin/node")),
+    plant(join(main, ".git/bin/node")),
+    plant(join(worktree, "direnv/node")),
+  ];
+  symlinkSync(planted[3], linked);
+  const commands = join(directory, "commands");
+  mkdirSync(commands);
+  command(commands, "show-node", 'printf "%s\\n" "$KIT_NODE"');
+  const env = {
+    ...kitEnv(), PATH: `${dirname(old)}:${planted[0]}:${linked}:${nodeLink}:${trusted}:${planted.slice(1).join(":")}:${process.env.PATH}`,
+    KIT_COMMANDS_DIR: commands, CLAUDE_NODE_SEARCH_ROOT: join(directory, "empty"), KIT_NODE: undefined, KIT_NODE_FOUND_FOR: undefined,
+    KIT_NODE_PIN: undefined, KIT_ROOT: undefined,
+  };
+  for (const cwd of [worktree, join(worktree, "node_modules")]) {
+    const shown = spawnSync("/bin/bash", [kit, "show-node"], { encoding: "utf8", env, cwd, timeout: 5000 });
+    assert.equal(shown.status, 0, shown.stderr);
+    assert.equal(shown.stdout, `${good}\nRESULT: ok show-node finished\n`);
+    assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
+  }
+  // Outside the worktree its own folders are ordinary PATH folders again, unless KIT_ROOT names it.
+  const find = (more: NodeJS.ProcessEnv, cwd: string) =>
+    spawnSync("/bin/bash", ["-c", `source "$1"; kit_node_find`, "kit", library], { encoding: "utf8", env: { ...env, ...more }, cwd, timeout: 5000 });
+  const outside = find({}, directory);
+  assert.equal(outside.status, 0, outside.stderr);
+  assert.equal(outside.stdout, `${join(worktree, "node_modules/.bin/node")}\n`);
+  rmSync(marker);
+  const rooted = find({ KIT_ROOT: worktree }, directory);
+  assert.equal(rooted.stdout, `${good}\n`);
+  assert.equal(existsSync(marker), false, "KIT_ROOT keeps the worktree's Nodes out of the lookup");
+  // A Node a parent kit call already checked is reused without running it, but never one in the worktree.
+  const foundFor = (node: string) => `${node}\x1f${env.PATH}\x1f${env.CLAUDE_NODE_SEARCH_ROOT}`;
+  const checked = join(directory, "checked/node");
+  plant(checked);
+  const reused = find({ KIT_NODE: checked, KIT_NODE_FOUND_FOR: foundFor(checked) }, worktree);
+  assert.equal(reused.stdout, `${checked}\n`);
+  assert.equal(existsSync(marker), false, "a Node already checked is reused without running it");
+  const cachedPlant = join(worktree, "node_modules/.bin/node");
+  const refused = find({ KIT_NODE: cachedPlant, KIT_NODE_FOUND_FOR: foundFor(cachedPlant) }, worktree);
+  assert.equal(refused.stdout, `${good}\n`);
+  assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
+  // A relative gitdir line in the worktree's .git file leads to the same Git folder.
+  writeFileSync(join(worktree, ".git"), "gitdir: ../main/.git/worktrees/worktree\n");
+  const relative = find({}, worktree);
+  assert.equal(relative.stdout, `${good}\n`);
+  assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
+  // When the only Node 24 sits in the worktree, the kit says why it found none.
+  const tools = fixtureEnv(join(directory, "fixture")).PATH;
+  const only = bash("kit_node", { ...env, PATH: `${tools}:${planted[0]}` }, worktree);
+  const lib = bash("kit_lib_node 'console.log(1)'", { ...env, PATH: `${tools}:${planted[0]}` }, worktree);
+  for (const run of [only, lib]) {
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, new RegExp(`${nodeError.replace(/[()]/g, "\\$&")}\nkit: a node the kit does not trust was skipped \\(one inside this worktree`));
+  }
+  assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
+  // A home folder inside the worktree leaves the worktree a place: its nvm Node never runs either.
+  const insideHome = join(worktree, ".home");
+  plant(join(insideHome, ".nvm/versions/node/v99.0.0/bin/node"));
+  const homed = find({ HOME: insideHome, CLAUDE_NODE_SEARCH_ROOT: insideHome, PATH: `${dirname(old)}:${planted[0]}:${tools}` }, worktree);
+  assert.equal(homed.status, 3, "status 3: the lookup skipped a node, so the reason line shows");
+  assert.equal(homed.stdout, "");
+  assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
+});
+
+test("a home folder kept in Git is never a place the Node lookup skips", (t) => {
+  const home = temp(t);
+  const init = spawnSync("git", ["init", "-q", home], { encoding: "utf8" });
+  assert.equal(init.status, 0, init.stderr);
+  const env = fixtureEnv(join(home, "fixture"));
+  const nvm = join(home, ".nvm/versions/node/v24.0.0/bin/node");
+  mkdirSync(dirname(nvm), { recursive: true });
+  symlinkSync(process.execPath, nvm);
+  const elsewhere = join(home, "elsewhere");
+  mkdirSync(elsewhere);
+  const found = bash("kit_node_find", { ...env, HOME: home, CLAUDE_NODE_SEARCH_ROOT: home, KIT_ROOT: undefined, KIT_NODE: undefined, KIT_NODE_FOUND_FOR: undefined, KIT_NODE_PIN: undefined }, elsewhere);
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(found.stdout, `${join(realpathSync(dirname(nvm)), "node")}\n`);
+});
+
+test("Node lookup picks the newest supported PATH Node before npm and nvm", (t) => {
+  const directory = temp(t);
+  const env = fixtureEnv(directory);
+  const versions = ["v24.2.9", "v25.1.100", "v25.2.9", "v25.2.10\r", "v25.2.10", "v25.1.999", "bad"];
+  const nodes = versions.map((version, index) => {
+    const node = join(directory, `path-${index}/node`);
+    fakeNode(node, version);
+    return node;
+  });
+  fakeNode(join(directory, ".npm/_npx/install/node_modules/node/bin/node"), "v99.0.0");
+  fakeNode(join(directory, ".nvm/versions/node/v99.0.1/bin/node"), "v99.0.1");
+  env.PATH += `:${nodes.map(dirname).join(":")}`;
+  const found = bash("kit_node_find", env);
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(found.stdout, `${nodes[3]}\n`);
+  assert.equal(nodeFound(env), nodes[3]);
+});
+
+test("KIT_NODE_PIN uses only that Node without running later PATH or cache entries, and keeps a matching first PATH link ahead", (t) => {
+  const directory = join(temp(t), "space $dollar `tick` quote");
+  const env = fixtureEnv(directory);
+  const pinned = join(directory, "trusted/node");
+  fakeNode(pinned, "v24.0.0");
+  const marker = join(directory, "ran-other-node");
+  const later = join(directory, "later/node");
+  mkdirSync(dirname(later), { recursive: true });
+  writeFileSync(later, `#!/bin/sh\necho ran >> ${JSON.stringify(marker)}\necho v25.0.0\n`);
+  chmodSync(later, 0o755);
+  const cached = join(directory, ".nvm/versions/node/v26.0.0/bin/node");
+  mkdirSync(dirname(cached), { recursive: true });
+  writeFileSync(cached, `#!/bin/sh\necho cached >> ${JSON.stringify(marker)}\necho v26.0.0\n`);
+  chmodSync(cached, 0o755);
+  const programs = join(directory, "programs");
+  mkdirSync(programs);
+  symlinkSync(pinned, join(programs, "node"));
+  const pinnedEnv = { ...env, PATH: `${programs}:${dirname(later)}:${env.PATH}`, KIT_NODE_PIN: pinned };
+  const found = bash("kit_node_find", pinnedEnv);
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(found.stdout, `${pinned}\n`);
+  assert.equal(nodeFound(pinnedEnv), pinned);
+  const selected = bash('kit_node; printf "%s\\n%s\\n" "$KIT_NODE" "$PATH"', pinnedEnv);
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.equal(selected.stdout, `${pinned}\n${pinnedEnv.PATH}\n`);
+  assert.equal(nodeEnv(pinnedEnv).PATH, pinnedEnv.PATH);
+  // Without a matching first PATH link, the pinned Node's folder goes first on PATH.
+  const withoutLink = { ...env, PATH: `${dirname(later)}:${env.PATH}`, KIT_NODE_PIN: pinned };
+  assert.equal(nodeEnv(withoutLink).PATH, `${dirname(pinned)}:${withoutLink.PATH}`);
+  assert.equal(bash('kit_node; printf "%s\\n" "$PATH"', withoutLink).stdout, `${dirname(pinned)}:${withoutLink.PATH}\n`);
+  assert.equal(existsSync(marker), false, "no other Node ran while KIT_NODE_PIN was set");
+  // An unusable pin fails instead of falling back to PATH or cache.
+  const old = join(directory, "old/node");
+  fakeNode(old, "v22.0.0");
+  for (const bad of ["node", "./trusted/node", join(directory, "missing/node"), old]) {
+    const badEnv = { ...withoutLink, KIT_NODE_PIN: bad };
+    assert.equal(bash("kit_node_find", badEnv).status, 1, bad);
+    assert.throws(() => nodeEnv(badEnv), { message: nodeError });
+  }
+  assert.equal(existsSync(marker), false, "a bad KIT_NODE_PIN never falls back to scanning PATH or cache");
+});
+
+test("Node lookup deduplicates symlinked PATH entries and invalidates its cache when PATH changes", (t) => {
+  const directory = temp(t);
+  const env = fixtureEnv(directory);
+  const count = join(directory, "count.txt");
+  const otherCount = join(directory, "other-count.txt");
+  const real = join(directory, "real/node");
+  mkdirSync(dirname(real), { recursive: true });
+  writeFileSync(real, `#!/bin/sh\necho x >> ${JSON.stringify(count)}\necho v24.0.0\n`);
+  chmodSync(real, 0o755);
+  const other = join(directory, "other/node");
+  mkdirSync(dirname(other), { recursive: true });
+  writeFileSync(other, `#!/bin/sh\necho x >> ${JSON.stringify(otherCount)}\necho v22.0.0\n`);
+  chmodSync(other, 0o755);
+  const alias = join(directory, "alias");
+  mkdirSync(alias);
+  symlinkSync(real, join(alias, "node"));
+  const newer = join(directory, "newer/node");
+  fakeNode(newer, "v25.0.0");
+  // The older Node comes first, so the lookup looks past it to the later ones.
+  const dupEnv = { ...env, PATH: `${dirname(other)}:${alias}:${dirname(real)}:${alias}:${env.PATH}` };
+  const result = bash(`kit_node; mapfile -t a < ${JSON.stringify(count)}; kit_node_find; mapfile -t b < ${JSON.stringify(otherCount)}; printf 'dedup=%s cached=%s\\n' "\${#a[@]}" "\${#b[@]}"; PATH="${dirname(other)}:$PATH:${dirname(newer)}" kit_node_find`, dupEnv);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `${join(alias, "node")}\ndedup=1 cached=1\n${newer}\n`);
+  assert.equal(readFileSync(otherCount, "utf8").trim().split("\n").length, 2, "PATH change invalidated the cache and rescanned other PATH entries");
+});
+
+test("Node lookup clears inherited cache in nodeEnv, matches hard links in shell and JS, and skips broken PATH nodes", (t) => {
+  const directory = temp(t);
+  const env = fixtureEnv(directory);
+  const broken = join(directory, "broken/node");
+  mkdirSync(dirname(broken), { recursive: true });
+  writeFileSync(broken, "#!/bin/sh\nexit 1\n");
+  chmodSync(broken, 0o755);
+  const supported = join(directory, "good/node");
+  fakeNode(supported, "v24.1.0");
+  const pathWithBroken = `${dirname(broken)}:${dirname(supported)}:${env.PATH}`;
+  // Broken node ahead on PATH is skipped for the supported node after it.
+  const found = bash("kit_node_find", { ...env, PATH: pathWithBroken });
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(found.stdout, `${supported}\n`);
+  // nodeEnv clears KIT_NODE_FOUND_FOR inherited from process.env and re-checks PATH fresh.
+  const downgraded = join(directory, "current/node");
+  const staleCache = `${downgraded}\x1f${pathWithBroken}\x1f${directory}`;
+  environment(t, { KIT_NODE: downgraded, KIT_NODE_FOUND_FOR: staleCache });
+  const resolved = nodeEnv({ ...env, PATH: pathWithBroken });
+  assert.equal(resolved.KIT_NODE, supported);
+  assert.equal(resolved.PATH, `${dirname(supported)}:${pathWithBroken}`);
+  // Shell kit_node_find reuses the matching KIT_NODE_FOUND_FOR shortcut without rescanning PATH.
+  assert.equal(bash("kit_node_find", { ...env, PATH: pathWithBroken, KIT_NODE: downgraded, KIT_NODE_FOUND_FOR: staleCache }).stdout, `${downgraded}\n`);
+  // Hard link in the first PATH folder agrees between shell kit_node and JS nodeEnv.
+  const hardDir = join(directory, "hard");
+  mkdirSync(hardDir);
+  linkSync(supported, join(hardDir, "node"));
+  const hardEnv = { ...env, PATH: `${hardDir}:${env.PATH}`, KIT_NODE_PIN: supported };
+  assert.equal(bash('kit_node; printf "%s\\n" "$PATH"', hardEnv).stdout, `${hardEnv.PATH}\n`);
+  assert.equal(nodeEnv(hardEnv).PATH, hardEnv.PATH);
 });
 
 test("Node lookup handles npm alone, absent system node, and unsupported installations", (t) => {

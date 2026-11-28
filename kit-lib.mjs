@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { findingsRecord } from "./review-findings.mjs";
@@ -272,21 +272,34 @@ export function kitRegisterProject(name, root, env = process.env, during = () =>
   } finally { release(); }
 }
 
+function sameExecutable(a, b) {
+  try {
+    accessSync(a, constants.X_OK);
+    const first = statSync(a), second = statSync(b);
+    return first.isFile() && second.isFile() && (
+      (Boolean(first.ino) && first.dev === second.dev && first.ino === second.ino) ||
+      realpathSync(a) === realpathSync(b)
+    );
+  } catch { return false; }
+}
+
 /**
- * Copy env with a supported Node first on PATH, or throw when unavailable. The Node is the one kit_node_find in
- * kit-lib.sh picks for env's PATH and search folder (CLAUDE_NODE_SEARCH_ROOT, else HOME): system Node >=24 first, then
- * the highest installed npx/nvm version. That rule has one copy, in the shell, as the front door must run it before
- * there is a Node.
+ * Copy env with a supported Node first on PATH, or throw when unavailable. Node selection has one copy, in
+ * kit-lib.sh's kit_node_find (KIT_NODE_PIN alone when set by a guarded kit pr, else the first PATH Node when it is >=24,
+ * else the highest Node >=24 later on PATH, then the highest installed npx/nvm version); PATH stays unchanged when its first absolute folder already holds
+ * the same node executable (matching kit_node's -ef check).
  */
 export function nodeEnv(env = process.env) {
   const root = env.CLAUDE_NODE_SEARCH_ROOT || env.HOME || "";
-  const found = spawnSync("bash", ["-c", 'source "$1" && PATH=$2 CLAUDE_NODE_SEARCH_ROOT=$3 HOME=$3 kit_node_find', "kit_node_find",
-    join(import.meta.dirname, "kit-lib.sh"), env.PATH ?? "", root], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const found = spawnSync("bash", ["-c", 'source "$1" && PATH=$2 CLAUDE_NODE_SEARCH_ROOT=$3 HOME=$3 KIT_NODE_PIN=$4 KIT_NODE_FOUND_FOR= kit_node_find', "kit_node_find",
+    join(import.meta.dirname, "kit-lib.sh"), env.PATH ?? "", root, env.KIT_NODE_PIN ?? ""], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   const node = found.status === 0 ? found.stdout.replace(/\n$/, "") : "";
   if (!node) throw new Error(nodeError);
   const directory = dirname(node);
   const path = env.PATH ?? "";
-  return { ...env, PATH: path.split(":")[0] === directory ? path : `${directory}${path ? `:${path}` : ""}`, KIT_NODE: node };
+  const first = path.split(":")[0];
+  const keeps = first === directory || (isAbsolute(first) && sameExecutable(join(first, "node"), node));
+  return { ...env, PATH: keeps ? path : `${directory}${path ? `:${path}` : ""}`, KIT_NODE: node };
 }
 
 /**

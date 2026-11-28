@@ -424,7 +424,7 @@ test("migrate picks the next free tag name, and stops before removing anything w
 test("a run cut off after making the cards is finished by the next one: the bare cards get their text and no card is made twice", async t => {
   const p = await project(t);
   // The four creates go through; the first text write after them fails.
-  p.orbit.controls.writeAnswers.push(...([undefined, undefined, undefined, undefined, { status: 500, code: "server_error", detail: "Down" }] as any[]));
+  p.orbit.controls.writeAnswers.push("pass", "pass", "pass", "pass", { status: 500, code: "server_error", detail: "Down" });
   const cut = refused(await p.run(["import"]), /Orbit refused: Down/);
   assert.equal(p.orbit.tasks.length, 4);
   // The output shows which cards were made and that none got its text yet.

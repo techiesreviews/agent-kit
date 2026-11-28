@@ -961,26 +961,36 @@ function all() {
       try {
         mkdirSync(dirname(join(path, link)), { recursive: true });
         symlinkSync(target, join(path, link));
-      } catch {}
+      } catch (error) {
+        throw new Error(`worktreeLinks ${link} could not link to ${target}; fix the path or worktreeLinks in ${kitSettingsFile}, then rerun: ${error.message}`);
+      }
     }
     // kit pr wants a clean tree, so node_modules must be one git ignores: a link, or, where .gitignore names
     // "node_modules/" (a folder, which a link is not), a folder of links to its entries. Nothing in the repo's own
     // git settings changes; where nothing ignores node_modules, there is none.
     const modules = join(path, "node_modules");
-    if (shared && existsSync(shared) && !existsSync(modules)) {
+    if (shared && !existsSync(modules)) {
+      let created = false;
       try {
         const sharedPath = realpathSync(shared);
+        const entries = readdirSync(sharedPath);
         symlinkSync(sharedPath, modules);
+        created = true;
         if (git(path, "check-ignore", "-q", "node_modules").status !== 0) {
           rmSync(modules);
+          created = false;
           mkdirSync(modules);
-          for (const entry of readdirSync(sharedPath)) symlinkSync(join(sharedPath, entry), join(modules, entry));
+          created = true;
+          for (const entry of entries) symlinkSync(join(sharedPath, entry), join(modules, entry));
           if (git(path, "check-ignore", "-q", "node_modules/").status !== 0) {
             rmSync(modules, { recursive: true, force: true });
             console.log(`${name}: nothing in git ignores node_modules, so the worktree has none; kit pr's checks run without ${shared}`);
           }
         }
-      } catch {}
+      } catch (error) {
+        if (created) rmSync(modules, { recursive: true, force: true });
+        throw new Error(`node_modules could not link to ${shared}; restore the shared folder or fix sharedNodeModules in ${kitSettingsFile}, then rerun: ${error.message}`);
+      }
     }
     const log = join(logs, `${name}.log`);
     mkdirSync(logs, { recursive: true });

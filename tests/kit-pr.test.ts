@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { checkSteps, classify, docsOnly, featureListGuard, focusedUnitFiles, parseChanges, visiblePath } from "../pr-tier.mjs";
 import { coverageHash, saveUxResult, uxGuard, visibleFiles } from "../ux-gate.mjs";
 import { sameReviewPatch } from "../review-findings.mjs";
+import { bodyCap, fitBody } from "../pr-body.mjs";
 import { forEachAwait } from "./support/await-race.ts";
 import { kitEnv } from "./support/kit-env.ts";
 import { tempOutsideGit } from "./support/temp-outside-git.ts";
@@ -913,6 +914,83 @@ test("PR body includes ordered commits, checks, ticket and conditional Claude cr
     assert.deepEqual(f.calls().filter(call => call.tool === "fake-kit").slice(-2).map(call => call.args), [["review", "--base", "origin/dev", "--pr", "73", "--ticket", "ticket.md"],
       ["review", "--base", "origin/dev", "--pr", "73", "--ticket", "ticket.md", "--second-look"]]);
   }
+});
+
+test("a PR body whose Summary would pass GitHub's limit keeps the subjects that fit and says how many more there are (TOOLS-495)", t => {
+  // GitHub refuses a body over 65,536 characters ("Body is too long"); the Site Editor release of 1,658 commits wrote 121,013.
+  // A new PR (gh pr create --body-file) and an open one (the PATCH of its body) alike.
+  for (const existing of ["", "1"]) {
+    const f = fixture(t), long = (n: number) => `Change ${n} ${"x".repeat(990)}`;
+    for (let n = 1; n <= 70; n++) f.git("commit", "--allow-empty", "-m", long(n));
+    const result = f.run(["--no-merge"], { FAKE_EXISTING: existing });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(f.ghCalls("create").length, existing ? 0 : 1);
+    const body = existing ? f.apiCalls()[0].body! : f.ghCalls("create")[0].body!, base = f.git("rev-parse", "origin/dev"), head = f.git("rev-parse", "HEAD");
+    assert.ok(Buffer.byteLength(body) <= bodyCap, `body is ${Buffer.byteLength(body)} bytes`);
+    assert.match(body, /## Summary\n\n- First change\n- Second change\n- Change 1 x+\n/);
+    const kept = body.split("\n").filter(line => /^- Change \d+ x+$/.test(line)).length;
+    assert.ok(kept > 50 && kept < 70, `kept ${kept}`);
+    const more = 70 - kept;
+    assert.ok(body.includes(`\n- …and ${more} more commits (git log --oneline ${base.slice(0, 12)}..${head.slice(0, 12)})\n\n## Tests\n`), body.slice(-2000));
+    assert.match(body, /- npm test: ok/);
+    // Every body kit pr sends (the PATCH of the open PR, and the review-loop block after it) stays under the cap.
+    for (const call of f.apiCalls().filter(call => call.body)) assert.ok(Buffer.byteLength(call.body!) <= bodyCap);
+  }
+});
+
+test("a cut PR body names the current head's range after a behind retry moves the head (TOOLS-412 release review)", t => {
+  const f = fixture(t), peer = f.peer(), long = (n: number) => `Change ${n} ${"x".repeat(990)}`;
+  for (let n = 1; n <= 70; n++) f.git("commit", "--allow-empty", "-m", long(n));
+  const before = f.git("rev-parse", "HEAD");
+  // A saved review gives the PR its review-loop block, so the new head's review PATCHes the body again after the rebase.
+  const path = f.saveReview(cleanReview);
+  writeFileSync(join(dirname(path), "findings.json"), JSON.stringify({ round: 1, model: "claude-opus-5-5", head: before, findings: [] }));
+  const result = f.run([], { FAKE_BEHIND: "1", FAKE_ADVANCE: peer });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const head = f.git("rev-parse", "HEAD"), base = f.git("rev-parse", "origin/dev");
+  assert.notEqual(head, before, "the behind retry rebased the branch");
+  const patches = f.apiCalls().filter(call => call.body);
+  assert.ok(patches.length > 0);
+  const last = patches.at(-1)!.body!;
+  assert.match(last, /more commits \(git log --oneline /);
+  assert.ok(last.includes(`(git log --oneline ${base.slice(0, 12)}..${head.slice(0, 12)})`), last.split("\n").find(line => line.includes("more commit")));
+});
+
+test("fitBody leaves a body that fits alone, cuts only the Summary list, and cuts it again when later text grows the body (TOOLS-495)", () => {
+  const range = "aaaaaaaaaaaa..bbbbbbbbbbbb";
+  const make = (count: number, tail = "") => `Ticket: T (KEY)\n\n## Summary\n\n${Array.from({ length: count }, (_, i) => `- Subject ${i + 1} ${"é".repeat(40)}`).join("\n")}\n\n## Tests\n\n- npm test: ok\n${tail}`;
+  const small = make(3);
+  assert.equal(fitBody(small, { cap: 1000, range }), small);
+  // Bytes, not UTF-16 units: "é" is 2 bytes, so a body that fits by .length can still pass a byte cap.
+  const big = make(40), cap = 2000;
+  assert.ok(big.length < Buffer.byteLength(big));
+  const fitted = fitBody(big, { cap, range });
+  assert.ok(Buffer.byteLength(fitted) <= cap, String(Buffer.byteLength(fitted)));
+  const kept = fitted.split("\n").filter(line => line.startsWith("- Subject")).length;
+  assert.ok(kept > 0 && kept < 40);
+  assert.ok(fitted.startsWith(`Ticket: T (KEY)\n\n## Summary\n\n- Subject 1 `));
+  assert.ok(fitted.includes(`\n- …and ${40 - kept} more commits (git log --oneline ${range})\n\n## Tests\n\n- npm test: ok\n`));
+  // The most lines that fit: one more subject would pass the cap.
+  const nextLine = big.split("\n").filter(line => line.startsWith("- Subject"))[kept];
+  assert.ok(Buffer.byteLength(fitted) + Buffer.byteLength(nextLine) + 1 > cap);
+  // A later block (the review-loop ledger) grows the body: the list is cut again and the count adds up.
+  const grown = fitBody(`${fitted}\n<!-- review-loop -->\n${"z".repeat(600)}\n<!-- /review-loop -->\n`, { cap, range });
+  assert.ok(Buffer.byteLength(grown) <= cap);
+  const keptAgain = grown.split("\n").filter(line => line.startsWith("- Subject")).length;
+  assert.ok(keptAgain < kept);
+  assert.ok(grown.includes(`- …and ${40 - keptAgain} more commits (git log --oneline ${range})\n\n## Tests`));
+  assert.equal(grown.match(/more commits/g)!.length, 1);
+  assert.ok(grown.includes("z".repeat(600)));
+  // A cut body that still fits names the range it is given now: the head moved since the cut.
+  const moved = "aaaaaaaaaaaa..cccccccccccc";
+  assert.equal(fitBody(grown, { cap, range: moved }), grown.replace(range, moved));
+  // One commit left out says "commit".
+  const one = make(2), oneCap = Buffer.byteLength(one) - 10;
+  assert.match(fitBody(one, { cap: oneCap, range }), /- …and 1 more commit \(git log/);
+  // A Summary with no list (a sync) is left as it is.
+  const sync = `## Summary\n\nThis joins origin/main into dev.\n\n## Tests\n\n${"t".repeat(300)}\n`;
+  assert.equal(fitBody(sync, { cap: 100, range }), sync);
+  assert.equal(bodyCap, 60000);
 });
 
 test("explicit title wins; latest subject is the fallback; existing PR body is updated", t => {
@@ -5559,6 +5637,35 @@ exit 0
   assert.equal(f.gitAt(f.origin, "log", "-1", "--format=%s", "refs/heads/feature/kit-pr"), "docs: ticket commits by subject");
 });
 
+test("kit pr pins its trusted Node for the front door it starts outside the key lock, never running a later PATH node", t => {
+  const f = fixture(t);
+  const noted = join(f.root, ".scratch/front-door-node.txt");
+  const tools = join(f.root, "node_modules/.bin"), links = join(f.dir, "links"), commands = join(f.dir, "commands"), tmp = join(f.dir, "tmp");
+  mkdirSync(tools, { recursive: true }); mkdirSync(links); mkdirSync(commands); mkdirSync(tmp);
+  writeFileSync(join(tools, "node"), `#!/bin/sh\necho planted >> ${JSON.stringify(noted)}\necho v99.0.0\n`, { mode: 0o755 });
+  symlinkSync(join(tools, "node"), join(links, "node"));
+  appendFileSync(join(f.root, ".git/info/exclude"), "node_modules/\n");
+  const waitLog = join(f.dir, "wait-env.txt");
+  writeFileSync(join(commands, "deps"), "#!/bin/sh\n# kit: stub deps\necho 'RESULT: ok deps'\n", { mode: 0o755 });
+  writeFileSync(join(commands, "specs"), "#!/bin/sh\n# kit: stub specs\necho 'RESULT: ok specs'\n", { mode: 0o755 });
+  writeFileSync(join(commands, "wait"), `#!/bin/sh\n# kit: stub wait\nprintf 'KIT_NODE=%s\\nKIT_NODE_PIN=%s\\nPATH=%s\\n' "$KIT_NODE" "$KIT_NODE_PIN" "$PATH" > ${JSON.stringify(waitLog)}\necho 'RESULT: ok wait ci'\n`, { mode: 0o755 });
+  const result = spawnSync(process.execPath, [pr], {
+    cwd: f.root,
+    env: { ...f.env, PATH: `${links}:${f.env.PATH}`, TMPDIR: tmp, KIT_PR_KIT: kit, KIT_COMMANDS_DIR: commands, GH_TOKEN: "dummy-token" },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  assert.equal(existsSync(noted), false, "kit pr and its front door never ran the planted PATH node");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: ok merged #73/m);
+  const seen = readFileSync(waitLog, "utf8");
+  const kitNode = /^KIT_NODE=(.+)$/m.exec(seen)?.[1];
+  const kitNodePin = /^KIT_NODE_PIN=(.+)$/m.exec(seen)?.[1];
+  assert.ok(kitNode && realpathSync(kitNode) === realpathSync(process.execPath), `expected KIT_NODE to resolve to trusted Node:\n${seen}`);
+  assert.ok(kitNodePin && realpathSync(kitNodePin) === realpathSync(process.execPath), `expected KIT_NODE_PIN to resolve to trusted Node:\n${seen}`);
+  assert.match(seen, /^PATH=.*\/kit-pr-programs-[^:/]+:/m, `kit pr's program links stayed first on PATH:\n${seen}`);
+});
+
 test("kit pr refuses a fetch while the repository's own Git config holds http or credential settings, stops on Git LFS, and says where its checks run unlocked", t => {
   const f = fixture(t);
   f.git("config", "http.proxy", "http://127.0.0.1:1");
@@ -5787,6 +5894,89 @@ test("TOOLS-397: kit pr pushes to a file:// and a relative bare folder remote in
     assert.equal(result.status, 0, `${kind}: ${result.stdout}${result.stderr}`);
     assert.match(result.stdout, /^RESULT: ok merged #73/m, kind);
   }
+});
+
+test("TOOLS-416: kit pr browser specs take shared port locks and checks get fresh XDG_CONFIG_HOME while keeping keys locked", { skip: noBwrap }, t => {
+  const f = fixture(t);
+  const home = join(f.dir, "home");
+  const lockDir = join(f.dir, "port-locks");
+  const wranglerSecret = join(home, ".config/.wrangler/config/default.toml");
+  mkdirSync(dirname(wranglerSecret), { recursive: true });
+  mkdirSync(lockDir, { recursive: true });
+  writeFileSync(wranglerSecret, 'oauth_token = "cf-secret"\n');
+
+  // Replace fake-kit specs with a probe that exercises port-common.sh's exact flock + write_holder pattern,
+  // verifies sibling files in ASE_LOCK_DIR remain read-only, writes Wrangler metrics.json into XDG_CONFIG_HOME,
+  // and verifies ~/.config/.wrangler/config/default.toml stays unreadable.
+  const realFakeKit = readFileSync(join(f.bin, "fake-kit"), "utf8");
+  const probeKit = join(f.bin, "probe-kit");
+  writeFileSync(probeKit, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "specs" ]]; then
+  exec 9>>"$ASE_LOCK_DIR/ase-5226.lock"
+  flock -n 9
+  printf 'specs-locked\\n' > "$ASE_LOCK_DIR/ase-5226.lock"
+  exec 9>&-
+  if touch "$ASE_LOCK_DIR/sibling.lock" 2>/dev/null; then
+    echo "lock dir was writable" >&2
+    exit 1
+  fi
+  mkdir -p "$XDG_CONFIG_HOME/.wrangler"
+  printf '{"deviceId":"specs"}\\n' > "$XDG_CONFIG_HOME/.wrangler/metrics.json"
+  if [[ -r ${JSON.stringify(wranglerSecret)} ]]; then
+    echo "wrangler secret leaked" >&2
+    exit 1
+  fi
+  echo "RESULT: ok specs 1/1 passed"
+  exit 0
+fi
+exec ${JSON.stringify(join(f.bin, "fake-kit"))} "$@"
+`, { mode: 0o755 });
+  assert.ok(realFakeKit.length > 0);
+
+  // Also check that unit runs (where Wrangler starts local Workers) can write XDG_CONFIG_HOME/.wrangler/metrics.json
+  // without seeing the real ~/.config/.wrangler secret, and still cannot open the shared port lock files.
+  const origNpm = join(f.bin, "npm-orig");
+  renameSync(join(f.bin, "npm"), origNpm);
+  writeFileSync(join(f.bin, "npm"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "test" ]]; then
+  mkdir -p "$XDG_CONFIG_HOME/.wrangler"
+  printf '{"deviceId":"unit"}\\n' > "$XDG_CONFIG_HOME/.wrangler/metrics.json"
+  if [[ -r ${JSON.stringify(wranglerSecret)} ]]; then
+    echo "wrangler secret leaked in unit" >&2
+    exit 1
+  fi
+  if (exec 9>>"$ASE_LOCK_DIR/ase-5226.lock") 2>/dev/null; then
+    echo "port lock was writable in unit" >&2
+    exit 1
+  fi
+fi
+exec ${JSON.stringify(origNpm)} "$@"
+`, { mode: 0o755 });
+
+  const result = f.run([], {
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
+    ASE_LOCK_DIR: lockDir,
+    ASE_POOL: "5226 5236",
+    KIT_PR_KIT: probeKit,
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^RESULT: ok merged #73/m);
+  assert.equal(readFileSync(join(lockDir, "ase-5226.lock"), "utf8"), "specs-locked\n");
+  assert.equal(existsSync(join(lockDir, "sibling.lock")), false);
+
+  // A refused shared port lock (such as a hard link) stops kit pr's specs step with a plain RESULT line.
+  const f2 = fixture(t);
+  const badLockDir = join(f2.dir, "bad-locks");
+  const decoy = join(f2.dir, "decoy");
+  mkdirSync(badLockDir, { recursive: true });
+  writeFileSync(decoy, "decoy\n");
+  linkSync(decoy, join(badLockDir, "ase-5226.lock"));
+  const refused = f2.run([], { ASE_LOCK_DIR: badLockDir, ASE_POOL: "5226" });
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stdout, /^RESULT: fail specs: shared port lock .*hard link/m);
 });
 
 // TOOLS-329 (SL-3): the push reads the global and system Git config, so their URL rewrites count in kit pr's check of
