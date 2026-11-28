@@ -464,8 +464,12 @@ test("Node lookup finds Node 24 later on PATH when an older Node comes first", (
 // keeps a good first Node and never runs the one a build planted there (TOOLS-412 release review).
 test("the front door keeps a good first Node and never runs a planted Node later on PATH", (t) => {
   const directory = temp(t);
-  const first = (process.env.PATH ?? "").split(":")[0];
+  const first = join(directory, "good");
+  mkdirSync(first);
+  symlinkSync(process.execPath, join(first, "node"));
   const good = join(realpathSync(first), "node");
+  const goodVersion = spawnSync(good, ["--version"], { encoding: "utf8" }).stdout?.trim() ?? "";
+  assert.ok(Number(/^v(\d+)\./.exec(goodVersion)?.[1]) >= 24, `the good first Node ${good} prints ${JSON.stringify(goodVersion)}, not v24 or newer`);
   const worktree = join(directory, "worktree");
   const initialized = spawnSync("git", ["init", "-q", worktree], { encoding: "utf8" });
   assert.equal(initialized.status, 0, initialized.stderr);
