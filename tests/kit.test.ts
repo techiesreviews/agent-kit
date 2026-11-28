@@ -579,7 +579,7 @@ test("the front door never runs a Node planted in the worktree or Git folder whe
   const insideHome = join(worktree, ".home");
   plant(join(insideHome, ".nvm/versions/node/v99.0.0/bin/node"));
   const homed = find({ HOME: insideHome, CLAUDE_NODE_SEARCH_ROOT: insideHome, PATH: `${dirname(old)}:${planted[0]}:${tools}` }, worktree);
-  assert.notEqual(homed.status, 0);
+  assert.equal(homed.status, 3, "status 3: the lookup skipped a node, so the reason line shows");
   assert.equal(homed.stdout, "");
   assert.equal(existsSync(marker), false, `a planted Node ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`);
 });

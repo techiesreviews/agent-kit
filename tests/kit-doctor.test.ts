@@ -538,10 +538,8 @@ test("doctor says a Node it skipped in the worktree is why it found none, not th
   const rootless = f.run([], f.build, { ...env, KIT_ROOT: undefined, KIT_MAIN_ROOT: undefined }, true);
   assert.equal(rootless.status, 1, rootless.stderr);
   assert.match(rootless.stdout, /^RESULT: fail doctor cannot find the project without Node >=24: a node the kit does not trust was skipped/);
-  // Doctor's own lookup never runs it. Its kit home check starts a kit in another project, where this worktree is an
-  // ordinary PATH folder; run through the front door, that kit reuses the Node the front door found instead.
-  const ran = existsSync(marker) ? readFileSync(marker, "utf8") : "";
-  assert.equal(ran.split("\n").filter(line => line.includes("kit.d/doctor")).join("\n"), "", ran);
+  // Neither doctor's lookup nor its kit home check (a kit started in another project) runs it.
+  assert.equal(existsSync(marker), false, existsSync(marker) ? readFileSync(marker, "utf8") : "");
 });
 
 test("doctor shows the Node version without the carriage return Node on Windows ends it with", (t) => {
