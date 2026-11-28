@@ -1278,3 +1278,43 @@ test("TOOLS-416: checkLock gives checks a fresh writable XDG_CONFIG_HOME carryin
   assert.equal(existsSync(join(lock2.env.XDG_CONFIG_HOME, "git/config")), false);
   lock2.close?.();
 });
+
+// Git reads a relative include.path from the folder of the file that names it, here the fresh XDG_CONFIG_HOME, so the
+// included files must sit there at the same relative paths, read-only, while an include holding a key stays hidden
+// (README, "Write fence"; TOOLS-416 second look).
+test("TOOLS-416: checkLock keeps relative git includes readable and read-only in the fresh XDG_CONFIG_HOME, and secret includes hidden", { skip: noBwrap }, t => {
+  const { home, worktree, common, env } = workspace(t);
+  const git = join(home, ".config/git");
+  mkdirSync(join(git, "more"), { recursive: true });
+  writeFileSync(join(git, "config"), '[include]\n\tpath = identity.conf\n\tpath = "secret.conf"\n\tpath = ../../outside.conf\n');
+  writeFileSync(join(git, "identity.conf"), "[user]\n\tname = Included Name\n[include]\n\tpath = more/email.conf\n");
+  writeFileSync(join(git, "more/email.conf"), "[user]\n\temail = included@example.com\n");
+  writeFileSync(join(git, "secret.conf"), '[url "https://ghp_secret@github.com/"]\n\tinsteadOf = https://github.com/\n');
+  writeFileSync(join(home, "outside.conf"), "[core]\n\tabbrev = 9\n");
+
+  const lock = checkLock({ worktree, common, env });
+  t.after(() => lock.close?.());
+  const config = lock.env.XDG_CONFIG_HOME;
+  const probe = `
+    const fs = require("node:fs"), path = require("node:path"), { spawnSync } = require("node:child_process");
+    const git = key => spawnSync("git", ["config", "--get", key], { encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } }).stdout.trim();
+    const results = { name: git("user.name"), email: git("user.email"), insteadOf: git("url.https://ghp_secret@github.com/.insteadof") };
+    const folder = path.join(process.env.XDG_CONFIG_HOME, "git");
+    for (const name of ["identity.conf", "more/email.conf"]) {
+      try { fs.writeFileSync(path.join(folder, name), "mutated"); results[name] = "WROTE"; } catch (e) { results[name] = e.code; }
+    }
+    try { results.secret = "LEAKED:" + fs.readFileSync(path.join(folder, "secret.conf"), "utf8"); } catch (e) { results.secret = e.code; }
+    console.log(JSON.stringify(results));
+  `;
+  const [command, args] = lock.wrap(process.execPath, ["-e", probe]);
+  const result = spawnSync(command, args, { cwd: worktree, env: { ...env, ...lock.env }, encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout.trim()), {
+    name: "Included Name", email: "included@example.com", insteadOf: "",
+    "identity.conf": "EROFS", "more/email.conf": "EROFS", secret: "ENOENT",
+  });
+  assert.equal(readFileSync(join(git, "identity.conf"), "utf8"), "[user]\n\tname = Included Name\n[include]\n\tpath = more/email.conf\n");
+  // An include that climbs out of the fresh folder is not linked beside it.
+  assert.equal(existsSync(join(config, "..", "outside.conf")), false);
+  lock.close?.();
+});
