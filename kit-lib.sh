@@ -33,7 +33,7 @@ kit_setting() {
 kit_lib_node() {
   local node code=$1
   shift
-  node=$(kit_node_find) || { printf '%s\n' 'kit: no Node >=24 found (system, npx cache or nvm)' >&2; return 1; }
+  node=$(kit_node_find) || { kit_node_none "$?"; return 1; }
   "$node" --input-type=module -e "const lib = await import((await import('node:url')).pathToFileURL(process.argv[1]).href); $code" \
     "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/kit-lib.mjs" "$@"
 }
@@ -104,18 +104,23 @@ kit_node_version() {
 # the worktree around the current folder and KIT_ROOT, and each one's Git folder and shared Git folder, found from the
 # worktree's own files (a .git folder, or a .git file naming one and its commondir file), never by running git, which
 # PATH could lead into those folders too. It adds their physical paths to the caller's places array (none outside a
-# worktree without KIT_ROOT), starts no program and leaves the current folder as it found it.
+# worktree without KIT_ROOT), starts no program and leaves the current folder as it found it. A place that is the home
+# folder or holds it is left out: a home kept in Git (`git init` in ~) would hold every nvm, volta or ~/.local/bin Node,
+# and a build runs in a worktree, whose own .git is found first. The .git and commondir files are the build's to
+# write, so the Git folder part trusts them (the worktree itself stays a place while any .git entry is in it).
 kit_node_places() {
-  local here=$PWD start dir git line common CDPATH=''
+  local here=$PWD start dir git line common home='' place CDPATH=''
+  local -a found=()
+  [[ -n ${HOME:-} ]] && cd -P -- "$HOME" 2> /dev/null && home=${PWD%/}
   for start in "$here" "${KIT_ROOT:-}"; do
     cd -- "$here" 2> /dev/null || return 0
     [[ -n $start ]] && cd -P -- "$start" 2> /dev/null || continue
     # The machine's top folder is never a place: it would hold every Node.
     dir=${PWD%/}
-    [[ -n $dir && $start == "${KIT_ROOT:-}" ]] && places+=("$dir")
+    [[ -n $dir && $start == "${KIT_ROOT:-}" ]] && found+=("$dir")
     while [[ -n $dir && ! -e $dir/.git ]]; do dir=${dir%/*}; done
     [[ -n $dir ]] || continue
-    places+=("$dir")
+    found+=("$dir")
     git=$dir/.git
     if [[ -f $git ]]; then
       line=''
@@ -128,16 +133,19 @@ kit_node_places() {
     fi
     cd -P -- "$git" 2> /dev/null && [[ $PWD != / ]] || continue
     git=$PWD
-    places+=("$git")
+    found+=("$git")
     [[ -f $git/commondir ]] || continue
     common=''
     IFS= read -r common < "$git/commondir" || :
     common=${common%$'\r'}
     [[ -n $common ]] || continue
     [[ $common == /* ]] || common=${git%/}/$common
-    cd -P -- "$common" 2> /dev/null && [[ $PWD != / ]] && places+=("$PWD")
+    cd -P -- "$common" 2> /dev/null && [[ $PWD != / ]] && found+=("$PWD")
   done
   cd -- "$here" 2> /dev/null || :
+  for place in ${found[@]+"${found[@]}"}; do
+    [[ -n $home && ( $home == "$place" || $home == "${place%/}"/* ) ]] || places+=("$place")
+  done
 }
 
 # Whether the node at $1, a full path, stays outside every place named after it: the PATH folder it sits in, each link
@@ -146,7 +154,7 @@ kit_node_places() {
 # the current folder as it found it, and starts readlink only for a link, by its full path (one found on PATH could be
 # a build's too); without one, a link counts as inside.
 kit_node_outside() {
-  local here=$PWD file=$1 dir target place hops=0 outside=1 CDPATH='' readlink=
+  local here=$PWD file=$1 dir target place hops=0 status=1 CDPATH='' readlink=
   shift
   [[ $file == /* ]] || return 1
   while :; do
@@ -160,7 +168,7 @@ kit_node_outside() {
       [[ $dir == "$place" || $dir == "${place%/}"/* ]] && break 2
     done
     file=${dir%/}/${file##*/}
-    if [[ ! -L $file ]]; then outside=0; break; fi
+    if [[ ! -L $file ]]; then status=0; break; fi
     (( ++hops <= 40 )) || break
     if [[ -z $readlink ]]; then
       for readlink in /usr/bin/readlink /bin/readlink /run/current-system/sw/bin/readlink ''; do [[ -x $readlink ]] && break; done
@@ -171,21 +179,22 @@ kit_node_outside() {
     file=$target
   done
   cd -- "$here" 2> /dev/null || :
-  return "$outside"
+  return "$status"
 }
 
 # The first Node on PATH when it is >=24; else the newest Node >=24 later on PATH (an older Node can come first, as
 # Homebrew's does on a Mac where CI installs Node 24, TOOLS-412); else the newest in the npx or nvm caches. A good first
 # Node stops the search. A node in the worktree or its Git folder (kit_node_places: a worktree's node_modules/.bin, a
 # direnv bin there, a link leading there) is dropped before it runs, so a build cannot plant the Node the kit runs, even
-# when an older Node comes first and every later one is asked for its version. When KIT_NODE_PIN is set (by a guarded kit pr to its own trusted Node), only that path is checked
-# so later PATH entries are never executed.
+# when an older Node comes first and every later one is asked for its version; with no Node found, the status is 3 when
+# such a node was dropped (kit_node_none says so), else 1. When KIT_NODE_PIN is set (by a guarded kit pr to its own
+# trusted Node), only that path is checked so later PATH entries are never executed.
 # When KIT_NODE_FOUND_FOR matches the current KIT_NODE, PATH and search root, that already-verified Node
 # is reused without spawning node --version again so nested kit calls stay fast (an in-place Node swap
 # or a newer Node added to an already-listed PATH folder waits until the variables change).
 kit_node_find() (
   local candidate version root best='' major=0 minor=0 patch=0
-  local next_major next_minor next_patch tier dir prev
+  local next_major next_minor next_patch tier dir prev none=1
   local -a tried=() places=()
   if [[ -n ${KIT_NODE_PIN:-} ]]; then
     candidate=$KIT_NODE_PIN
@@ -209,14 +218,14 @@ kit_node_find() (
   for tier in path cache; do
     if [[ $tier == cache ]]; then
       root=${CLAUDE_NODE_SEARCH_ROOT:-${HOME:-}}
-      [[ -n $root ]] || return 1
+      [[ -n $root ]] || return "$none"
     fi
     while IFS= read -r candidate; do
       [[ -f $candidate && -x $candidate ]] || continue
       # Only the first PATH Node has run so far and it is >=24: keep it.
       [[ $tier == path && -n $best && ${#tried[@]} == 1 ]] && break
       # A node in the worktree or its Git folder never runs, not even for its version.
-      kit_node_outside "$candidate" ${places[@]+"${places[@]}"} || continue
+      kit_node_outside "$candidate" ${places[@]+"${places[@]}"} || { none=3; continue; }
       for prev in ${tried[@]+"${tried[@]}"}; do [[ $candidate -ef $prev ]] && continue 2; done
       tried+=("$candidate")
       version=$(kit_node_version "$candidate") || continue
@@ -234,13 +243,21 @@ kit_node_find() (
       return 0
     fi
   done
-  return 1
+  return "$none"
 )
 
+# What kit says on stderr when kit_node_find found no Node, given its status ($1): 3 adds that a node was dropped for
+# sitting in the worktree or its Git folder, so the person is not sent to install a Node they have.
+kit_node_none() {
+  printf '%s\n' 'kit: no Node >=24 found (system, npx cache or nvm)' >&2
+  [[ $1 != 3 ]] || printf '%s\n' 'kit: a node inside this worktree or its Git folder was skipped: the kit never runs one there, since a build could have put it there; install Node 24 outside them' >&2
+}
+
 kit_node() {
-  local node directory path=${PATH-} first
-  if ! node=$(kit_node_find); then
-    printf '%s\n' 'kit: no Node >=24 found (system, npx cache or nvm)' >&2
+  local node directory path=${PATH-} first status=0
+  node=$(kit_node_find) || status=$?
+  if (( status )); then
+    kit_node_none "$status"
     # A KIT_NODE a parent left behind names a Node this lookup just failed to find.
     unset KIT_NODE KIT_NODE_FOUND_FOR
     return 1
