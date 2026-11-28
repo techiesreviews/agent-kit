@@ -96,8 +96,10 @@ function text(file) {
 // stand before a command (a test with && or ||, a ;, then, do, else, an opening brace or bracket). The path ends at a
 // blank or at what ends a command; quotes are taken off by expand.
 const sourced = /(?:^|&&|\|\||[;({]|\b(?:then|do|else))\s*(?:source|\.)\s+("[^"\n]*"|'[^'\n]*'|[^\s;&|)}]+)/gm;
-// A path as a config file writes it: ~ and $HOME are the home, a relative one counts from `from`.
-const expand = (path, base, from) => resolve(from, (/^"[\s\S]*"$/.test(path) ? path.slice(1, -1).replace(/\\(.)/g, "$1") : path.replace(/^["']|["']$/g, "")).replace(/^~(?=\/|$)/, base).replace(/^\$(HOME|\{HOME\})(?=\/|$)/, base));
+// A path as a config file writes it, its quotes taken off; expand also makes ~ and $HOME the home and counts a relative
+// one from `from`.
+const unquote = path => /^"[\s\S]*"$/.test(path) ? path.slice(1, -1).replace(/\\(.)/g, "$1") : path.replace(/^["']|["']$/g, "");
+const expand = (path, base, from) => resolve(from, unquote(path).replace(/^~(?=\/|$)/, base).replace(/^\$(HOME|\{HOME\})(?=\/|$)/, base));
 // A git include (include.path, includeIf's path): the whole value as git reads it, so a path with a space counts in
 // full (SL-1, TOOLS-303): a quoted value up to its closing quote, a bare one up to a comment or the line's end.
 const gitIncludePath = /^[ \t]*path[ \t]*=[ \t]*("(?:[^"\\\n]|\\.)*"|[^\n#;]*[^\s#;])/gim;
@@ -1850,6 +1852,27 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session,
         symlinkSync(resolve(src), dst);
       };
       for (const name of ["config", "ignore", "attributes"]) linkConfig(join("git", name));
+      // Git reads a relative include (include.path, includeIf's path) from the folder of the file that names it, which
+      // is now the fresh folder: each file the chain pulls in that way is linked there at the same relative path, as
+      // read-only as git/config, so the identity it holds stays; one holding a key is masked and stays out (TOOLS-416).
+      // An include that climbs out of the fresh folder, or whose place is taken already, is left out.
+      const includes = [[join(configSource, "git/config"), join(folders.config, "git/config")]];
+      if (existingPaths([includes[0][1]]).length) {
+        for (let next = 0; next < includes.length && next < 100; next++) {
+          const [source, placed] = includes[next];
+          for (const match of text(source).matchAll(gitIncludePath)) {
+            const path = unquote(match[1]);
+            if (!path || isAbsolute(path) || /^[~%]/.test(path)) continue;
+            const src = resolve(dirname(source), path), dst = resolve(dirname(placed), path);
+            if (!inside(dst, folders.config) || dst === folders.config || existingPaths([dst]).length) continue;
+            try { if (!statSync(src).isFile()) continue; } catch { continue; }
+            if (hidden(src) || shutIn(src, allRoots)) continue;
+            mkdirSync(dirname(dst), { recursive: true });
+            symlinkSync(src, dst);
+            includes.push([src, dst]);
+          }
+        }
+      }
       linkConfig("fontconfig");
     }
     const extra = { TMPDIR: folders.tmp, TMP: folders.tmp, TEMP: folders.tmp, XDG_CACHE_HOME: folders.cache,

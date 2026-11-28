@@ -312,7 +312,10 @@ Lex approved the kit trim on 2026-11-14. Its first release cut three commands an
   Locked `kit pr` checks also get a fresh per-run `XDG_CONFIG_HOME` inside their private folder so tools such as Wrangler
   can write local state (for example `metrics.json`) while the real `~/.config` key folders stay masked; non-secret
   `git/config`, `git/ignore`, `git/attributes` and `fontconfig` entries from the user's config folder are linked in
-  read-only (other `~/.config` settings are not seen by checks).
+  read-only (other `~/.config` settings are not seen by checks). A file `git/config` pulls in by a relative include
+  (`include.path = identity.conf`, an `includeIf` path, and so on down the chain) is linked in read-only at the same
+  relative path, so the identity it holds stays, unless it holds a key (then it stays masked) or the path climbs out
+  of the fresh folder.
   `kit pr`'s browser specs step (`specs`, except `--list`) also allows writes to the shared port lock files
   (`$ASE_LOCK_DIR/ase-<port>.lock`, default `/tmp`, ports from `ASE_PORTS`, else `ASE_POOL`, else the 8-slot pool
   `5226`–`5296`, at most 64 space-separated port numbers between 1 and 65535). `ASE_LOCK_DIR` must be a direct folder
