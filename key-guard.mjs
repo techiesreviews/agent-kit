@@ -1852,6 +1852,8 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session,
         symlinkSync(resolve(src), dst);
       };
       for (const name of ["config", "ignore", "attributes"]) linkConfig(join("git", name));
+      // fontconfig first, so an include that leads into it finds its place taken and is left to the link.
+      linkConfig("fontconfig");
       // Git reads a relative include (include.path, includeIf's path) from the folder of the file that names it, which
       // is now the fresh folder: each file the chain pulls in that way is linked there at the same relative path, as
       // read-only as git/config, so the identity it holds stays; one holding a key is masked and stays out (TOOLS-416).
@@ -1873,7 +1875,6 @@ function writeFence(cli, env, { worktree, common, state, writable = [], session,
           }
         }
       }
-      linkConfig("fontconfig");
     }
     const extra = { TMPDIR: folders.tmp, TMP: folders.tmp, TEMP: folders.tmp, XDG_CACHE_HOME: folders.cache,
       ...(privateConfig ? { XDG_CONFIG_HOME: folders.config } : {}),

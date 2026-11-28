@@ -1286,11 +1286,21 @@ test("TOOLS-416: checkLock keeps relative git includes readable and read-only in
   const { home, worktree, common, env } = workspace(t);
   const git = join(home, ".config/git");
   mkdirSync(join(git, "more"), { recursive: true });
-  writeFileSync(join(git, "config"), '[include]\n\tpath = identity.conf\n\tpath = "secret.conf"\n\tpath = ../../outside.conf\n');
-  writeFileSync(join(git, "identity.conf"), "[user]\n\tname = Included Name\n[include]\n\tpath = more/email.conf\n");
+  writeFileSync(join(git, "config"), '[include]\n\tpath = identity.conf\n\tpath = "secret.conf"\n\tpath = ../../outside.conf\n' +
+    '\tpath = ../fontconfig/git.inc\n[includeIf "gitdir:/"]\n\tpath = work.conf\n');
+  writeFileSync(join(git, "identity.conf"), "[user]\n\tname = Included Name\n[include]\n\tpath = more/email.conf\n\tpath = more/nested-secret.conf\n");
   writeFileSync(join(git, "more/email.conf"), "[user]\n\temail = included@example.com\n");
+  writeFileSync(join(git, "more/nested-secret.conf"), '[url "https://ghp_nested@github.com/"]\n\tinsteadOf = https://example.com/\n');
   writeFileSync(join(git, "secret.conf"), '[url "https://ghp_secret@github.com/"]\n\tinsteadOf = https://github.com/\n');
+  writeFileSync(join(git, "work.conf"), "[user]\n\tsigningkey = WORKKEY\n");
   writeFileSync(join(home, "outside.conf"), "[core]\n\tabbrev = 9\n");
+  // An include into fontconfig, which is linked whole: the include finds its place taken and the check still starts.
+  mkdirSync(join(home, ".config/fontconfig"), { recursive: true });
+  writeFileSync(join(home, ".config/fontconfig/fonts.conf"), "<fontconfig/>\n");
+  writeFileSync(join(home, ".config/fontconfig/git.inc"), "[core]\n\tabbrev = 11\n");
+  // includeIf "gitdir:" only applies inside a repository.
+  const init = spawnSync("git", ["init", "-q", worktree], { encoding: "utf8", env: { ...env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
+  assert.equal(init.status, 0, init.stderr);
 
   const lock = checkLock({ worktree, common, env });
   t.after(() => lock.close?.());
@@ -1298,22 +1308,26 @@ test("TOOLS-416: checkLock keeps relative git includes readable and read-only in
   const probe = `
     const fs = require("node:fs"), path = require("node:path"), { spawnSync } = require("node:child_process");
     const git = key => spawnSync("git", ["config", "--get", key], { encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } }).stdout.trim();
-    const results = { name: git("user.name"), email: git("user.email"), insteadOf: git("url.https://ghp_secret@github.com/.insteadof") };
+    const results = { name: git("user.name"), email: git("user.email"), signingkey: git("user.signingkey"), abbrev: git("core.abbrev"),
+      insteadOf: git("url.https://ghp_secret@github.com/.insteadof"), nestedInsteadOf: git("url.https://ghp_nested@github.com/.insteadof") };
     const folder = path.join(process.env.XDG_CONFIG_HOME, "git");
-    for (const name of ["identity.conf", "more/email.conf"]) {
+    for (const name of ["identity.conf", "more/email.conf", "work.conf"]) {
       try { fs.writeFileSync(path.join(folder, name), "mutated"); results[name] = "WROTE"; } catch (e) { results[name] = e.code; }
     }
-    try { results.secret = "LEAKED:" + fs.readFileSync(path.join(folder, "secret.conf"), "utf8"); } catch (e) { results.secret = e.code; }
+    for (const name of ["secret.conf", "more/nested-secret.conf"]) {
+      try { results[name] = "LEAKED:" + fs.readFileSync(path.join(folder, name), "utf8"); } catch (e) { results[name] = e.code; }
+    }
     console.log(JSON.stringify(results));
   `;
   const [command, args] = lock.wrap(process.execPath, ["-e", probe]);
   const result = spawnSync(command, args, { cwd: worktree, env: { ...env, ...lock.env }, encoding: "utf8", timeout: 30_000 });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(JSON.parse(result.stdout.trim()), {
-    name: "Included Name", email: "included@example.com", insteadOf: "",
-    "identity.conf": "EROFS", "more/email.conf": "EROFS", secret: "ENOENT",
+    name: "Included Name", email: "included@example.com", signingkey: "WORKKEY", abbrev: "11", insteadOf: "", nestedInsteadOf: "",
+    "identity.conf": "EROFS", "more/email.conf": "EROFS", "work.conf": "EROFS", "secret.conf": "ENOENT", "more/nested-secret.conf": "ENOENT",
   });
-  assert.equal(readFileSync(join(git, "identity.conf"), "utf8"), "[user]\n\tname = Included Name\n[include]\n\tpath = more/email.conf\n");
+  assert.equal(lstatSync(join(config, "fontconfig")).isSymbolicLink(), true, "fontconfig is linked whole, not made a folder by the include");
+  assert.equal(readFileSync(join(git, "identity.conf"), "utf8"), "[user]\n\tname = Included Name\n[include]\n\tpath = more/email.conf\n\tpath = more/nested-secret.conf\n");
   // An include that climbs out of the fresh folder is not linked beside it.
   assert.equal(existsSync(join(config, "..", "outside.conf")), false);
   lock.close?.();
