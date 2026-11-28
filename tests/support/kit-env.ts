@@ -109,9 +109,10 @@ Object.assign(process.env, { HOME: testHomeFolder, XDG_CONFIG_HOME: join(testHom
 process.env.PATH = cleanTestPath(process.env.PATH);
 // ASE_KEY_GUARD and KIT_KEY_PATHS from the shell that started the tests would change what the lock does in every
 // fixture (off: no lock is tested at all; a path: one more folder to search), and KIT_NODE_PIN and KIT_NODE_FOUND_FOR
-// from a guarded kit pr or front door would pin or cache Node lookup across fixtures, so they are dropped; a test of
-// any of them sets it itself.
-for (const name of ["ASE_KEY_GUARD", "KIT_KEY_PATHS", "KIT_NODE_PIN", "KIT_NODE_FOUND_FOR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL"]) delete process.env[name];
+// from a guarded kit pr or front door would pin or cache Node lookup across fixtures, and ASE_SECOND_LOOK from the kit
+// pr that runs these checks would swap the second-look table every fixture reads, so they are dropped; a test of any
+// of them sets it itself.
+for (const name of ["ASE_KEY_GUARD", "KIT_KEY_PATHS", "KIT_NODE_PIN", "KIT_NODE_FOUND_FOR", "ASE_SECOND_LOOK", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GROK_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL"]) delete process.env[name];
 // KIT_SKILL_HOME names a folder that never exists, so kit doctor's skills map note reads no real skill folder.
 const noSkills = resolve(import.meta.dirname, "../fixtures/no-skill-home");
 // KIT_TALK_STYLE=plain keeps briefs in plain English, and KIT_BG_SCOPE=off keeps kit bg jobs out of the user's
